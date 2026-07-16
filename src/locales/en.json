@@ -1,0 +1,296 @@
+{
+  "app": {
+    "title": "Installment",
+    "titleLine2": "Payments",
+    "name": "Échéancier"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "achats": "Purchases",
+    "clients": "Clients",
+    "paiements": "Payments",
+    "echeances": "Due dates",
+    "impayes": "Overdue",
+    "alertes": "Alerts",
+    "rapports": "Reports",
+    "parametres": "Settings"
+  },
+  "sidebar": {
+    "newPurchase": "New purchase",
+    "helpTitle": "Need help?",
+    "helpText": "Read our guide or contact support."
+  },
+  "header": {
+    "admin": "Admin"
+  },
+  "common": {
+    "viewAll": "View all",
+    "viewAllF": "View all",
+    "view": "View",
+    "filter": "Filter",
+    "save": "Save",
+    "saveChanges": "Save changes",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "create": "Create",
+    "search": "Search…",
+    "close": "Close",
+    "confirm": "Confirm",
+    "back": "Back",
+    "export": "Export list",
+    "actions": "Action",
+    "status": "Status",
+    "loading": "Loading…",
+    "optional": "optional",
+    "client": "Client",
+    "product": "Product",
+    "date": "Date",
+    "amount": "Amount",
+    "total": "Total",
+    "remaining": "Remaining",
+    "paid": "Paid",
+    "note": "Note",
+    "all": "All",
+    "currency": "{amount} {code}",
+    "none": "—"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "thisMonth": "This month",
+    "clientsConcerned": "Clients affected",
+    "kpi": {
+      "totalPurchases": "Total purchases",
+      "totalSales": "Total sales amount",
+      "collected": "Amount collected",
+      "outstanding": "Outstanding balance",
+      "latePayments": "Late payments"
+    },
+    "recentPurchases": "Recent purchases",
+    "purchaseDetail": "Purchase detail",
+    "dueAlerts": "Due-date alerts",
+    "impayes": "Overdue",
+    "table": {
+      "reference": "Ref.",
+      "client": "Client",
+      "product": "Product",
+      "purchaseDate": "Purchase date",
+      "totalAmount": "Total amount"
+    },
+    "detail": {
+      "purchaseDate": "Purchase date",
+      "installmentCount": "Installments",
+      "totalAmount": "Total amount",
+      "paidAmount": "Amount paid",
+      "remainingToPay": "Left to pay",
+      "client": "Client",
+      "tranche": "Installment",
+      "dueDate": "Due date",
+      "amount": "Amount",
+      "paymentDate": "Payment date",
+      "paymentHistory": "Payment history",
+      "register": "Record",
+      "view": "View"
+    },
+    "alert": {
+      "tranche": "Installment {index}/{count}",
+      "dueOn": "Due: {date}",
+      "daysLate": "{n} day late | {n} days late"
+    },
+    "empty": {
+      "purchases": "No purchases yet",
+      "alerts": "No overdue due dates 🎉",
+      "impayes": "No overdue payments 🎉"
+    }
+  },
+  "status": {
+    "pending": "Upcoming",
+    "paid": "Paid",
+    "paidM": "Paid",
+    "late": "Overdue",
+    "partial": "Partial",
+    "in_progress": "In progress"
+  },
+  "impaye": {
+    "trancheLate": "{n} installment overdue | {n} installments overdue",
+    "dateRange": "Period",
+    "allClients": "All clients",
+    "call": "Call",
+    "message": "Message",
+    "since": "Overdue since"
+  },
+  "achats": {
+    "title": "Purchases",
+    "new": "New purchase",
+    "searchPlaceholder": "Search a purchase, client, product…",
+    "columns": {
+      "reference": "Ref.",
+      "client": "Client",
+      "product": "Product",
+      "date": "Purchase date",
+      "total": "Total amount",
+      "remaining": "Left to pay",
+      "status": "Status"
+    },
+    "form": {
+      "title": "New purchase",
+      "client": "Client",
+      "selectClient": "Select a client",
+      "newClient": "New client",
+      "product": "Product",
+      "productPlaceholder": "e.g. Samsung 260L Fridge",
+      "totalPrice": "Total price",
+      "installmentCount": "Number of installments",
+      "interval": "Installment frequency",
+      "purchaseDate": "Purchase date",
+      "intervalDays": "Interval (days)",
+      "installments": "Schedule",
+      "trancheAmount": "Installment {n} amount",
+      "sumLabel": "Installments total",
+      "sumOk": "Installments add up to the total.",
+      "sumMismatch": "Installments ({sum}) don't match the total ({total}).",
+      "recompute": "Recalculate automatically",
+      "submit": "Save purchase"
+    },
+    "interval": {
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "custom": "Custom"
+    },
+    "empty": "No purchases yet. Create your first purchase."
+  },
+  "clients": {
+    "title": "Clients",
+    "new": "New client",
+    "searchPlaceholder": "Search a client…",
+    "columns": {
+      "name": "Name",
+      "phone": "Phone",
+      "address": "Address",
+      "purchases": "Purchases",
+      "outstanding": "Outstanding"
+    },
+    "form": {
+      "firstName": "First name",
+      "lastName": "Last name",
+      "phone": "Phone",
+      "phonePlaceholder": "+216 20 123 456",
+      "address": "Address",
+      "email": "Email",
+      "newTitle": "New client",
+      "editTitle": "Edit client"
+    },
+    "detail": {
+      "purchases": "Purchases",
+      "paymentHistory": "Payment history",
+      "totalPurchased": "Total purchased",
+      "totalPaid": "Total paid",
+      "outstanding": "Outstanding",
+      "contact": "Contact details",
+      "noPurchases": "This client has no purchases.",
+      "noPayments": "No payments recorded."
+    },
+    "delete": {
+      "confirmTitle": "Delete client",
+      "confirmText": "Do you really want to delete this client?",
+      "hasPurchases": "This client has {n} purchase(s). Deleting will also erase all their purchases, schedules and payments. Continue?"
+    },
+    "empty": "No clients. Add your first client."
+  },
+  "paiements": {
+    "title": "Payments",
+    "record": "Record a payment",
+    "recordFor": "Record a payment — Installment {index}/{count}",
+    "amount": "Payment amount",
+    "date": "Payment date",
+    "note": "Note",
+    "partialInfo": "Partial payments are allowed: the amount accumulates until the installment is fully settled.",
+    "dueAmount": "Amount due",
+    "alreadyPaid": "Already paid",
+    "columns": {
+      "date": "Date",
+      "reference": "Ref.",
+      "tranche": "Installment",
+      "amount": "Amount",
+      "note": "Note"
+    },
+    "empty": "No payments recorded."
+  },
+  "echeances": {
+    "title": "Due dates",
+    "subtitle": "All upcoming and overdue installments",
+    "columns": {
+      "reference": "Ref.",
+      "client": "Client",
+      "tranche": "Installment",
+      "dueDate": "Due date",
+      "amount": "Amount",
+      "status": "Status"
+    },
+    "filter": {
+      "all": "All",
+      "overdue": "Overdue",
+      "upcoming": "Upcoming",
+      "paid": "Paid"
+    },
+    "empty": "No due dates to display."
+  },
+  "impayes": {
+    "title": "Overdue payments",
+    "subtitle": "Clients with at least one overdue, unpaid installment",
+    "totalOverdue": "Total due",
+    "columns": {
+      "client": "Client",
+      "reference": "Ref.",
+      "overdue": "Overdue amount",
+      "contact": "Contact"
+    },
+    "empty": "No overdue payments 🎉",
+    "emptyHint": "All payments are up to date."
+  },
+  "alertes": {
+    "title": "Alerts",
+    "comingSoon": "The detailed alert center is coming soon.",
+    "description": "This page will gather notifications for upcoming and overdue due dates. Key alerts are already shown on the dashboard."
+  },
+  "rapports": {
+    "title": "Reports",
+    "comingSoon": "Detailed reports are coming soon.",
+    "description": "This page will offer exportable sales, collection and overdue summaries."
+  },
+  "settings": {
+    "title": "Settings",
+    "saved": "Settings saved",
+    "general": "General",
+    "appearance": "Appearance",
+    "shop": "Shop",
+    "language": "Language",
+    "languageHint": "By default, the system language is used on first launch.",
+    "currency": "Currency",
+    "currencyHint": "Displayed currency code (TND by default).",
+    "dateFormat": "Date format",
+    "logo": "Shop logo",
+    "logoHint": "Shown in the header and sidebar.",
+    "uploadLogo": "Choose a logo",
+    "removeLogo": "Remove logo",
+    "noLogo": "No logo",
+    "shopName": "Shop name",
+    "shopInfo": "Contact / information",
+    "shopInfoPlaceholder": "Address, phone, tax ID…"
+  },
+  "validation": {
+    "required": "This field is required.",
+    "numeric": "Please enter a valid number.",
+    "positive": "The value must be greater than zero.",
+    "minInstallments": "At least one installment is required.",
+    "invalidEmail": "Invalid email address.",
+    "invalidDate": "Invalid date.",
+    "sumMismatch": "Installments don't add up to the total."
+  },
+  "errors": {
+    "generic": "Something went wrong.",
+    "clientHasPurchases": "This client has purchases.",
+    "loadFailed": "Failed to load data."
+  }
+}

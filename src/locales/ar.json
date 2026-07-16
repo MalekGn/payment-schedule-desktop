@@ -1,0 +1,296 @@
+{
+  "app": {
+    "title": "الدفع",
+    "titleLine2": "بالتقسيط",
+    "name": "التقسيط"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "achats": "المشتريات",
+    "clients": "العملاء",
+    "paiements": "المدفوعات",
+    "echeances": "الأقساط",
+    "impayes": "المتأخرات",
+    "alertes": "التنبيهات",
+    "rapports": "التقارير",
+    "parametres": "الإعدادات"
+  },
+  "sidebar": {
+    "newPurchase": "شراء جديد",
+    "helpTitle": "بحاجة إلى مساعدة؟",
+    "helpText": "اطّلع على دليلنا أو تواصل مع الدعم."
+  },
+  "header": {
+    "admin": "المدير"
+  },
+  "common": {
+    "viewAll": "عرض الكل",
+    "viewAllF": "عرض الكل",
+    "view": "عرض",
+    "filter": "تصفية",
+    "save": "حفظ",
+    "saveChanges": "حفظ التعديلات",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "edit": "تعديل",
+    "add": "إضافة",
+    "create": "إنشاء",
+    "search": "بحث…",
+    "close": "إغلاق",
+    "confirm": "تأكيد",
+    "back": "رجوع",
+    "export": "تصدير القائمة",
+    "actions": "إجراء",
+    "status": "الحالة",
+    "loading": "جارٍ التحميل…",
+    "optional": "اختياري",
+    "client": "العميل",
+    "product": "المنتج",
+    "date": "التاريخ",
+    "amount": "المبلغ",
+    "total": "الإجمالي",
+    "remaining": "المتبقّي",
+    "paid": "المدفوع",
+    "note": "ملاحظة",
+    "all": "الكل",
+    "currency": "{amount} {code}",
+    "none": "—"
+  },
+  "dashboard": {
+    "title": "لوحة التحكم",
+    "thisMonth": "هذا الشهر",
+    "clientsConcerned": "العملاء المعنيّون",
+    "kpi": {
+      "totalPurchases": "إجمالي المشتريات",
+      "totalSales": "إجمالي مبلغ المبيعات",
+      "collected": "المبلغ المحصّل",
+      "outstanding": "المبلغ المتبقّي",
+      "latePayments": "المدفوعات المتأخرة"
+    },
+    "recentPurchases": "المشتريات الأخيرة",
+    "purchaseDetail": "تفاصيل الشراء",
+    "dueAlerts": "تنبيهات الأقساط",
+    "impayes": "المتأخرات",
+    "table": {
+      "reference": "رقم الشراء",
+      "client": "العميل",
+      "product": "المنتج",
+      "purchaseDate": "تاريخ الشراء",
+      "totalAmount": "المبلغ الإجمالي"
+    },
+    "detail": {
+      "purchaseDate": "تاريخ الشراء",
+      "installmentCount": "عدد الأقساط",
+      "totalAmount": "المبلغ الإجمالي",
+      "paidAmount": "المبلغ المدفوع",
+      "remainingToPay": "المتبقّي للدفع",
+      "client": "العميل",
+      "tranche": "القسط",
+      "dueDate": "الاستحقاق",
+      "amount": "المبلغ",
+      "paymentDate": "تاريخ الدفع",
+      "paymentHistory": "سجل المدفوعات",
+      "register": "تسجيل",
+      "view": "عرض"
+    },
+    "alert": {
+      "tranche": "القسط {index}/{count}",
+      "dueOn": "الاستحقاق: {date}",
+      "daysLate": "متأخر بيوم واحد | متأخر بـ {n} يوم | متأخر بـ {n} أيام"
+    },
+    "empty": {
+      "purchases": "لا توجد مشتريات بعد",
+      "alerts": "لا توجد أقساط متأخرة 🎉",
+      "impayes": "لا توجد متأخرات 🎉"
+    }
+  },
+  "status": {
+    "pending": "قادم",
+    "paid": "مدفوع",
+    "paidM": "مدفوع",
+    "late": "متأخر",
+    "partial": "جزئي",
+    "in_progress": "جارٍ"
+  },
+  "impaye": {
+    "trancheLate": "قسط واحد متأخر | {n} قسط متأخر | {n} أقساط متأخرة",
+    "dateRange": "الفترة",
+    "allClients": "جميع العملاء",
+    "call": "اتصال",
+    "message": "رسالة",
+    "since": "متأخر منذ"
+  },
+  "achats": {
+    "title": "المشتريات",
+    "new": "شراء جديد",
+    "searchPlaceholder": "ابحث عن شراء أو عميل أو منتج…",
+    "columns": {
+      "reference": "رقم الشراء",
+      "client": "العميل",
+      "product": "المنتج",
+      "date": "تاريخ الشراء",
+      "total": "المبلغ الإجمالي",
+      "remaining": "المتبقّي للدفع",
+      "status": "الحالة"
+    },
+    "form": {
+      "title": "شراء جديد",
+      "client": "العميل",
+      "selectClient": "اختر عميلاً",
+      "newClient": "عميل جديد",
+      "product": "المنتج",
+      "productPlaceholder": "مثال: ثلاجة سامسونج 260 لتر",
+      "totalPrice": "السعر الإجمالي",
+      "installmentCount": "عدد الأقساط",
+      "interval": "دورية الأقساط",
+      "purchaseDate": "تاريخ الشراء",
+      "intervalDays": "الفاصل (أيام)",
+      "installments": "جدول الأقساط",
+      "trancheAmount": "مبلغ القسط {n}",
+      "sumLabel": "مجموع الأقساط",
+      "sumOk": "مجموع الأقساط يطابق الإجمالي.",
+      "sumMismatch": "مجموع الأقساط ({sum}) لا يطابق الإجمالي ({total}).",
+      "recompute": "إعادة الحساب تلقائياً",
+      "submit": "حفظ الشراء"
+    },
+    "interval": {
+      "weekly": "أسبوعية",
+      "monthly": "شهرية",
+      "custom": "مخصّصة"
+    },
+    "empty": "لا توجد مشتريات مسجّلة. أنشئ أول عملية شراء."
+  },
+  "clients": {
+    "title": "العملاء",
+    "new": "عميل جديد",
+    "searchPlaceholder": "ابحث عن عميل…",
+    "columns": {
+      "name": "الاسم",
+      "phone": "الهاتف",
+      "address": "العنوان",
+      "purchases": "المشتريات",
+      "outstanding": "المتبقّي"
+    },
+    "form": {
+      "firstName": "الاسم",
+      "lastName": "اللقب",
+      "phone": "الهاتف",
+      "phonePlaceholder": "+216 20 123 456",
+      "address": "العنوان",
+      "email": "البريد الإلكتروني",
+      "newTitle": "عميل جديد",
+      "editTitle": "تعديل العميل"
+    },
+    "detail": {
+      "purchases": "المشتريات",
+      "paymentHistory": "سجل المدفوعات",
+      "totalPurchased": "إجمالي المشتريات",
+      "totalPaid": "إجمالي المدفوع",
+      "outstanding": "المتبقّي",
+      "contact": "بيانات الاتصال",
+      "noPurchases": "لا توجد مشتريات لهذا العميل.",
+      "noPayments": "لا توجد مدفوعات مسجّلة."
+    },
+    "delete": {
+      "confirmTitle": "حذف العميل",
+      "confirmText": "هل تريد فعلاً حذف هذا العميل؟",
+      "hasPurchases": "لدى هذا العميل {n} عملية شراء. سيؤدي الحذف إلى إزالة جميع مشترياته وأقساطه ومدفوعاته. المتابعة؟"
+    },
+    "empty": "لا يوجد عملاء. أضف أول عميل."
+  },
+  "paiements": {
+    "title": "المدفوعات",
+    "record": "تسجيل دفعة",
+    "recordFor": "تسجيل دفعة — القسط {index}/{count}",
+    "amount": "مبلغ الدفعة",
+    "date": "تاريخ الدفع",
+    "note": "ملاحظة",
+    "partialInfo": "الدفعات الجزئية مسموحة: يتراكم المبلغ حتى سداد القسط بالكامل.",
+    "dueAmount": "المبلغ المستحق",
+    "alreadyPaid": "المدفوع مسبقاً",
+    "columns": {
+      "date": "التاريخ",
+      "reference": "رقم الشراء",
+      "tranche": "القسط",
+      "amount": "المبلغ",
+      "note": "ملاحظة"
+    },
+    "empty": "لا توجد مدفوعات مسجّلة."
+  },
+  "echeances": {
+    "title": "الأقساط",
+    "subtitle": "جميع الأقساط القادمة والمتأخرة",
+    "columns": {
+      "reference": "رقم الشراء",
+      "client": "العميل",
+      "tranche": "القسط",
+      "dueDate": "الاستحقاق",
+      "amount": "المبلغ",
+      "status": "الحالة"
+    },
+    "filter": {
+      "all": "الكل",
+      "overdue": "متأخرة",
+      "upcoming": "قادمة",
+      "paid": "مدفوعة"
+    },
+    "empty": "لا توجد أقساط لعرضها."
+  },
+  "impayes": {
+    "title": "المتأخرات",
+    "subtitle": "العملاء الذين لديهم قسط مستحق وغير مدفوع على الأقل",
+    "totalOverdue": "إجمالي المستحق",
+    "columns": {
+      "client": "العميل",
+      "reference": "رقم الشراء",
+      "overdue": "المبلغ المتأخر",
+      "contact": "التواصل"
+    },
+    "empty": "لا توجد متأخرات 🎉",
+    "emptyHint": "جميع المدفوعات محدّثة."
+  },
+  "alertes": {
+    "title": "التنبيهات",
+    "comingSoon": "مركز التنبيهات المفصّل قادم قريباً.",
+    "description": "ستجمع هذه الصفحة إشعارات الأقساط القريبة والمتأخرة. التنبيهات الأساسية معروضة بالفعل في لوحة التحكم."
+  },
+  "rapports": {
+    "title": "التقارير",
+    "comingSoon": "التقارير المفصّلة قادمة قريباً.",
+    "description": "ستوفّر هذه الصفحة ملخّصات قابلة للتصدير للمبيعات والتحصيل والمتأخرات."
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "saved": "تم حفظ الإعدادات",
+    "general": "عام",
+    "appearance": "المظهر",
+    "shop": "المتجر",
+    "language": "اللغة",
+    "languageHint": "افتراضياً، تُستخدم لغة النظام عند أول تشغيل.",
+    "currency": "العملة",
+    "currencyHint": "رمز العملة المعروضة (TND افتراضياً).",
+    "dateFormat": "تنسيق التاريخ",
+    "logo": "شعار المتجر",
+    "logoHint": "يظهر في الترويسة والشريط الجانبي.",
+    "uploadLogo": "اختيار شعار",
+    "removeLogo": "إزالة الشعار",
+    "noLogo": "لا يوجد شعار",
+    "shopName": "اسم المتجر",
+    "shopInfo": "التواصل / معلومات",
+    "shopInfoPlaceholder": "العنوان، الهاتف، المعرّف الجبائي…"
+  },
+  "validation": {
+    "required": "هذا الحقل مطلوب.",
+    "numeric": "يرجى إدخال رقم صالح.",
+    "positive": "يجب أن تكون القيمة أكبر من صفر.",
+    "minInstallments": "مطلوب قسط واحد على الأقل.",
+    "invalidEmail": "بريد إلكتروني غير صالح.",
+    "invalidDate": "تاريخ غير صالح.",
+    "sumMismatch": "مجموع الأقساط لا يطابق الإجمالي."
+  },
+  "errors": {
+    "generic": "حدث خطأ ما.",
+    "clientHasPurchases": "لدى هذا العميل مشتريات.",
+    "loadFailed": "فشل تحميل البيانات."
+  }
+}

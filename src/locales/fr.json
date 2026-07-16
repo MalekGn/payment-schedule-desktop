@@ -1,0 +1,296 @@
+{
+  "app": {
+    "title": "Paiements",
+    "titleLine2": "Échelonnés",
+    "name": "Échéancier"
+  },
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "achats": "Achats",
+    "clients": "Clients",
+    "paiements": "Paiements",
+    "echeances": "Échéances",
+    "impayes": "Impayés",
+    "alertes": "Alertes",
+    "rapports": "Rapports",
+    "parametres": "Paramètres"
+  },
+  "sidebar": {
+    "newPurchase": "Nouvel achat",
+    "helpTitle": "Besoin d'aide ?",
+    "helpText": "Consultez notre guide ou contactez le support."
+  },
+  "header": {
+    "admin": "Admin"
+  },
+  "common": {
+    "viewAll": "Voir tous",
+    "viewAllF": "Voir toutes",
+    "view": "Voir",
+    "filter": "Filtrer",
+    "save": "Enregistrer",
+    "saveChanges": "Enregistrer les modifications",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "add": "Ajouter",
+    "create": "Créer",
+    "search": "Rechercher…",
+    "close": "Fermer",
+    "confirm": "Confirmer",
+    "back": "Retour",
+    "export": "Exporter la liste",
+    "actions": "Action",
+    "status": "Statut",
+    "loading": "Chargement…",
+    "optional": "facultatif",
+    "client": "Client",
+    "product": "Produit",
+    "date": "Date",
+    "amount": "Montant",
+    "total": "Total",
+    "remaining": "Reste",
+    "paid": "Payé",
+    "note": "Note",
+    "all": "Tous",
+    "currency": "{amount} {code}",
+    "none": "—"
+  },
+  "dashboard": {
+    "title": "Tableau de bord",
+    "thisMonth": "Ce mois",
+    "clientsConcerned": "Clients concernés",
+    "kpi": {
+      "totalPurchases": "Achats totaux",
+      "totalSales": "Montant total des ventes",
+      "collected": "Montant encaissé",
+      "outstanding": "Montant restant dû",
+      "latePayments": "Paiements en retard"
+    },
+    "recentPurchases": "Achats récents",
+    "purchaseDetail": "Détail d'un achat",
+    "dueAlerts": "Alertes d'échéances",
+    "impayes": "Impayés",
+    "table": {
+      "reference": "N° Achat",
+      "client": "Client",
+      "product": "Produit",
+      "purchaseDate": "Date d'achat",
+      "totalAmount": "Montant total"
+    },
+    "detail": {
+      "purchaseDate": "Date d'achat",
+      "installmentCount": "Nombre de tranches",
+      "totalAmount": "Montant total",
+      "paidAmount": "Montant payé",
+      "remainingToPay": "Reste à payer",
+      "client": "Client",
+      "tranche": "Tranche",
+      "dueDate": "Échéance",
+      "amount": "Montant",
+      "paymentDate": "Date paiement",
+      "paymentHistory": "Historique des paiements",
+      "register": "Enregistrer",
+      "view": "Voir"
+    },
+    "alert": {
+      "tranche": "Tranche {index}/{count}",
+      "dueOn": "Échéance : {date}",
+      "daysLate": "{n} jour de retard | {n} jours de retard"
+    },
+    "empty": {
+      "purchases": "Aucun achat pour le moment",
+      "alerts": "Aucune échéance en retard 🎉",
+      "impayes": "Aucun impayé 🎉"
+    }
+  },
+  "status": {
+    "pending": "À venir",
+    "paid": "Payée",
+    "paidM": "Payé",
+    "late": "En retard",
+    "partial": "Partiel",
+    "in_progress": "En cours"
+  },
+  "impaye": {
+    "trancheLate": "{n} tranche en retard | {n} tranches en retard",
+    "dateRange": "Période",
+    "allClients": "Tous les clients",
+    "call": "Appeler",
+    "message": "Message",
+    "since": "En retard depuis"
+  },
+  "achats": {
+    "title": "Achats",
+    "new": "Nouvel achat",
+    "searchPlaceholder": "Rechercher un achat, un client, un produit…",
+    "columns": {
+      "reference": "N° Achat",
+      "client": "Client",
+      "product": "Produit",
+      "date": "Date d'achat",
+      "total": "Montant total",
+      "remaining": "Reste à payer",
+      "status": "Statut"
+    },
+    "form": {
+      "title": "Nouvel achat",
+      "client": "Client",
+      "selectClient": "Sélectionner un client",
+      "newClient": "Nouveau client",
+      "product": "Produit",
+      "productPlaceholder": "ex. Réfrigérateur Samsung 260L",
+      "totalPrice": "Prix total",
+      "installmentCount": "Nombre de tranches",
+      "interval": "Fréquence des échéances",
+      "purchaseDate": "Date d'achat",
+      "intervalDays": "Intervalle (jours)",
+      "installments": "Échéancier",
+      "trancheAmount": "Montant de la tranche {n}",
+      "sumLabel": "Total des tranches",
+      "sumOk": "La somme des tranches correspond au total.",
+      "sumMismatch": "La somme des tranches ({sum}) ne correspond pas au total ({total}).",
+      "recompute": "Recalculer automatiquement",
+      "submit": "Enregistrer l'achat"
+    },
+    "interval": {
+      "weekly": "Hebdomadaire",
+      "monthly": "Mensuelle",
+      "custom": "Personnalisée"
+    },
+    "empty": "Aucun achat enregistré. Créez votre premier achat."
+  },
+  "clients": {
+    "title": "Clients",
+    "new": "Nouveau client",
+    "searchPlaceholder": "Rechercher un client…",
+    "columns": {
+      "name": "Nom",
+      "phone": "Téléphone",
+      "address": "Adresse",
+      "purchases": "Achats",
+      "outstanding": "Reste dû"
+    },
+    "form": {
+      "firstName": "Prénom",
+      "lastName": "Nom",
+      "phone": "Téléphone",
+      "phonePlaceholder": "+216 20 123 456",
+      "address": "Adresse",
+      "email": "E-mail",
+      "newTitle": "Nouveau client",
+      "editTitle": "Modifier le client"
+    },
+    "detail": {
+      "purchases": "Achats",
+      "paymentHistory": "Historique des paiements",
+      "totalPurchased": "Total des achats",
+      "totalPaid": "Total payé",
+      "outstanding": "Reste dû",
+      "contact": "Coordonnées",
+      "noPurchases": "Ce client n'a aucun achat.",
+      "noPayments": "Aucun paiement enregistré."
+    },
+    "delete": {
+      "confirmTitle": "Supprimer le client",
+      "confirmText": "Voulez-vous vraiment supprimer ce client ?",
+      "hasPurchases": "Ce client possède {n} achat(s). La suppression effacera aussi tous ses achats, échéances et paiements. Continuer ?"
+    },
+    "empty": "Aucun client. Ajoutez votre premier client."
+  },
+  "paiements": {
+    "title": "Paiements",
+    "record": "Enregistrer un paiement",
+    "recordFor": "Enregistrer un paiement — Tranche {index}/{count}",
+    "amount": "Montant du paiement",
+    "date": "Date du paiement",
+    "note": "Note",
+    "partialInfo": "Les paiements partiels sont autorisés : le montant s'accumule jusqu'au règlement complet de la tranche.",
+    "dueAmount": "Montant dû",
+    "alreadyPaid": "Déjà payé",
+    "columns": {
+      "date": "Date",
+      "reference": "N° Achat",
+      "tranche": "Tranche",
+      "amount": "Montant",
+      "note": "Note"
+    },
+    "empty": "Aucun paiement enregistré."
+  },
+  "echeances": {
+    "title": "Échéances",
+    "subtitle": "Toutes les tranches à venir et en retard",
+    "columns": {
+      "reference": "N° Achat",
+      "client": "Client",
+      "tranche": "Tranche",
+      "dueDate": "Échéance",
+      "amount": "Montant",
+      "status": "Statut"
+    },
+    "filter": {
+      "all": "Toutes",
+      "overdue": "En retard",
+      "upcoming": "À venir",
+      "paid": "Payées"
+    },
+    "empty": "Aucune échéance à afficher."
+  },
+  "impayes": {
+    "title": "Impayés",
+    "subtitle": "Clients ayant au moins une tranche échue et impayée",
+    "totalOverdue": "Total dû",
+    "columns": {
+      "client": "Client",
+      "reference": "N° Achat",
+      "overdue": "Montant en retard",
+      "contact": "Contact"
+    },
+    "empty": "Aucun impayé 🎉",
+    "emptyHint": "Tous les paiements sont à jour."
+  },
+  "alertes": {
+    "title": "Alertes",
+    "comingSoon": "Le centre d'alertes détaillé arrive bientôt.",
+    "description": "Cette page regroupera les notifications d'échéances proches et en retard. Les alertes clés sont déjà visibles sur le tableau de bord."
+  },
+  "rapports": {
+    "title": "Rapports",
+    "comingSoon": "Les rapports détaillés arrivent bientôt.",
+    "description": "Cette page proposera des synthèses de ventes, d'encaissements et d'impayés exportables."
+  },
+  "settings": {
+    "title": "Paramètres",
+    "saved": "Paramètres enregistrés",
+    "general": "Général",
+    "appearance": "Apparence",
+    "shop": "Boutique",
+    "language": "Langue",
+    "languageHint": "Par défaut, la langue du système est utilisée au premier lancement.",
+    "currency": "Devise",
+    "currencyHint": "Code de la devise affichée (par défaut TND).",
+    "dateFormat": "Format de date",
+    "logo": "Logo de la boutique",
+    "logoHint": "Affiché dans l'en-tête et la barre latérale.",
+    "uploadLogo": "Choisir un logo",
+    "removeLogo": "Retirer le logo",
+    "noLogo": "Aucun logo",
+    "shopName": "Nom de la boutique",
+    "shopInfo": "Coordonnées / informations",
+    "shopInfoPlaceholder": "Adresse, téléphone, matricule fiscal…"
+  },
+  "validation": {
+    "required": "Ce champ est requis.",
+    "numeric": "Veuillez saisir un nombre valide.",
+    "positive": "La valeur doit être supérieure à zéro.",
+    "minInstallments": "Au moins une tranche est requise.",
+    "invalidEmail": "Adresse e-mail invalide.",
+    "invalidDate": "Date invalide.",
+    "sumMismatch": "La somme des tranches ne correspond pas au total."
+  },
+  "errors": {
+    "generic": "Une erreur s'est produite.",
+    "clientHasPurchases": "Ce client possède des achats.",
+    "loadFailed": "Échec du chargement des données."
+  }
+}

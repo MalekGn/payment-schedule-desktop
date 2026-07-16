@@ -1,0 +1,356 @@
+/* =========================================================================
+   Échéancier — global styles & design tokens
+   Tokens are extracted from docs/intsallment.png and reused across every
+   screen so the whole app (incl. RTL Arabic) stays visually consistent.
+   ========================================================================= */
+
+:root {
+  /* Sidebar (dark navy) */
+  --navy-900: #0a1430;
+  --navy-800: #0e1c44;
+  --navy-700: #16244f;
+  --navy-active: #1b2a57;
+  --navy-hover: #16224a;
+  --sidebar-text: #c7cfe0;
+  --sidebar-text-muted: #8892ab;
+
+  /* Brand + accents */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-soft: #e8f0fe;
+
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --danger: #ef4444;
+  --danger-strong: #dc2626;
+  --danger-bg: #fee2e2;
+  --warning: #f59e0b;
+  --warning-bg: #fff7ed;
+  --warning-border: #fed7aa;
+  --warning-text: #c2610c;
+  --purple: #7c3aed;
+  --purple-bg: #ede9fe;
+  --neutral-bg: #eef1f5;
+
+  /* Surfaces & text */
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --border: #e6e8ec;
+  --border-strong: #d7dbe0;
+  --text: #111827;
+  --text-secondary: #5b6472;
+  --text-muted: #9099a8;
+  --link: #2563eb;
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-pop: 0 8px 24px rgba(16, 24, 40, 0.12);
+
+  --sidebar-w: 232px;
+  --header-h: 68px;
+
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic",
+    "Helvetica Neue", Arial, sans-serif;
+
+  font-family: var(--font);
+  color: var(--text);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 14px;
+}
+
+/* ------- Numeric emphasis ------- */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------- Cards ------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-6);
+}
+.card-header h2,
+.card-header h3 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.card-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* ------- Status badges ------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge--success {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.badge--progress {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.badge--pending {
+  background: var(--neutral-bg);
+  color: var(--text-secondary);
+}
+.badge--late {
+  background: var(--danger-bg);
+  color: var(--danger-strong);
+}
+.badge--partial {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+/* ------- Buttons ------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 9px 16px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  white-space: nowrap;
+}
+.btn--primary {
+  background: var(--primary);
+  color: #fff;
+}
+.btn--primary:hover {
+  background: var(--primary-hover);
+}
+.btn--ghost {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+.btn--ghost:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+.btn--danger {
+  background: var(--danger);
+  color: #fff;
+}
+.btn--danger:hover {
+  background: var(--danger-strong);
+}
+.btn--sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ------- Forms ------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+.input--error {
+  border-color: var(--danger);
+}
+.field-error {
+  font-size: 12px;
+  color: var(--danger-strong);
+}
+
+/* ------- Tables ------- */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th {
+  text-align: start;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 11px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.table td {
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  vertical-align: middle;
+}
+.table th:first-child,
+.table td:first-child {
+  padding-inline-start: var(--space-5);
+}
+.table th:last-child,
+.table td:last-child {
+  padding-inline-end: var(--space-5);
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.table tbody tr.is-late {
+  background: #fff5f5;
+}
+.row-link {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* ------- Utility ------- */
+.muted {
+  color: var(--text-muted);
+}
+.text-secondary {
+  color: var(--text-secondary);
+}
+.strong {
+  font-weight: 700;
+}
+.flex {
+  display: flex;
+}
+.items-center {
+  align-items: center;
+}
+.gap-2 {
+  gap: var(--space-2);
+}
+.gap-3 {
+  gap: var(--space-3);
+}
+.spacer {
+  flex: 1;
+}
+
+/* Scrollbars (subtle) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cdd2da;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b6bcc6;
+  background-clip: content-box;
+}
+
+/* RTL: mirror the drop shadow that visually separates content from sidebar */
+[dir="rtl"] .card-header .card-link {
+  /* keep link on the inline-end automatically via flex */
+}
