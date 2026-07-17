@@ -183,6 +183,160 @@ test("impayés page lists overdue clients and sidebar shows a danger badge", asy
   assert(count >= 1, `danger badge should be >= 1, got ${count}`);
 });
 
+test("record a partial payment on a purchase (PaymentModal)", async (page) => {
+  // Seed purchase A-000001: 2400 over 6 monthly tranches of 400, tranche 1 paid.
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Payment history starts with the single seeded payment (tranche 1).
+  const history = page.locator("table.table").last();
+  await page.waitForFunction(
+    () => {
+      const tables = document.querySelectorAll("table.table");
+      const last = tables[tables.length - 1];
+      return !!last && last.querySelectorAll("tbody tr").length === 1;
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+
+  // The first "Enregistrer" action in the schedule is tranche 2 (400 remaining).
+  await page.locator(".inst-table .btn--primary").first().click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await dialog.locator(".modal-head h2").innerText(),
+    "Enregistrer un paiement — Tranche 2/6",
+    "payment modal title (tranche 2 of 6)",
+  );
+
+  // Amount pre-fills with the full remaining (400); pay a partial 150 instead.
+  assertEqual(await page.locator("#pay-amount").inputValue(), "400", "amount pre-filled with remaining");
+  await page.locator("#pay-amount").fill("150");
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  // History now has two rows; the newest (dated today) is the 150 partial payment.
+  await page.waitForFunction(
+    () => {
+      const tables = document.querySelectorAll("table.table");
+      const last = tables[tables.length - 1];
+      return !!last && last.querySelectorAll("tbody tr").length === 2;
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+  const newest = await history.locator("tbody tr").first().innerText();
+  assert(/150/.test(newest), `newest payment row should show the 150 partial, got: ${newest}`);
+});
+
+test("new purchase: auto-split installments and sum-mismatch validation", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 8, "precondition: 8 purchases");
+
+  await page.getByRole("button", { name: "Nouvel achat" }).click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await dialog.locator(".modal-head h2").innerText(), "Nouvel achat", "modal title");
+
+  await page.locator("#np-client").selectOption("1");
+  await page.locator("#np-product").fill("Aspirateur Dyson");
+  await page.locator("#np-total").fill("3000");
+  await page.locator("#np-count").fill("3");
+
+  // Amounts auto-split 3000 / 3 = 1000 each and the running sum matches the total.
+  await page.waitForFunction(
+    () => document.querySelectorAll(".inst-row").length === 3,
+    undefined,
+    { timeout: 5000 },
+  );
+  await page.locator(".inst-sum.ok").waitFor({ timeout: 5000 });
+  assertEqual(await page.locator(".inst-amount").first().inputValue(), "1000", "first tranche auto-split to 1000");
+
+  // Break the balance by hand-editing one tranche -> the sum no longer matches.
+  await page.locator(".inst-amount").first().fill("999");
+  await page.locator(".inst-sum.bad").waitFor({ timeout: 5000 });
+
+  // Submitting with a mismatch is blocked client-side: the modal stays open.
+  await dialog.getByRole("button", { name: /Enregistrer l.achat/ }).click();
+  assert(await dialog.isVisible(), "modal must stay open while the sum mismatches");
+  await page.locator(".inst-sum.bad").waitFor({ timeout: 2000 });
+
+  // Recalculer restores the even split, the sum matches, and submission succeeds.
+  await page.getByRole("button", { name: "Recalculer automatiquement" }).click();
+  await page.locator(".inst-sum.ok").waitFor({ timeout: 5000 });
+  await dialog.getByRole("button", { name: /Enregistrer l.achat/ }).click();
+
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  // The new purchase (9th, reference A-000009) opens on its own detail page.
+  await page.waitForFunction(
+    () => document.querySelector("h1.page-title")?.textContent?.trim() === "A-000009",
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("h1.page-title").innerText(), "A-000009", "navigated to new purchase detail");
+});
+
+test("delete-client safeguard warns when the client has purchases", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 6, "precondition: 6 clients");
+
+  // Mohamed Trabelsi has 2 seeded purchases -> the confirm must warn about cascade.
+  const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
+  await row.locator(".icon-action--danger").click();
+
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await dialog.locator(".modal-head h2").innerText(), "Supprimer le client", "confirm dialog title");
+  const msg = await dialog.locator(".confirm-msg").innerText();
+  assert(/2 achat/.test(msg), `message should warn about the 2 purchases, got: ${msg}`);
+
+  // Confirming force-deletes the client (cascading its purchases) -> 5 rows remain.
+  await dialog.getByRole("button", { name: "Supprimer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 5,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), 5, "client removed from table");
+  assertEqual(
+    await page.locator("table.table", { hasText: "Mohamed Trabelsi" }).count(),
+    0,
+    "deleted client no longer listed",
+  );
+});
+
+test("switching to Arabic mirrors the layout to RTL", async (page) => {
+  await open(page, "/");
+  // Baseline: French, left-to-right.
+  assertEqual(await page.locator("html").getAttribute("dir"), "ltr", "baseline dir is ltr");
+  assertEqual(await page.locator("html").getAttribute("lang"), "fr", "baseline lang is fr");
+  assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "baseline brand (fr)");
+
+  // Pick Arabic from the header language menu.
+  await page.locator(".lang-btn").click();
+  await page.locator(".lang-option", { hasText: "العربية" }).click();
+
+  // The document direction + language flip and the chrome re-renders in Arabic.
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute("dir") === "rtl",
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("html").getAttribute("dir"), "rtl", "dir switches to rtl");
+  assertEqual(await page.locator("html").getAttribute("lang"), "ar", "lang switches to ar");
+  assertEqual(await page.locator(".brand-line1").innerText(), "الدفع", "brand re-renders in Arabic");
+  assertEqual(
+    await page.locator(".nav-item", { hasText: "لوحة التحكم" }).count(),
+    1,
+    "dashboard nav label is Arabic",
+  );
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {
