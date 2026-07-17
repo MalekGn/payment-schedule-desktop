@@ -42,7 +42,7 @@
       "icons/icon.ico"
     ],
     "category": "Business",
-    "shortDescription": "Suivi des ventes à crédit / paiements échelonnés",
-    "longDescription": "Application de bureau hors-ligne pour les commerces d'électroménager: gestion des clients, achats, échéances et impayés."
+    "shortDescription": "Tracking of sales on credit / deferred payments",
+    "longDescription": "A simple and efficient tool to track sales on credit, deferred payments, and overdue installments. Manage your clients, purchases, payments, and due dates with ease."
   }
 }

@@ -26,3 +26,8 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 - **Keyboard accessibility:** forms are tab-navigable, Enter submits, Esc closes modals.
 - **Responsive:** grid layouts collapse below ~1200px; minimum window size enforced (1024×680).
 - **Toasts:** success/error feedback on all mutations.
+
+## Testing
+
+- **Unit tests:** `npm test` (Vitest) — finance helpers in `src/lib/finance.test.ts`.
+- **End-to-end tests:** `npm run test:e2e` — self-contained Playwright suite (`e2e/run.mjs`) drives the real app in headless Chromium against the in-memory mock backend. Spawns its own Vite server on port 5199 and pins the browser locale to French for determinism. Covers app-shell render, dashboard KPIs, full sidebar navigation, client list + create flow, purchase list + search, and the overdue (impayés) page. Failures capture a full-page screenshot under `e2e/artifacts/`.
