@@ -17,6 +17,8 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Logo management** | ✅ | Upload/replace/remove; stored in app-data dir; shown in sidebar/header. |
 | **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; seeded demo data on first run. |
 | **Empty states & validation** | ✅ | Localized empty states and form validation across all modules. |
+| **Sortable tables** | ✅ | Click any column header to sort (toggling asc/desc) across every list and detail table; locale-aware, numbers compared numerically. Tables keep the backend order until a column is chosen. |
+| **Not-found handling** | ✅ | Unknown routes render a localized “page not found” screen with Back/Dashboard actions; detail pages for a missing/deleted id show a recoverable message instead of a blank page. |
 | **Alertes** | 🟡 | Sidebar entry + styled placeholder page. Live alerts already surface on the dashboard; dedicated page logic deferred. |
 | **Rapports (Reports)** | 🟡 | Sidebar entry + styled placeholder page. Exportable reporting deferred. |
 | **Windows `.msi`/`.exe` build** | 🟡 | Bundler configuration present; must be built on Windows (see README). |

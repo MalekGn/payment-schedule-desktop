@@ -22,7 +22,11 @@ const routes: RouteRecordRaw[] = [
   { path: "/alertes", name: "alertes", component: () => import("@/views/AlertesView.vue") },
   { path: "/rapports", name: "rapports", component: () => import("@/views/RapportsView.vue") },
   { path: "/parametres", name: "parametres", component: () => import("@/views/SettingsView.vue") },
-  { path: "/:pathMatch(.*)*", redirect: "/" },
+  {
+    path: "/:pathMatch(.*)*",
+    name: "not-found",
+    component: () => import("@/views/NotFoundView.vue"),
+  },
 ];
 
 export const router = createRouter({

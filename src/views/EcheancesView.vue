@@ -4,7 +4,9 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { ScheduleRow } from "@/types/models";
 
@@ -35,6 +37,15 @@ const filtered = computed(() => {
     default:
       return rows.value;
   }
+});
+
+const { sort, sorted } = useSort(filtered, {
+  reference: (r) => r.reference,
+  client: (r) => r.clientName,
+  tranche: (r) => r.index,
+  dueDate: (r) => r.dueDate,
+  amount: (r) => r.amount,
+  status: (r) => r.status,
 });
 
 onMounted(async () => {
@@ -69,17 +80,17 @@ onMounted(async () => {
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("echeances.columns.reference") }}</th>
-            <th>{{ t("echeances.columns.client") }}</th>
-            <th>{{ t("echeances.columns.tranche") }}</th>
-            <th>{{ t("echeances.columns.dueDate") }}</th>
-            <th>{{ t("echeances.columns.amount") }}</th>
-            <th>{{ t("echeances.columns.status") }}</th>
+            <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
+            <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
+            <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+            <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+            <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+            <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="r in filtered"
+            v-for="r in sorted"
             :key="r.installmentId"
             class="clickable"
             :class="{ 'is-late': r.status === 'late' }"

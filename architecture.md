@@ -34,16 +34,18 @@ direct database or filesystem access.
   content area, and toasts.
 - **`views/`** — one component per route (Dashboard, Achats, PurchaseDetail,
   Clients, ClientDetail, Paiements, Echeances, Impayes, Settings, Alertes,
-  Rapports).
+  Rapports, NotFound — the router's catch-all).
 - **`components/`** — reusable UI (`ui/`: buttons via CSS, `BaseModal`,
-  `StatusBadge`, `KpiCard`, `EmptyState`, `ConfirmDialog`, `AppIcon`) and
-  feature components (`dashboard/*`, `PaymentModal`, `NewPurchaseModal`,
-  `ClientForm`).
+  `StatusBadge`, `KpiCard`, `EmptyState`, `ConfirmDialog`, `AppIcon`,
+  `SortHeader`) and feature components (`dashboard/*`, `PaymentModal`,
+  `NewPurchaseModal`, `ClientForm`).
 - **`stores/`** — Pinia: `settings` (language/currency/date/logo, OS-locale
   detection), `stats` (sidebar badge counters), `ui` (toasts, sidebar toggle,
   header-title override).
-- **`composables/useFormat.ts`** — locale-aware money/date/number formatting,
-  reactive to the settings store.
+- **`composables/`** — `useFormat` (locale-aware money/date/number formatting,
+  reactive to the settings store), `useSort` (client-side, direction-toggling
+  table sorting driven by `SortHeader`), and `useBack` (returns to the real
+  previous page, falling back to a list route on a deep link).
 - **`lib/finance.ts`** — pure, unit-tested installment/payment math (the TS
   mirror of `db.rs`), reused by the browser mock.
 - **`i18n/`** + **`locales/{ar,fr,en}.json`** — all UI strings; RTL applied via

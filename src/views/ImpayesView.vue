@@ -4,9 +4,11 @@ import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSortState, sortRows } from "@/composables/useSort";
 import { api } from "@/api";
-import type { ClientSummary, ImpayeClient } from "@/types/models";
+import type { ClientSummary, ImpayeClient, OverdueInstallment } from "@/types/models";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -20,6 +22,17 @@ const loading = ref(true);
 const dateFrom = ref("");
 const dateTo = ref("");
 const clientId = ref<string>((route.query.client as string) ?? "");
+
+// One shared sort applied to every client's overdue-installments table.
+const sort = useSortState();
+const instAccessors = {
+  reference: (i: OverdueInstallment) => i.purchaseReference,
+  tranche: (i: OverdueInstallment) => i.index,
+  dueDate: (i: OverdueInstallment) => i.dueDate,
+  amount: (i: OverdueInstallment) => i.remaining,
+  since: (i: OverdueInstallment) => i.daysLate,
+};
+const sortedInstallments = (rows: OverdueInstallment[]) => sortRows(rows, instAccessors, sort);
 
 async function load() {
   loading.value = true;
@@ -146,15 +159,15 @@ function exportCsv() {
         <table class="table inner-table">
           <thead>
             <tr>
-              <th>{{ t("echeances.columns.reference") }}</th>
-              <th>{{ t("echeances.columns.tranche") }}</th>
-              <th>{{ t("echeances.columns.dueDate") }}</th>
-              <th>{{ t("echeances.columns.amount") }}</th>
-              <th>{{ t("impaye.since") }}</th>
+              <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
+              <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+              <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+              <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+              <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in c.installments" :key="i.installmentId" class="is-late">
+            <tr v-for="i in sortedInstallments(c.installments)" :key="i.installmentId" class="is-late">
               <td>
                 <a class="row-link" href="#" @click.prevent="router.push({ name: 'achat-detail', params: { id: i.purchaseId } })">
                   {{ i.purchaseReference }}

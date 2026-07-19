@@ -5,8 +5,10 @@ import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import NewPurchaseModal from "@/components/NewPurchaseModal.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { PurchaseDetail, PurchaseSummary } from "@/types/models";
 
@@ -26,6 +28,16 @@ const filtered = computed(() => {
   return purchases.value.filter((p) =>
     `${p.reference} ${p.clientName} ${p.productLabel}`.toLowerCase().includes(n),
   );
+});
+
+const { sort, sorted } = useSort(filtered, {
+  reference: (p) => p.reference,
+  client: (p) => p.clientName,
+  product: (p) => p.productLabel,
+  date: (p) => p.purchaseDate,
+  total: (p) => p.totalPrice,
+  remaining: (p) => p.remaining,
+  status: (p) => p.status,
 });
 
 async function load() {
@@ -65,18 +77,18 @@ function onSaved(detail: PurchaseDetail) {
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("achats.columns.reference") }}</th>
-            <th>{{ t("achats.columns.client") }}</th>
-            <th>{{ t("achats.columns.product") }}</th>
-            <th>{{ t("achats.columns.date") }}</th>
-            <th>{{ t("achats.columns.total") }}</th>
-            <th>{{ t("achats.columns.remaining") }}</th>
-            <th>{{ t("achats.columns.status") }}</th>
+            <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
+            <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
+            <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
+            <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
+            <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
+            <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
+            <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="p in filtered"
+            v-for="p in sorted"
             :key="p.id"
             class="clickable"
             @click="router.push({ name: 'achat-detail', params: { id: p.id } })"

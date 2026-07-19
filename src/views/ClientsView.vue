@@ -4,9 +4,11 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import ClientForm from "@/components/ClientForm.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
 import { api } from "@/api";
@@ -32,6 +34,14 @@ const filtered = computed(() => {
   return clients.value.filter((c) =>
     `${c.firstName} ${c.lastName} ${c.phone} ${c.address}`.toLowerCase().includes(n),
   );
+});
+
+const { sort, sorted } = useSort(filtered, {
+  name: (c) => `${c.lastName} ${c.firstName}`,
+  phone: (c) => c.phone,
+  address: (c) => c.address,
+  purchases: (c) => c.purchaseCount,
+  outstanding: (c) => c.totalOutstanding,
 });
 
 async function load() {
@@ -101,16 +111,16 @@ function openDetail(id: number) {
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("clients.columns.name") }}</th>
-            <th>{{ t("clients.columns.phone") }}</th>
-            <th>{{ t("clients.columns.address") }}</th>
-            <th>{{ t("clients.columns.purchases") }}</th>
-            <th>{{ t("clients.columns.outstanding") }}</th>
+            <SortHeader :sort="sort" field="name" :label="t('clients.columns.name')" />
+            <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
+            <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
+            <SortHeader :sort="sort" field="purchases" :label="t('clients.columns.purchases')" />
+            <SortHeader :sort="sort" field="outstanding" :label="t('clients.columns.outstanding')" />
             <th class="col-action">{{ t("common.actions") }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filtered" :key="c.id" class="clickable" @click="openDetail(c.id)">
+          <tr v-for="c in sorted" :key="c.id" class="clickable" @click="openDetail(c.id)">
             <td>
               <div class="client-name">
                 <span class="strong">{{ c.firstName }} {{ c.lastName }}</span>
