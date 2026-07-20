@@ -431,12 +431,16 @@ pub fn record_payment(db: State<Db>, input: PaymentInput) -> DbResult<PurchaseDe
 }
 
 fn map_payment(row: &rusqlite::Row) -> rusqlite::Result<Payment> {
+    let first: String = row.get("first_name")?;
+    let last: String = row.get("last_name")?;
     Ok(Payment {
         id: row.get("id")?,
         installment_id: row.get("installment_id")?,
         installment_index: row.get("idx")?,
         purchase_id: row.get("purchase_id")?,
         purchase_reference: row.get("reference")?,
+        client_id: row.get("client_id")?,
+        client_name: format!("{first} {last}"),
         amount: row.get("amount")?,
         payment_date: row.get("payment_date")?,
         note: row.get("note")?,
@@ -449,10 +453,12 @@ pub fn list_payments_for_purchase(db: State<Db>, purchase_id: i64) -> DbResult<V
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference
+            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+                    c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
              JOIN purchase pu ON pu.id = i.purchase_id
+             JOIN client c ON c.id = pu.client_id
              WHERE i.purchase_id = ?1
              ORDER BY pay.payment_date DESC, pay.id DESC",
         )
@@ -468,10 +474,12 @@ pub fn list_all_payments(db: State<Db>, limit: Option<i64>) -> DbResult<Vec<Paym
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference
+            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+                    c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
              JOIN purchase pu ON pu.id = i.purchase_id
+             JOIN client c ON c.id = pu.client_id
              ORDER BY pay.payment_date DESC, pay.id DESC
              LIMIT ?1",
         )
@@ -487,10 +495,12 @@ pub fn list_payments_for_client(db: State<Db>, client_id: i64) -> DbResult<Vec<P
     let conn = db.conn.lock().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference
+            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+                    c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
              JOIN purchase pu ON pu.id = i.purchase_id
+             JOIN client c ON c.id = pu.client_id
              WHERE pu.client_id = ?1
              ORDER BY pay.payment_date DESC, pay.id DESC",
         )

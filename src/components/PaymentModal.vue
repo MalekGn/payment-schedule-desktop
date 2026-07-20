@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseModal from "@/components/ui/BaseModal.vue";
+import DatePicker from "@/components/ui/DatePicker.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
@@ -93,8 +94,8 @@ async function submit() {
           <span v-if="error" class="field-error">{{ error }}</span>
         </div>
         <div class="field">
-          <label for="pay-date">{{ t("paiements.date") }}</label>
-          <input id="pay-date" v-model="paymentDate" type="date" class="input" />
+          <label>{{ t("paiements.date") }}</label>
+          <DatePicker v-model="paymentDate" />
         </div>
         <div class="field">
           <label for="pay-note">{{ t("paiements.note") }} <span class="muted">({{ t("common.optional") }})</span></label>

@@ -293,6 +293,20 @@
     "clientHasPurchases": "Ce client possède des achats.",
     "loadFailed": "Échec du chargement des données."
   },
+  "filters": {
+    "date": "Filtrer par date",
+    "from": "Du",
+    "to": "Au",
+    "clear": "Effacer",
+    "today": "Aujourd'hui",
+    "reset": "Réinitialiser",
+    "ref": "Référence",
+    "min": "Min",
+    "max": "Max",
+    "anyDate": "Toute date",
+    "search": "Recherche",
+    "searchHint": "Référence ou client…"
+  },
   "notFound": {
     "title": "Page introuvable",
     "description": "La page que vous recherchez n'existe pas ou a été déplacée.",

@@ -18,6 +18,8 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; seeded demo data on first run. |
 | **Empty states & validation** | ✅ | Localized empty states and form validation across all modules. |
 | **Sortable tables** | ✅ | Click any column header to sort (toggling asc/desc) across every list and detail table; locale-aware, numbers compared numerically. Tables keep the backend order until a column is chosen. |
+| **List filters** | ✅ | Purchases has a "filter by date" popover; Payments and Due-dates have a full filter bar (reference, client, amount min/max, date range); Impayés keeps its inline range filter. |
+| **Custom date picker** | ✅ | Shared calendar `DatePicker` (localized month/weekday names, Today button, shows the configured date format). Used in the list filters and in the new-purchase and payment forms (purchase date and each installment due date). Popup teleports to `<body>` so it is never clipped by a scroll container or modal, and closes on outside-click, Esc, or selection. |
 | **Not-found handling** | ✅ | Unknown routes render a localized “page not found” screen with Back/Dashboard actions; detail pages for a missing/deleted id show a recoverable message instead of a blank page. |
 | **Alertes** | 🟡 | Sidebar entry + styled placeholder page. Live alerts already surface on the dashboard; dedicated page logic deferred. |
 | **Rapports (Reports)** | 🟡 | Sidebar entry + styled placeholder page. Exportable reporting deferred. |

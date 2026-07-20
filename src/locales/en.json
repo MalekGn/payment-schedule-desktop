@@ -293,6 +293,20 @@
     "clientHasPurchases": "This client has purchases.",
     "loadFailed": "Failed to load data."
   },
+  "filters": {
+    "date": "Filter by date",
+    "from": "From",
+    "to": "To",
+    "clear": "Clear",
+    "today": "Today",
+    "reset": "Reset",
+    "ref": "Reference",
+    "min": "Min",
+    "max": "Max",
+    "anyDate": "Any date",
+    "search": "Search",
+    "searchHint": "Reference or client…"
+  },
   "notFound": {
     "title": "Page not found",
     "description": "The page you're looking for doesn't exist or was moved.",

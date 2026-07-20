@@ -109,6 +109,8 @@ export interface Payment {
   installmentIndex: number;
   purchaseId: number;
   purchaseReference: string;
+  clientId: number;
+  clientName: string;
   amount: number;
   paymentDate: string;
   note: string | null;

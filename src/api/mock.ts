@@ -452,12 +452,15 @@ class MockDb {
   private mapPayment(p: PaymentRow): Payment {
     const inst = this.installments.find((i) => i.id === p.installmentId)!;
     const purchase = this.purchases.find((pu) => pu.id === inst.purchaseId)!;
+    const client = this.clients.find((c) => c.id === purchase.clientId)!;
     return {
       id: p.id,
       installmentId: p.installmentId,
       installmentIndex: inst.index,
       purchaseId: purchase.id,
       purchaseReference: purchase.reference,
+      clientId: client.id,
+      clientName: `${client.firstName} ${client.lastName}`,
       amount: p.amount,
       paymentDate: p.paymentDate,
       note: p.note,

@@ -44,8 +44,12 @@ direct database or filesystem access.
   header-title override).
 - **`composables/`** — `useFormat` (locale-aware money/date/number formatting,
   reactive to the settings store), `useSort` (client-side, direction-toggling
-  table sorting driven by `SortHeader`), and `useBack` (returns to the real
-  previous page, falling back to a list route on a deep link).
+  table sorting driven by `SortHeader`), `useBack` (returns to the real
+  previous page, falling back to a list route on a deep link), and
+  `useClickOutside` (dismiss popovers/menus — used by the header language menu,
+  `DatePicker`, and `DateRangeFilter`). UI filter pieces live in `ui/`:
+  `DatePicker` (calendar), `DateRangeFilter` (date popover), `ListFilterBar`
+  (reference/client/amount/date bar).
 - **`lib/finance.ts`** — pure, unit-tested installment/payment math (the TS
   mirror of `db.rs`), reused by the browser mock.
 - **`i18n/`** + **`locales/{ar,fr,en}.json`** — all UI strings; RTL applied via

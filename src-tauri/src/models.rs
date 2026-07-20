@@ -166,6 +166,8 @@ pub struct Payment {
     pub installment_index: i64,
     pub purchase_id: i64,
     pub purchase_reference: String,
+    pub client_id: i64,
+    pub client_name: String,
     pub amount: i64,
     pub payment_date: String,
     pub note: Option<String>,

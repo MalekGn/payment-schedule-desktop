@@ -6,6 +6,7 @@ import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
+import DatePicker from "@/components/ui/DatePicker.vue";
 import NewPurchaseModal from "@/components/NewPurchaseModal.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useSort } from "@/composables/useSort";
@@ -19,15 +20,21 @@ const fmt = useFormat();
 
 const purchases = ref<PurchaseSummary[]>([]);
 const search = ref("");
+const dateFrom = ref("");
+const dateTo = ref("");
 const loading = ref(true);
 const showModal = ref(false);
 
 const filtered = computed(() => {
   const n = search.value.trim().toLowerCase();
-  if (!n) return purchases.value;
-  return purchases.value.filter((p) =>
-    `${p.reference} ${p.clientName} ${p.productLabel}`.toLowerCase().includes(n),
-  );
+  return purchases.value.filter((p) => {
+    if (n && !`${p.reference} ${p.clientName} ${p.productLabel}`.toLowerCase().includes(n)) {
+      return false;
+    }
+    if (dateFrom.value && p.purchaseDate < dateFrom.value) return false;
+    if (dateTo.value && p.purchaseDate > dateTo.value) return false;
+    return true;
+  });
 });
 
 const { sort, sorted } = useSort(filtered, {
@@ -66,6 +73,11 @@ function onSaved(detail: PurchaseDetail) {
       <div class="search-box">
         <AppIcon name="search" :size="18" class="muted" />
         <input v-model="search" class="search-input" :placeholder="t('achats.searchPlaceholder')" />
+      </div>
+      <div class="date-range">
+        <DatePicker v-model="dateFrom" :max="dateTo || undefined" :placeholder="t('filters.from')" />
+        <span class="range-sep">–</span>
+        <DatePicker v-model="dateTo" :min="dateFrom || undefined" :placeholder="t('filters.to')" />
       </div>
       <button class="btn btn--primary" type="button" @click="showModal = true">
         <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
@@ -137,6 +149,14 @@ function onSaved(detail: PurchaseDetail) {
   background: transparent;
   flex: 1;
   color: var(--text);
+}
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.range-sep {
+  color: var(--text-muted);
 }
 .clickable {
   cursor: pointer;

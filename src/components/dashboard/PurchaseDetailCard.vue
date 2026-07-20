@@ -117,7 +117,7 @@ function goToPurchase() {
           <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
           <td class="col-action">
             <button v-if="canPay(i)" class="btn btn--primary btn--sm" type="button" @click="emit('pay', i)">
-              {{ t("dashboard.detail.register") }}
+              {{ fullActions ? t("common.edit") : t("dashboard.detail.register") }}
             </button>
             <a v-else-if="i.status === 'paid'" class="row-link" href="#" @click.prevent="goToPurchase">
               {{ t("dashboard.detail.view") }}
