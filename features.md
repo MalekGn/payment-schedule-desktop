@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Clients** | ✅ | CRUD with validation; overdue badges; delete safeguard when purchases exist; client detail page (purchases, payment history, outstanding). |
 | **Paiements (Payments)** | ✅ | Per-installment recording with partial-payment support; global payment log; per-purchase and per-client history. |
 | **Échéances (Due dates)** | ✅ | Full schedule with all/overdue/upcoming/paid filters; overdue rows highlighted. |
-| **Impayés (Overdue)** | ✅ | Clients with overdue installments; date-range + client filters; per-client contact shortcuts (call/SMS/view); CSV export. |
+| **Impayés (Overdue)** | ✅ | Clients with overdue installments; shared `ListFilterBar` (reference/client search, amount min/max, From–To date range); per-client contact shortcuts (call/SMS/view); CSV export of the filtered list. |
 | **Settings (Paramètres)** | ✅ | Language, currency, date format, shop logo upload, shop name/info — persisted in SQLite, applied live. |
 | **Internationalization** | ✅ | Arabic (RTL), French, English. OS-locale default → French fallback. Full layout mirroring for Arabic. |
 | **Localized formatting** | ✅ | Currency (default TND) and date format (default dd/MM/yyyy) applied everywhere; locale-aware number grouping. |
@@ -18,7 +18,7 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; seeded demo data on first run. |
 | **Empty states & validation** | ✅ | Localized empty states and form validation across all modules. |
 | **Sortable tables** | ✅ | Click any column header to sort (toggling asc/desc) across every list and detail table; locale-aware, numbers compared numerically. Tables keep the backend order until a column is chosen. |
-| **List filters** | ✅ | Purchases, Payments and Due-dates share the same `ListFilterBar` (reference/client search + From–To date range, with amount min/max on Payments and Due-dates); Impayés keeps its inline range filter. |
+| **List filters** | ✅ | Purchases, Payments, Due-dates and Impayés share the same `ListFilterBar` (reference/client search + From–To date range; amount min/max on Payments, Due-dates and Impayés). |
 | **Custom date picker** | ✅ | Shared calendar `DatePicker` (localized month/weekday names, Today button, shows the configured date format). Used in the list filters and in the new-purchase and payment forms (purchase date and each installment due date). Popup teleports to `<body>` so it is never clipped by a scroll container or modal, and closes on outside-click, Esc, or selection. |
 | **Not-found handling** | ✅ | Unknown routes render a localized “page not found” screen with Back/Dashboard actions; detail pages for a missing/deleted id show a recoverable message instead of a blank page. |
 | **Alertes** | 🟡 | Sidebar entry + styled placeholder page. Live alerts already surface on the dashboard; dedicated page logic deferred. |
