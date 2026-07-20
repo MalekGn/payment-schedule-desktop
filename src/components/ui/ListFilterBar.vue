@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// Shared filter bar for list pages: a free-text search (matches reference +
-// client, like the Purchases page), an optional amount min/max range, and a
-// From/To date range (via DatePicker). Every control is a v-model so the parent
-// owns the values and applies the filtering. "Reset" clears them all.
+// Shared filter bar for list pages (Purchases, Payments, Due dates): a
+// prominent free-text search (matches reference + client, like the Purchases
+// page), an optional amount min/max range, and a From/To date range (via
+// DatePicker). Every control is a v-model so the parent owns the values and
+// applies the filtering. "Reset" clears them all.
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
@@ -39,9 +40,8 @@ function reset() {
 <template>
   <div class="filter-bar">
     <div class="field field--search">
-      <label>{{ t("filters.search") }}</label>
       <div class="search-box">
-        <AppIcon name="search" :size="17" class="muted" />
+        <AppIcon name="search" :size="18" class="muted" />
         <input
           v-model="search"
           class="search-input"
@@ -95,6 +95,7 @@ function reset() {
 .field--search {
   flex: 1;
   min-width: 220px;
+  max-width: 460px;
 }
 .search-box {
   display: flex;

@@ -6,7 +6,7 @@ import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
-import DatePicker from "@/components/ui/DatePicker.vue";
+import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import NewPurchaseModal from "@/components/NewPurchaseModal.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useSort } from "@/composables/useSort";
@@ -69,22 +69,21 @@ function onSaved(detail: PurchaseDetail) {
 
 <template>
   <div class="page">
-    <div class="toolbar">
-      <div class="search-box">
-        <AppIcon name="search" :size="18" class="muted" />
-        <input v-model="search" class="search-input" :placeholder="t('achats.searchPlaceholder')" />
-      </div>
-      <div class="date-range">
-        <DatePicker v-model="dateFrom" :max="dateTo || undefined" :placeholder="t('filters.from')" />
-        <span class="range-sep">–</span>
-        <DatePicker v-model="dateTo" :min="dateFrom || undefined" :placeholder="t('filters.to')" />
-      </div>
-      <button class="btn btn--primary" type="button" @click="showModal = true">
-        <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
-      </button>
-    </div>
-
     <div class="card">
+      <div class="card-header">
+        <h2>{{ t("achats.title") }}</h2>
+        <button class="btn btn--primary" type="button" @click="showModal = true">
+          <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
+        </button>
+      </div>
+
+      <ListFilterBar
+        v-model:search="search"
+        v-model:date-from="dateFrom"
+        v-model:date-to="dateTo"
+        :search-placeholder="t('achats.searchPlaceholder')"
+      />
+
       <EmptyState v-if="!loading && purchases.length === 0" icon="cart" :title="t('achats.empty')" />
       <table v-else class="table">
         <thead>
@@ -126,37 +125,6 @@ function onSaved(detail: PurchaseDetail) {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  max-width: 460px;
-  padding: 9px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-}
-.search-input {
-  border: none;
-  outline: none;
-  background: transparent;
-  flex: 1;
-  color: var(--text);
-}
-.date-range {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.range-sep {
-  color: var(--text-muted);
 }
 .clickable {
   cursor: pointer;
