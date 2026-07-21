@@ -1,4 +1,4 @@
-// End-to-end test suite for Échéancier.
+// End-to-end test suite for paymentSchedule.
 //
 // Runs against the real Vue app served by Vite, driving a headless Chromium via
 // the Playwright library (the `playwright` package — the `@playwright/test`

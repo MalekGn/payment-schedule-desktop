@@ -1,6 +1,6 @@
-# Échéancier
+# paymentSchedule
 
-**Échéancier** is an offline-first desktop app for small Tunisian
+**paymentSchedule** is an offline-first desktop app for small Tunisian
 electronics / appliance shops (*vente de produits électroménagers*) to track
 **installment sales**: clients, purchases (*achats*), payment schedules
 (*échéances*), payments, and overdue balances (*impayés*).
@@ -126,16 +126,16 @@ Everything is stored locally in the OS **app-data directory**:
 
 | Platform | Location |
 |----------|----------|
-| Linux | `~/.local/share/tn.echeancier.app/` |
-| Windows | `%APPDATA%\tn.echeancier.app\` |
+| Linux | `~/.local/share/tn.paymentschedule.app/` |
+| Windows | `%APPDATA%\tn.paymentschedule.app\` |
 
-- **`echeancier.db`** — the SQLite database (clients, purchases, installments,
+- **`payment_schedule.db`** — the SQLite database (clients, purchases, installments,
   payments, settings). Created and seeded on first launch.
 - **`logo.<ext>`** — the shop logo uploaded in Settings, copied into the app-data
   dir and referenced from the `setting` table. Displayed in the sidebar/header
   via Tauri's asset protocol.
 
-To reset the app to a fresh seeded state, delete `echeancier.db` and restart.
+To reset the app to a fresh seeded state, delete `payment_schedule.db` and restart.
 
 ---
 

@@ -1,8 +1,8 @@
 [package]
-name = "echeancier"
+name = "payment-schedule"
 version = "0.1.0"
-description = "Échéancier — installment-sale tracking for small Tunisian appliance shops"
-authors = ["Échéancier"]
+description = "paymentSchedule — installment-sale tracking for small Tunisian appliance shops"
+authors = ["paymentSchedule"]
 edition = "2021"
 rust-version = "1.77"
 
@@ -11,7 +11,7 @@ rust-version = "1.77"
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
-name = "echeancier_lib"
+name = "payment_schedule_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Échéancier is a **Tauri 2** desktop app: a Rust **core process** owns all state
+paymentSchedule is a **Tauri 2** desktop app: a Rust **core process** owns all state
 and persistence, and a **Vue 3 WebView** renders the UI. The two communicate
 only through typed Tauri **commands** (request/response IPC). The frontend has no
 direct database or filesystem access.
@@ -21,7 +21,7 @@ direct database or filesystem access.
 │               Core process (Rust)              │
 │  lib.rs ── commands.rs ── db.rs ── seed.rs     │
 │                 │                              │
-│         rusqlite  →  echeancier.db (SQLite)    │
+│    rusqlite  →  payment_schedule.db (SQLite)   │
 │         app-data dir  →  logo.<ext>            │
 └────────────────────────────────────────────────┘
 ```
