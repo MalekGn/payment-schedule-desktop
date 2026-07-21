@@ -76,8 +76,10 @@ browser. This is what the automated screenshots and tests use.
 ### Tests & type-checking
 
 ```bash
-npm test             # Vitest unit tests (installment/payment math)
-npm run build        # vue-tsc type-check + production build
+npm test                 # Vitest unit tests (installment/payment math, overdue logic)
+npm run test:integration # Vitest integration tests (api facade + backend flows)
+npm run test:e2e         # Playwright end-to-end suite (tests/e2e/run.mjs)
+npm run build            # vue-tsc type-check + production build
 ```
 
 ---

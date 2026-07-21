@@ -10,7 +10,7 @@
 // A full page load (page.goto) re-instantiates that mock, so every test starts
 // from the same seed and stays independent.
 //
-// Usage: node e2e/run.mjs   (spawns Vite itself, tears it down on exit)
+// Usage: node tests/e2e/run.mjs   (spawns Vite itself, tears it down on exit)
 
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
@@ -18,12 +18,15 @@ import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// This file lives at <root>/tests/e2e/run.mjs, so the project root is two levels up.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, "..", "..");
 // Dedicated port so the suite never collides with (or accidentally tests) a
 // dev server the user already has running on Vite's default 5173.
 const PORT = 5199;
 const BASE = `http://localhost:${PORT}`;
-const ARTIFACTS = path.join(ROOT, "e2e", "artifacts");
+// Screenshots land next to this script, under tests/e2e/artifacts.
+const ARTIFACTS = path.join(HERE, "artifacts");
 mkdirSync(ARTIFACTS, { recursive: true });
 
 // --- tiny test harness -------------------------------------------------------
@@ -236,7 +239,9 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
   assertEqual(await page.locator("table.table tbody tr").count(), 8, "precondition: 8 purchases");
 
-  await page.getByRole("button", { name: "Nouvel achat" }).click();
+  // Scope to the main content: the sidebar also carries a permanent "Nouvel
+  // achat" button, so an unscoped role query would match two elements.
+  await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
   assertEqual(await dialog.locator(".modal-head h2").innerText(), "Nouvel achat", "modal title");
@@ -335,6 +340,130 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
     1,
     "dashboard nav label is Arabic",
   );
+});
+
+// --- Overdue (Impayés) page --------------------------------------------------
+// The page renders one card per overdue client (`.impaye-card`) with an inner
+// installments table, a shared ListFilterBar, per-column sorting, contact
+// actions and a CSV export button. All filtering/sorting is client-side over
+// the full `api.listImpayes()` result.
+
+test("impayés: free-text search narrows to a single matching client", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+  const total = await page.locator(".impaye-card").count();
+  assert(total >= 2, `need >= 2 overdue clients to prove filtering, got ${total}`);
+
+  // The first card's client name is guaranteed to exist in the dataset. The
+  // shared filter bar's search input carries the class `.search-input`.
+  const name = (await page.locator(".impaye-card .impaye-name").first().innerText()).trim();
+  await page.locator(".search-input").fill(name);
+  await page.waitForFunction(
+    (expected) =>
+      Array.from(document.querySelectorAll(".impaye-card .impaye-name")).every(
+        (el) => el.textContent?.trim() === expected,
+      ),
+    name,
+    { timeout: 5000 },
+  );
+  const shown = await page.locator(".impaye-card").count();
+  assert(shown >= 1 && shown <= total, `search should not grow the list (${shown} vs ${total})`);
+  assertEqual(
+    await page.locator(".impaye-card .impaye-name").first().innerText(),
+    name,
+    "the remaining card matches the searched name",
+  );
+});
+
+test("impayés: an impossible amount range yields the empty state", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+
+  // Amount min far above any single overdue remaining -> every installment drops
+  // out, every client is emptied, and the shared EmptyState (`.empty`) replaces
+  // the cards. (The date-window equivalent is covered by the unit test, since
+  // the DatePicker is a custom popup with no fillable input.)
+  await page.getByPlaceholder("Min").fill("99999999");
+  await page.locator(".empty").waitFor({ timeout: 5000 });
+  assertEqual(await page.locator(".impaye-card").count(), 0, "no client cards remain");
+
+  // Reset restores the full list.
+  await page.getByRole("button", { name: "Réinitialiser" }).click();
+  await page.locator(".impaye-card").first().waitFor({ timeout: 5000 });
+  assert((await page.locator(".impaye-card").count()) >= 1, "reset restores the cards");
+});
+
+test("impayés: sorting by amount reorders a client's installment rows", async (page) => {
+  await open(page, "/impayes");
+  // Find a client card that has more than one overdue installment to reorder.
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+  const cards = page.locator(".impaye-card");
+  let target = null;
+  for (let idx = 0; idx < (await cards.count()); idx++) {
+    if ((await cards.nth(idx).locator("tbody tr").count()) >= 2) {
+      target = cards.nth(idx);
+      break;
+    }
+  }
+  assert(target, "expected at least one client with 2+ overdue installments");
+
+  const amountCells = () =>
+    target.locator("tbody tr td:nth-child(4)").allInnerTexts();
+  const num = (s) => Number(s.replace(/[^\d]/g, ""));
+
+  // Click the "amount" column header (4th column) to sort ascending.
+  await target.locator("thead th").nth(3).click();
+  await page.waitForTimeout(50);
+  const asc = (await amountCells()).map(num);
+  const ascExpected = [...asc].sort((a, b) => a - b);
+  assertEqual(JSON.stringify(asc), JSON.stringify(ascExpected), "ascending by amount");
+
+  // Click again to flip to descending.
+  await target.locator("thead th").nth(3).click();
+  await page.waitForTimeout(50);
+  const desc = (await amountCells()).map(num);
+  assertEqual(
+    JSON.stringify(desc),
+    JSON.stringify([...desc].sort((a, b) => b - a)),
+    "descending by amount",
+  );
+});
+
+test("impayés: export button is present and each card exposes call/SMS/view actions", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+
+  // CSV export button lives in the header when there is at least one result.
+  const exportBtn = page.getByRole("button", { name: /Exporter/ });
+  await exportBtn.waitFor({ timeout: 5000 });
+  assertEqual(await exportBtn.count(), 1, "one export button while results exist");
+
+  const first = page.locator(".impaye-card").first();
+  const tel = await first.locator("a.contact-btn--call").getAttribute("href");
+  const sms = await first.locator("a.contact-btn--msg").getAttribute("href");
+  assert(tel?.startsWith("tel:") && !/\s/.test(tel), `call link should be a spaceless tel:, got ${tel}`);
+  assert(sms?.startsWith("sms:") && !/\s/.test(sms), `message link should be a spaceless sms:, got ${sms}`);
+  assertEqual(await first.locator("button.contact-btn--view").count(), 1, "view-client button present");
+});
+
+test("impayés: deep link ?client=<id> pre-filters the search to that client", async (page) => {
+  // Open with the dashboard overdue-panel deep-link shape. Seeded client ids are
+  // 1..6; client 1 (Mohamed Trabelsi) has overdue installments in the seed.
+  await open(page, "/impayes?client=1");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+
+  const search = await page.locator(".search-input").inputValue();
+  assert(search.length > 0, "deep-link should pre-fill the search box with the client name");
+
+  // Every visible card must match the pre-filled search text.
+  const names = await page.locator(".impaye-card .impaye-name").allInnerTexts();
+  assert(names.length >= 1, "at least one card for the deep-linked client");
+  for (const n of names) {
+    assert(
+      n.toLowerCase().includes(search.toLowerCase()),
+      `card "${n}" should match pre-filled search "${search}"`,
+    );
+  }
 });
 
 // --- runner ------------------------------------------------------------------

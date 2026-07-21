@@ -33,5 +33,6 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 
 ## Testing
 
-- **Unit tests:** `npm test` (Vitest) — finance helpers in `src/lib/finance.test.ts`.
-- **End-to-end tests:** `npm run test:e2e` — self-contained Playwright suite (`e2e/run.mjs`) drives the real app in headless Chromium against the in-memory mock backend. Spawns its own Vite server on port 5199 and pins the browser locale to French for determinism. Covers app-shell render, dashboard KPIs, full sidebar navigation, client list + create flow, purchase list + search, and the overdue (impayés) page. Failures capture a full-page screenshot under `e2e/artifacts/`.
+- **Unit tests:** `npm test` (Vitest) — co-located in `src/**`, covering the finance helpers (`src/lib/finance.test.ts`) and the overdue data/sort logic (`src/views/impayes-overdue.test.ts`).
+- **Integration tests:** `npm run test:integration` (Vitest, `vitest.integration.config.ts`) — suites in `tests/integration/` drive the real `api` facade against the in-memory backend across multi-command flows: the purchase → schedule → payment lifecycle, and overdue/dashboard/cascade-delete consistency. Kept out of the default unit run so they stay opt-in.
+- **End-to-end tests:** `npm run test:e2e` — self-contained Playwright suite (`tests/e2e/run.mjs`) drives the real app in headless Chromium against the in-memory mock backend. Spawns its own Vite server on port 5199 and pins the browser locale to French for determinism. Covers app-shell render, dashboard KPIs, full sidebar navigation, client list + create flow, purchase list + search, and the overdue (impayés) page. Failures capture a full-page screenshot under `tests/e2e/artifacts/`.
