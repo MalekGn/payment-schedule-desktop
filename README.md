@@ -59,8 +59,9 @@ npm run tauri dev    # launch the desktop app (starts Vite, then the Tauri shell
 ```
 
 `npm run tauri dev` runs the Vite dev server on `http://localhost:5173` and opens
-the native window. On first launch the database is created and seeded with demo
-Tunisian data.
+the native window. On first launch the database is created, and in development
+builds it is seeded with demo Tunisian data. Release builds start empty (see
+below).
 
 ### Browser preview (no Rust)
 
@@ -130,12 +131,15 @@ Everything is stored locally in the OS **app-data directory**:
 | Windows | `%APPDATA%\tn.paymentschedule.app\` |
 
 - **`payment_schedule.db`** — the SQLite database (clients, purchases, installments,
-  payments, settings). Created and seeded on first launch.
+  payments, settings). Created on first launch. Demo data is seeded only in
+  development builds (`tauri dev`); release bundles start empty. Set
+  `PAYMENT_SCHEDULE_SEED=1` to force seeding a fresh DB in a release build.
 - **`logo.<ext>`** — the shop logo uploaded in Settings, copied into the app-data
   dir and referenced from the `setting` table. Displayed in the sidebar/header
   via Tauri's asset protocol.
 
-To reset the app to a fresh seeded state, delete `payment_schedule.db` and restart.
+To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
+development build it is re-seeded; in a release build it comes back empty.
 
 ---
 

@@ -15,7 +15,7 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Internationalization** | ✅ | Arabic (RTL), French, English. OS-locale default → French fallback. Full layout mirroring for Arabic. |
 | **Localized formatting** | ✅ | Currency (default TND) and date format (default dd/MM/yyyy) applied everywhere; locale-aware number grouping. |
 | **Logo management** | ✅ | Upload/replace/remove; stored in app-data dir; shown in sidebar/header. |
-| **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; seeded demo data on first run. |
+| **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; demo data seeded on first run in dev builds only (release starts empty). |
 | **Empty states & validation** | ✅ | Localized empty states and form validation across all modules. |
 | **Sortable tables** | ✅ | Click any column header to sort (toggling asc/desc) across every list and detail table; locale-aware, numbers compared numerically. Tables keep the backend order until a column is chosen. |
 | **List filters** | ✅ | Purchases, Payments, Due-dates and Impayés share the same `ListFilterBar` (reference/client search + From–To date range; amount min/max on Payments, Due-dates and Impayés). |
