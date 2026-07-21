@@ -251,8 +251,32 @@
   },
   "alertes": {
     "title": "Alerts",
-    "comingSoon": "The detailed alert center is coming soon.",
-    "description": "This page will gather notifications for upcoming and overdue due dates. Key alerts are already shown on the dashboard."
+    "subtitle": "Overdue and upcoming installments that need action.",
+    "summary": {
+      "overdue": "Overdue",
+      "dueToday": "Due today",
+      "dueSoon": "Due soon ({days}d)"
+    },
+    "filter": {
+      "all": "All",
+      "overdue": "Overdue",
+      "dueToday": "Today",
+      "dueSoon": "Upcoming"
+    },
+    "columns": {
+      "reference": "Ref.",
+      "client": "Client",
+      "tranche": "Installment",
+      "dueDate": "Due date",
+      "amount": "Amount",
+      "timing": "Timing"
+    },
+    "timing": {
+      "daysLate": "{n} day late | {n} days late",
+      "today": "Today",
+      "inDays": "In {n} day | In {n} days"
+    },
+    "empty": "No alerts — everything is up to date 🎉"
   },
   "rapports": {
     "title": "Reports",
@@ -270,6 +294,8 @@
     "currency": "Currency",
     "currencyHint": "Displayed currency code (TND by default).",
     "dateFormat": "Date format",
+    "alertSoonDays": "Alert window (days)",
+    "alertSoonDaysHint": "How many days ahead an installment is flagged as \"due soon\" on the Alerts page (1–90).",
     "logo": "Shop logo",
     "logoHint": "Shown in the header and sidebar.",
     "uploadLogo": "Choose a logo",

@@ -204,6 +204,8 @@ export interface Settings {
   logoPath: string | null;
   shopName: string;
   shopInfo: string;
+  /** Horizon (in days) for "due soon" alerts on the Alertes page. */
+  alertSoonDays: number;
   languageIsDefault: boolean;
 }
 
@@ -213,4 +215,5 @@ export interface SettingsPatch {
   dateFormat?: string;
   shopName?: string;
   shopInfo?: string;
+  alertSoonDays?: number;
 }

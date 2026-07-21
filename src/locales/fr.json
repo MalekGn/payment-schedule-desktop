@@ -251,8 +251,32 @@
   },
   "alertes": {
     "title": "Alertes",
-    "comingSoon": "Le centre d'alertes détaillé arrive bientôt.",
-    "description": "Cette page regroupera les notifications d'échéances proches et en retard. Les alertes clés sont déjà visibles sur le tableau de bord."
+    "subtitle": "Échéances en retard et à venir nécessitant une action.",
+    "summary": {
+      "overdue": "En retard",
+      "dueToday": "Échéance aujourd'hui",
+      "dueSoon": "À venir ({days} j)"
+    },
+    "filter": {
+      "all": "Toutes",
+      "overdue": "En retard",
+      "dueToday": "Aujourd'hui",
+      "dueSoon": "À venir"
+    },
+    "columns": {
+      "reference": "N° Achat",
+      "client": "Client",
+      "tranche": "Tranche",
+      "dueDate": "Échéance",
+      "amount": "Montant",
+      "timing": "Délai"
+    },
+    "timing": {
+      "daysLate": "{n} jour de retard | {n} jours de retard",
+      "today": "Aujourd'hui",
+      "inDays": "Dans {n} jour | Dans {n} jours"
+    },
+    "empty": "Aucune alerte — tout est à jour 🎉"
   },
   "rapports": {
     "title": "Rapports",
@@ -270,6 +294,8 @@
     "currency": "Devise",
     "currencyHint": "Code de la devise affichée (par défaut TND).",
     "dateFormat": "Format de date",
+    "alertSoonDays": "Fenêtre d'alerte (jours)",
+    "alertSoonDaysHint": "Nombre de jours à l'avance pour signaler une échéance « à venir » sur la page Alertes (1 à 90).",
     "logo": "Logo de la boutique",
     "logoHint": "Affiché dans l'en-tête et la barre latérale.",
     "uploadLogo": "Choisir un logo",

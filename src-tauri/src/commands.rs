@@ -855,6 +855,7 @@ fn read_settings(conn: &Connection) -> Settings {
         logo_path: if logo.is_empty() { None } else { Some(logo) },
         shop_name: get_setting(conn, "shop_name", ""),
         shop_info: get_setting(conn, "shop_info", ""),
+        alert_soon_days: get_setting(conn, "alert_soon_days", "7").parse().unwrap_or(7),
         language_is_default: get_setting(conn, "language_is_default", "1") == "1",
     }
 }
@@ -884,6 +885,12 @@ pub fn update_settings(db: State<Db>, patch: SettingsPatch) -> DbResult<Settings
     }
     if let Some(v) = patch.shop_info {
         put_setting(&conn, "shop_info", &v)?;
+    }
+    if let Some(v) = patch.alert_soon_days {
+        // Clamp defensively so the schedule query and UI never see a nonsense
+        // window; the UI already constrains the input to the same range.
+        let clamped = v.clamp(1, 90);
+        put_setting(&conn, "alert_soon_days", &clamped.to_string())?;
     }
     Ok(read_settings(&conn))
 }

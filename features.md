@@ -11,7 +11,7 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Paiements (Payments)** | ✅ | Per-installment recording with partial-payment support; global payment log; per-purchase and per-client history. |
 | **Échéances (Due dates)** | ✅ | Full schedule with all/overdue/upcoming/paid filters; overdue rows highlighted. |
 | **Impayés (Overdue)** | ✅ | Clients with overdue installments; shared `ListFilterBar` (reference/client search, amount min/max, From–To date range); per-client contact shortcuts (call/SMS/view); CSV export of the filtered list. |
-| **Settings (Paramètres)** | ✅ | Language, currency, date format, shop logo upload, shop name/info — persisted in SQLite, applied live. |
+| **Settings (Paramètres)** | ✅ | Language, currency, date format, alert window (days ahead an installment counts as "due soon", 1–90), shop logo upload, shop name/info — persisted in SQLite, applied live. |
 | **Internationalization** | ✅ | Arabic (RTL), French, English. OS-locale default → French fallback. Full layout mirroring for Arabic. |
 | **Localized formatting** | ✅ | Currency (default TND) and date format (default dd/MM/yyyy) applied everywhere; locale-aware number grouping. |
 | **Logo management** | ✅ | Upload/replace/remove; stored in app-data dir; shown in sidebar/header. |
@@ -21,7 +21,7 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **List filters** | ✅ | Purchases, Payments, Due-dates and Impayés share the same `ListFilterBar` (reference/client search + From–To date range; amount min/max on Payments, Due-dates and Impayés). |
 | **Custom date picker** | ✅ | Shared calendar `DatePicker` (localized month/weekday names, Today button, shows the configured date format). Used in the list filters and in the new-purchase and payment forms (purchase date and each installment due date). Popup teleports to `<body>` so it is never clipped by a scroll container or modal, and closes on outside-click, Esc, or selection. |
 | **Not-found handling** | ✅ | Unknown routes render a localized “page not found” screen with Back/Dashboard actions; detail pages for a missing/deleted id show a recoverable message instead of a blank page. |
-| **Alertes** | 🟡 | Sidebar entry + styled placeholder page. Live alerts already surface on the dashboard; dedicated page logic deferred. |
+| **Alertes** | ✅ | Dedicated alerts center: consolidates every actionable installment (overdue, due today, due within 7 days) from the full schedule. Summary tiles (count + total per kind, clickable to filter), status tabs, shared `ListFilterBar`, sortable table with a days-late / due-in "timing" column; rows link to the purchase. |
 | **Rapports (Reports)** | 🟡 | Sidebar entry + styled placeholder page. Exportable reporting deferred. |
 | **Windows `.msi`/`.exe` build** | 🟡 | Bundler configuration present; must be built on Windows (see README). |
 

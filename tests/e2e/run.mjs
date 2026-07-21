@@ -466,6 +466,94 @@ test("impayés: deep link ?client=<id> pre-filters the search to that client", a
   }
 });
 
+// --- Alertes (alerts center) -------------------------------------------------
+// The page derives its rows from `api.listSchedule()`: every unpaid installment
+// that is overdue, due today, or due within 7 days. Three summary tiles
+// (`.tile`, in DOM order overdue / due-today / due-soon) show a count each and
+// double as one-click filters; status tabs (`.tab`) and the shared ListFilterBar
+// filter the table below. The seed guarantees overdue installments exist.
+
+test("alertes: summary tiles render and the table totals match them", async (page) => {
+  await open(page, "/alertes");
+  await page.locator(".summary .tile").first().waitFor({ timeout: 10000 });
+  assertEqual(await page.locator(".summary .tile").count(), 3, "three summary tiles");
+
+  const tileValue = async (n) =>
+    Number((await page.locator(".summary .tile").nth(n).locator(".tile-value").innerText()).trim());
+  const overdue = await tileValue(0);
+  const dueToday = await tileValue(1);
+  const dueSoon = await tileValue(2);
+  assert(overdue >= 1, `seed must produce overdue alerts, got ${overdue}`);
+
+  // Default "all" tab, no list filters -> every alert row is shown, so the table
+  // row count equals the sum of the three tile counts.
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  const rows = await page.locator("table.table tbody tr").count();
+  assertEqual(rows, overdue + dueToday + dueSoon, "table rows equal the summed tile counts");
+});
+
+test("alertes: overdue tile count matches the sidebar warning badge", async (page) => {
+  await open(page, "/alertes");
+  await page.locator(".summary .tile").first().waitFor({ timeout: 10000 });
+
+  const overdue = Number(
+    (await page.locator(".summary .tile").first().locator(".tile-value").innerText()).trim(),
+  );
+
+  // The Alertes sidebar entry carries a warning badge = overdue installment count.
+  const badge = page.locator(".nav-item", { hasText: NAV.alertes }).locator(".nav-badge--warning");
+  await badge.waitFor({ timeout: 5000 });
+  const badgeCount = Number((await badge.innerText()).trim());
+  assertEqual(overdue, badgeCount, "overdue tile equals the sidebar warning badge");
+});
+
+test("alertes: clicking the Overdue tile filters the table to overdue rows", async (page) => {
+  await open(page, "/alertes");
+  await page.locator(".summary .tile").first().waitFor({ timeout: 10000 });
+  const overdue = Number(
+    (await page.locator(".summary .tile").first().locator(".tile-value").innerText()).trim(),
+  );
+
+  // Click the overdue tile: it activates and the "En retard" tab becomes active.
+  await page.locator(".summary .tile").first().click();
+  await page.locator(".tab.tab--active", { hasText: "En retard" }).waitFor({ timeout: 5000 });
+
+  await page.waitForFunction(
+    (expected) => document.querySelectorAll("table.table tbody tr").length === expected,
+    overdue,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), overdue, "rows narrowed to overdue count");
+
+  // Every visible timing cell is an overdue label ("… de retard") and every row
+  // carries the late-row highlight class.
+  const timings = await page.locator("table.table tbody tr .timing--overdue").count();
+  assertEqual(timings, overdue, "each visible row shows an overdue timing");
+  assertEqual(
+    await page.locator("table.table tbody tr.is-late").count(),
+    overdue,
+    "each overdue row is highlighted",
+  );
+});
+
+test("alertes: a row links through to its purchase detail", async (page) => {
+  await open(page, "/alertes");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const reference = (
+    await page.locator("table.table tbody tr").first().locator(".row-link").innerText()
+  ).trim();
+  await page.locator("table.table tbody tr").first().click();
+
+  // The purchase-detail header title is the purchase reference (e.g. A-000001).
+  await page.waitForFunction(
+    (expected) => document.querySelector("h1.page-title")?.textContent?.trim() === expected,
+    reference,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("h1.page-title").innerText(), reference, "navigated to the purchase detail");
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {

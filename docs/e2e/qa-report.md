@@ -6,6 +6,53 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-22 — Feature QA: Alertes (alerts center) page
+
+### Summary
+
+QA pass for the newly implemented **Alertes** page (`src/views/AlertesView.vue`),
+which replaced the styled placeholder. The page consolidates every *actionable*
+installment — overdue, due today, or due within 7 days — derived from
+`api.listSchedule()` through the pure `buildAlerts` classifier
+(`src/lib/alerts.ts`). It renders three summary tiles (count + total per kind,
+clickable to filter), status tabs, the shared `ListFilterBar`, and a sortable
+table with a days-late / due-in "timing" column; rows link to the purchase.
+
+Added integration and E2E coverage and **executed all suites** (unit,
+integration, E2E) — the user requested execution. All green.
+
+### Test cases — RUN
+
+Unit — `src/lib/alerts.test.ts` (9 cases, `npm test`): **36/36 passed** overall.
+- `classifyAlert` boundaries against a fixed `today`: overdue (positive days late), due-today (0 days), due-soon (days remaining).
+- Horizon edge: last day inside the window is `dueSoon`, the day after is dropped; custom horizon respected.
+- Fully-paid past-due rows are ignored; partially-paid overdue rows still alert with the correct `remaining`.
+- `buildAlerts` keeps only actionable rows in input order and returns `[]` when nothing qualifies.
+
+Integration — `tests/integration/alerts.integration.test.ts` (4 cases, `npm run test:integration`): **17/17 passed** overall.
+- Derived alerts are all unpaid, in-window, and their `days`/`kind` match `dayDiff(dueDate, today)`.
+- Overdue-alert count equals `dashboard.stats.overdueCount`.
+- Overdue alerts match `listImpayes` exactly — same installment-id set and same summed remaining total.
+- Settling an overdue tranche in full removes it from the model and shrinks the overdue set by one.
+
+E2E — `tests/e2e/run.mjs`, 4 new Alertes scenarios (`npm run test:e2e`): **20/20 passed, 0 console errors**.
+- Three summary tiles render; on the default "all" tab the table row count equals the summed tile counts.
+- The overdue tile value equals the sidebar warning badge (both = overdue installment count).
+- Clicking the Overdue tile activates the "En retard" tab, narrows rows to the overdue count, and every visible row shows an overdue timing + late-row highlight.
+- Clicking a row navigates to the matching purchase-detail page (header title = purchase reference).
+
+### Issues found
+
+None. No product defects surfaced; type-check (`vue-tsc --noEmit`) is clean.
+
+### Recommendations
+
+- The 7-day "due soon" horizon is currently a constant (`DEFAULT_SOON_DAYS`). If shop owners want a configurable window, promote it to a setting later — not needed now.
+- The E2E table-total invariant (`rows === overdue + dueToday + dueSoon`) is only meaningful while the seed reliably produces overdue rows; the due-today / due-soon buckets may be empty depending on the seed's relative dates, which is expected and not asserted as non-zero.
+- `alerts.integration.test.ts` cross-checks the derived model against the dashboard and impayés; if the Rust backend's overdue definition ever diverges from the TS `dayDiff` logic, this suite will catch it.
+
+---
+
 ## 2026-07-22 — Bug: overdue (Impayés) page empty under `tauri dev`
 
 ### Summary

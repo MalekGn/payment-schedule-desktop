@@ -2,7 +2,13 @@
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
-import { useSettingsStore, DATE_FORMATS, CURRENCIES } from "@/stores/settings";
+import {
+  useSettingsStore,
+  DATE_FORMATS,
+  CURRENCIES,
+  ALERT_SOON_DAYS_MIN,
+  ALERT_SOON_DAYS_MAX,
+} from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { SUPPORTED_LOCALES, type AppLocale } from "@/i18n";
 import { resolveLogoSrc } from "@/lib/assets";
@@ -16,6 +22,7 @@ const ui = useUiStore();
 
 const shopName = ref(settings.settings.shopName);
 const shopInfo = ref(settings.settings.shopInfo);
+const alertSoonDays = ref(settings.settings.alertSoonDays);
 const fileInput = ref<HTMLInputElement | null>(null);
 
 const LANGUAGE_LABELS: Record<AppLocale, string> = {
@@ -37,6 +44,17 @@ async function onCurrency(e: Event) {
 
 async function onDateFormat(e: Event) {
   await settings.update({ dateFormat: (e.target as HTMLSelectElement).value });
+  ui.notify(t("settings.saved"));
+}
+
+async function onAlertSoonDays() {
+  // Clamp to the shared bounds; fall back to the current value on empty/NaN.
+  const raw = Math.round(Number(alertSoonDays.value));
+  const value = Number.isFinite(raw)
+    ? Math.min(ALERT_SOON_DAYS_MAX, Math.max(ALERT_SOON_DAYS_MIN, raw))
+    : settings.alertSoonDays;
+  alertSoonDays.value = value;
+  await settings.update({ alertSoonDays: value });
   ui.notify(t("settings.saved"));
 }
 
@@ -108,6 +126,21 @@ function dateSample(pattern: string): string {
           <select id="set-date" class="select" :value="settings.dateFormat" @change="onDateFormat">
             <option v-for="f in DATE_FORMATS" :key="f" :value="f">{{ f }} — {{ dateSample(f) }}</option>
           </select>
+        </div>
+
+        <div class="field">
+          <label for="set-alert">{{ t("settings.alertSoonDays") }}</label>
+          <input
+            id="set-alert"
+            v-model="alertSoonDays"
+            class="input"
+            type="number"
+            :min="ALERT_SOON_DAYS_MIN"
+            :max="ALERT_SOON_DAYS_MAX"
+            step="1"
+            @change="onAlertSoonDays"
+          />
+          <span class="hint">{{ t("settings.alertSoonDaysHint") }}</span>
         </div>
       </div>
     </section>
