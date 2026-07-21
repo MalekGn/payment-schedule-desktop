@@ -111,6 +111,30 @@ CI runner (e.g. GitHub Actions `windows-latest` with `tauri-apps/tauri-action`).
 The build **configuration** for both targets already lives in
 `src-tauri/tauri.conf.json` (`bundle.targets`).
 
+### Releases via CI (`.github/workflows/build.yml`)
+
+Pushing a **version tag** (`v*`) runs a GitHub Actions pipeline that typechecks
+and runs the unit tests, then builds native installers on two runners and
+publishes them to a **GitHub Release** for that tag:
+
+| Runner | Installers produced |
+|---|---|
+| `ubuntu-22.04` | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
+| `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11) |
+
+To cut a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Both runners attach their installers to one shared Release, published as a
+**draft** so you can review the assets and notes before making it public. The
+workflow can also be triggered manually via **workflow_dispatch**. Per-OS bundle
+targets are set with `tauri build --bundles …`, so each runner emits only its
+own package formats.
+
 ### App icons
 
 Icons are generated from a single source image:
