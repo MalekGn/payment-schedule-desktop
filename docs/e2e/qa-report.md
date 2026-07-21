@@ -6,6 +6,69 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-22 — Bug: overdue (Impayés) page empty under `tauri dev`
+
+### Summary
+
+Investigated a report that the overdue page renders correctly under `npm run dev`
+but shows nothing under `npm run tauri dev`. Root cause found and fixed: a
+parameter-binding bug in the Rust `build_impayes` command that made the SQL
+query fail at runtime whenever **no filter** was applied — which is the default
+state on page load. The browser build was immune because it uses the in-memory
+mock (`src/api/mock.ts`) instead of the SQLite-backed Tauri command.
+
+### Test cases run
+
+- **Root-cause reproduction** (temporary diagnostic test against the live DB at
+  `~/.local/share/tn.paymentschedule/payment_schedule.db`): `build_impayes` with
+  the default filter returned `Err("Wrong number of parameters passed to query.
+  Got 2, needed 1")` — confirming the command rejected the query and the view
+  swallowed it into a blank page. After the fix the same call returned 6 client
+  groups / 20 overdue installments, fully serialized.
+- **Rust unit suite** (`cargo test`): 3/3 passed, including the new regression
+  `commands::tests::build_impayes_binds_params_for_every_filter_combo`, which
+  exercises all five filter combinations (none / date_from / date_to / client_id
+  / all three) and asserts none error, plus that a seeded DB reports overdue rows.
+- **Frontend unit suite** (`npm test`): 27/27 passed (unchanged).
+
+### Issues found
+
+1. **`build_impayes` bound a fixed 4 parameters regardless of the query built** (product bug, fixed).
+   - **File:** `src-tauri/src/commands.rs` (`build_impayes`).
+   - **Root cause:** the `?2`/`?3`/`?4` placeholders were appended only when the
+     matching optional filter was present, but the params vector was always
+     built with four entries (`today`, `date_from`, `date_to`, `client_id`), so
+     the bound-parameter count didn't match the query's declared placeholders.
+     With no filter the query declares only `?1`, so SQLite rejected it.
+   - **Symptom:** `list_impayes` (and by extension the dashboard's overdue panel)
+     returned an error; `ImpayesView.onMounted` awaits `api.listImpayes()` with no
+     `try/catch`, so on rejection `loading` stays `true` and the page renders the
+     empty card list with no data and no error — a silent blank.
+   - **Fix:** build the params vector in lockstep with the placeholders, pushing a
+     value only when its clause is added and numbering `?n` sequentially.
+   - **Reproduce (before fix):** `npm run tauri dev` → open **Impayés** → blank
+     page despite overdue installments existing in the DB. `npm run dev` shows
+     them correctly (mock path).
+
+### Recommendations
+
+- **Surface command errors in the UI.** `ImpayesView` (and any view calling the
+  API in `onMounted` without a `catch`) should trap rejections and show an error
+  state / toast instead of hanging on `loading = true`. This bug was invisible
+  precisely because the error was swallowed. Other views should be audited for
+  the same pattern.
+- **Add integration coverage against the real command path.** Existing
+  `src/views/impayes-overdue.test.ts` and the integration suite exercise the mock
+  (`src/api/mock.ts`), so they could not catch a Rust-side SQL defect. Consider a
+  Rust-level integration test (like the regression added here) for each command
+  that assembles SQL dynamically — `list_impayes`, `list_clients`, and any other
+  builder that conditionally appends clauses/params.
+- **Prefer named parameters** (`:from`, `:to`, `:client`) over positional `?n`
+  for dynamically-assembled queries so a missing clause can't desynchronize the
+  binding count.
+
+---
+
 ## 2026-07-21 — Full test-suite execution (unit + integration + E2E)
 
 ### Summary

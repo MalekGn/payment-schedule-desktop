@@ -542,24 +542,31 @@ fn build_impayes(
          JOIN client c ON c.id = pu.client_id
          WHERE i.due_date < ?1 AND i.amount > i.paid_amount",
     );
-    if filter.date_from.is_some() {
-        sql.push_str(" AND i.due_date >= ?2");
+    // Bind parameters in lockstep with the placeholders: only the optional
+    // filters that are actually present contribute both a `?n` clause and a
+    // value, so the numbering stays sequential and the count always matches.
+    // (Binding a fixed set of four here silently breaks the common no-filter
+    // path, since the query then declares only `?1`.)
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(today_str.clone())];
+    let mut next = 1;
+    if let Some(from) = filter.date_from.clone() {
+        next += 1;
+        sql.push_str(&format!(" AND i.due_date >= ?{next}"));
+        params_vec.push(Box::new(from));
     }
-    if filter.date_to.is_some() {
-        sql.push_str(" AND i.due_date <= ?3");
+    if let Some(to) = filter.date_to.clone() {
+        next += 1;
+        sql.push_str(&format!(" AND i.due_date <= ?{next}"));
+        params_vec.push(Box::new(to));
     }
-    if filter.client_id.is_some() {
-        sql.push_str(" AND c.id = ?4");
+    if let Some(cid) = filter.client_id {
+        next += 1;
+        sql.push_str(&format!(" AND c.id = ?{next}"));
+        params_vec.push(Box::new(cid));
     }
     sql.push_str(" ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE, i.due_date");
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(today_str.clone()),
-        Box::new(filter.date_from.clone().unwrap_or_default()),
-        Box::new(filter.date_to.clone().unwrap_or_default()),
-        Box::new(filter.client_id.unwrap_or(0)),
-    ];
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
     // Accumulate per client, preserving first-seen order.
@@ -918,4 +925,75 @@ pub fn clear_logo(db: State<Db>) -> DbResult<Settings> {
     }
     put_setting(&conn, "logo_path", "")?;
     Ok(read_settings(&conn))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use std::path::PathBuf;
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "payment_schedule_cmd_test_{tag}_{}_{nanos}.db",
+            std::process::id()
+        ));
+        p
+    }
+
+    /// Regression: `build_impayes` must bind exactly as many parameters as the
+    /// query declares for every filter combination. The no-filter case (the
+    /// default overdue-page load) declares only `?1`; previously a fixed set of
+    /// four params was always bound, so SQLite rejected the query at runtime and
+    /// the page rendered blank under `tauri dev` while the mock-backed browser
+    /// build was unaffected.
+    #[test]
+    fn build_impayes_binds_params_for_every_filter_combo() {
+        let path = temp_db_path("impayes");
+        let db = Db::open(&path).unwrap();
+        let conn = db.conn.lock().unwrap();
+
+        let cid = conn
+            .query_row("SELECT id FROM client LIMIT 1", [], |r| r.get::<_, i64>(0))
+            .ok();
+
+        let filters = [
+            ImpayeFilter::default(),
+            ImpayeFilter { date_from: Some("2000-01-01".into()), ..Default::default() },
+            ImpayeFilter { date_to: Some("2999-12-31".into()), ..Default::default() },
+            ImpayeFilter { client_id: cid, ..Default::default() },
+            ImpayeFilter {
+                date_from: Some("2000-01-01".into()),
+                date_to: Some("2999-12-31".into()),
+                client_id: cid,
+            },
+        ];
+
+        for (i, f) in filters.into_iter().enumerate() {
+            let res = build_impayes(&conn, f, None);
+            assert!(res.is_ok(), "filter combo {i} must not error: {res:?}");
+        }
+
+        // With demo seeding on (debug builds), the unfiltered call must surface
+        // the seeded overdue installments rather than an empty list. Detect the
+        // seeded state via the client count so we don't depend on the private
+        // seeding gate, and stay correct under `cargo test --release` (empty DB).
+        let seeded: i64 = conn
+            .query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))
+            .unwrap();
+        if seeded > 0 {
+            let out = build_impayes(&conn, ImpayeFilter::default(), None).unwrap();
+            let total: usize = out.iter().map(|c| c.installments.len()).sum();
+            assert!(total > 0, "seeded DB should report overdue installments");
+        }
+
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
 }
