@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    echeancier_lib::run()
+    payment_schedule_lib::run()
 }

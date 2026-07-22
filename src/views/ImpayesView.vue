@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
+import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSortState, sortRows } from "@/composables/useSort";
 import { api } from "@/api";
-import type { ClientSummary, ImpayeClient } from "@/types/models";
+import type { ImpayeClient, OverdueInstallment } from "@/types/models";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -14,34 +17,66 @@ const router = useRouter();
 const fmt = useFormat();
 
 const impayes = ref<ImpayeClient[]>([]);
-const clients = ref<ClientSummary[]>([]);
 const loading = ref(true);
 
+// Same filter controls as Payments and Due dates (shared ListFilterBar), applied
+// reactively client-side: search matches reference + client, amount min/max maps
+// to the overdue remaining, and the From/To range filters on the due date.
+const search = ref("");
+const amountMin = ref("");
+const amountMax = ref("");
 const dateFrom = ref("");
 const dateTo = ref("");
-const clientId = ref<string>((route.query.client as string) ?? "");
 
-async function load() {
-  loading.value = true;
-  impayes.value = await api.listImpayes({
-    dateFrom: dateFrom.value || null,
-    dateTo: dateTo.value || null,
-    clientId: clientId.value ? Number(clientId.value) : null,
-  });
-  loading.value = false;
-}
+// One shared sort applied to every client's overdue-installments table.
+const sort = useSortState();
+const instAccessors = {
+  reference: (i: OverdueInstallment) => i.purchaseReference,
+  tranche: (i: OverdueInstallment) => i.index,
+  dueDate: (i: OverdueInstallment) => i.dueDate,
+  amount: (i: OverdueInstallment) => i.remaining,
+  since: (i: OverdueInstallment) => i.daysLate,
+};
+const sortedInstallments = (rows: OverdueInstallment[]) => sortRows(rows, instAccessors, sort);
 
-onMounted(async () => {
-  clients.value = await api.listClients();
-  await load();
+// Filter each client's overdue installments, drop clients left with none, and
+// recompute their totals so the per-client header stays accurate.
+const filtered = computed<ImpayeClient[]>(() => {
+  const needle = search.value.trim().toLowerCase();
+  const min = amountMin.value === "" ? null : Number(amountMin.value);
+  const max = amountMax.value === "" ? null : Number(amountMax.value);
+  const out: ImpayeClient[] = [];
+  for (const c of impayes.value) {
+    const installments = c.installments.filter((i) => {
+      if (needle && !`${i.purchaseReference} ${c.clientName}`.toLowerCase().includes(needle)) return false;
+      if (min != null && i.remaining < min) return false;
+      if (max != null && i.remaining > max) return false;
+      if (dateFrom.value && i.dueDate < dateFrom.value) return false;
+      if (dateTo.value && i.dueDate > dateTo.value) return false;
+      return true;
+    });
+    if (installments.length === 0) continue;
+    out.push({
+      ...c,
+      installments,
+      totalOverdue: installments.reduce((s, i) => s + i.remaining, 0),
+      overdueCount: installments.length,
+    });
+  }
+  return out;
 });
 
-function resetFilters() {
-  dateFrom.value = "";
-  dateTo.value = "";
-  clientId.value = "";
-  load();
-}
+onMounted(async () => {
+  impayes.value = await api.listImpayes();
+  loading.value = false;
+  // Deep-link from the dashboard overdue panel: pre-fill the search with the
+  // client's name so the unified search filters down to them.
+  const qid = route.query.client ? Number(route.query.client) : null;
+  if (qid) {
+    const match = impayes.value.find((c) => c.clientId === qid);
+    if (match) search.value = match.clientName;
+  }
+});
 
 const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
 const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
@@ -49,7 +84,7 @@ const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
 function exportCsv() {
   const header = ["Client", "Téléphone", "N° Achat", "Tranche", "Échéance", "Montant", "Jours de retard"];
   const lines = [header.join(",")];
-  for (const c of impayes.value) {
+  for (const c of filtered.value) {
     for (const i of c.installments) {
       lines.push(
         [
@@ -76,41 +111,32 @@ function exportCsv() {
 
 <template>
   <div class="page">
-    <div class="card filter-card">
-      <div class="filters">
-        <div class="field">
-          <label>{{ t("impaye.dateRange") }}</label>
-          <div class="range-inputs">
-            <input v-model="dateFrom" type="date" class="input" />
-            <span class="range-sep">–</span>
-            <input v-model="dateTo" type="date" class="input" />
-          </div>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h2>{{ t("impayes.title") }}</h2>
+          <p class="subtitle">{{ t("impayes.subtitle") }}</p>
         </div>
-        <div class="field">
-          <label>{{ t("common.client") }}</label>
-          <select v-model="clientId" class="select">
-            <option value="">{{ t("impaye.allClients") }}</option>
-            <option v-for="c in clients" :key="c.id" :value="String(c.id)">
-              {{ c.firstName }} {{ c.lastName }}
-            </option>
-          </select>
-        </div>
-        <div class="filter-actions">
-          <button class="btn btn--primary" type="button" @click="load">{{ t("common.filter") }}</button>
-          <button class="btn btn--ghost" type="button" @click="resetFilters">{{ t("common.all") }}</button>
-          <button v-if="impayes.length" class="btn btn--ghost" type="button" @click="exportCsv">
-            <AppIcon name="download" :size="16" /> {{ t("common.export") }}
-          </button>
-        </div>
+        <button v-if="filtered.length" class="btn btn--ghost" type="button" @click="exportCsv">
+          <AppIcon name="download" :size="16" /> {{ t("common.export") }}
+        </button>
       </div>
+      <ListFilterBar
+        v-model:search="search"
+        v-model:amount-min="amountMin"
+        v-model:amount-max="amountMax"
+        v-model:date-from="dateFrom"
+        v-model:date-to="dateTo"
+        show-amount
+      />
     </div>
 
-    <div v-if="!loading && impayes.length === 0" class="card">
+    <div v-if="!loading && filtered.length === 0" class="card">
       <EmptyState :title="t('impayes.empty')" :hint="t('impayes.emptyHint')" />
     </div>
 
     <div v-else class="impaye-cards">
-      <section v-for="c in impayes" :key="c.clientId" class="card impaye-card">
+      <section v-for="c in filtered" :key="c.clientId" class="card impaye-card">
         <div class="impaye-head">
           <div class="impaye-who">
             <span class="impaye-name">{{ c.clientName }}</span>
@@ -146,15 +172,15 @@ function exportCsv() {
         <table class="table inner-table">
           <thead>
             <tr>
-              <th>{{ t("echeances.columns.reference") }}</th>
-              <th>{{ t("echeances.columns.tranche") }}</th>
-              <th>{{ t("echeances.columns.dueDate") }}</th>
-              <th>{{ t("echeances.columns.amount") }}</th>
-              <th>{{ t("impaye.since") }}</th>
+              <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
+              <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+              <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+              <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+              <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in c.installments" :key="i.installmentId" class="is-late">
+            <tr v-for="i in sortedInstallments(c.installments)" :key="i.installmentId" class="is-late">
               <td>
                 <a class="row-link" href="#" @click.prevent="router.push({ name: 'achat-detail', params: { id: i.purchaseId } })">
                   {{ i.purchaseReference }}
@@ -178,27 +204,11 @@ function exportCsv() {
   flex-direction: column;
   gap: 18px;
 }
-.filter-card {
-  padding: 18px 22px;
-}
-.filters {
-  display: flex;
-  gap: 18px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
-.range-inputs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.range-sep {
+.subtitle {
+  font-size: 13px;
   color: var(--text-muted);
-}
-.filter-actions {
-  display: flex;
-  gap: 10px;
-  margin-inline-start: auto;
+  margin-top: 2px;
+  font-weight: 400;
 }
 .impaye-cards {
   display: flex;

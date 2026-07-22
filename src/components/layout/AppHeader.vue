@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
+import { useClickOutside } from "@/composables/useClickOutside";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
 import { useSettingsStore } from "@/stores/settings";
@@ -31,13 +32,7 @@ async function pickLanguage(lang: AppLocale) {
   }
 }
 
-function onDocClick(e: MouseEvent) {
-  if (langOpen.value && langRef.value && !langRef.value.contains(e.target as Node)) {
-    langOpen.value = false;
-  }
-}
-onMounted(() => document.addEventListener("click", onDocClick));
-onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
+useClickOutside(langRef, () => (langOpen.value = false));
 
 // Route name → i18n nav key; detail routes fall back to the ui override.
 const NAV_KEY: Record<string, string> = {

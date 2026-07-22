@@ -5,8 +5,11 @@ import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
+import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import NewPurchaseModal from "@/components/NewPurchaseModal.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { PurchaseDetail, PurchaseSummary } from "@/types/models";
 
@@ -17,15 +20,31 @@ const fmt = useFormat();
 
 const purchases = ref<PurchaseSummary[]>([]);
 const search = ref("");
+const dateFrom = ref("");
+const dateTo = ref("");
 const loading = ref(true);
 const showModal = ref(false);
 
 const filtered = computed(() => {
   const n = search.value.trim().toLowerCase();
-  if (!n) return purchases.value;
-  return purchases.value.filter((p) =>
-    `${p.reference} ${p.clientName} ${p.productLabel}`.toLowerCase().includes(n),
-  );
+  return purchases.value.filter((p) => {
+    if (n && !`${p.reference} ${p.clientName} ${p.productLabel}`.toLowerCase().includes(n)) {
+      return false;
+    }
+    if (dateFrom.value && p.purchaseDate < dateFrom.value) return false;
+    if (dateTo.value && p.purchaseDate > dateTo.value) return false;
+    return true;
+  });
+});
+
+const { sort, sorted } = useSort(filtered, {
+  reference: (p) => p.reference,
+  client: (p) => p.clientName,
+  product: (p) => p.productLabel,
+  date: (p) => p.purchaseDate,
+  total: (p) => p.totalPrice,
+  remaining: (p) => p.remaining,
+  status: (p) => p.status,
 });
 
 async function load() {
@@ -50,33 +69,37 @@ function onSaved(detail: PurchaseDetail) {
 
 <template>
   <div class="page">
-    <div class="toolbar">
-      <div class="search-box">
-        <AppIcon name="search" :size="18" class="muted" />
-        <input v-model="search" class="search-input" :placeholder="t('achats.searchPlaceholder')" />
-      </div>
-      <button class="btn btn--primary" type="button" @click="showModal = true">
-        <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
-      </button>
-    </div>
-
     <div class="card">
+      <div class="card-header">
+        <h2>{{ t("achats.title") }}</h2>
+        <button class="btn btn--primary" type="button" @click="showModal = true">
+          <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
+        </button>
+      </div>
+
+      <ListFilterBar
+        v-model:search="search"
+        v-model:date-from="dateFrom"
+        v-model:date-to="dateTo"
+        :search-placeholder="t('achats.searchPlaceholder')"
+      />
+
       <EmptyState v-if="!loading && purchases.length === 0" icon="cart" :title="t('achats.empty')" />
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("achats.columns.reference") }}</th>
-            <th>{{ t("achats.columns.client") }}</th>
-            <th>{{ t("achats.columns.product") }}</th>
-            <th>{{ t("achats.columns.date") }}</th>
-            <th>{{ t("achats.columns.total") }}</th>
-            <th>{{ t("achats.columns.remaining") }}</th>
-            <th>{{ t("achats.columns.status") }}</th>
+            <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
+            <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
+            <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
+            <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
+            <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
+            <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
+            <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="p in filtered"
+            v-for="p in sorted"
             :key="p.id"
             class="clickable"
             @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
@@ -102,29 +125,6 @@ function onSaved(detail: PurchaseDetail) {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  max-width: 460px;
-  padding: 9px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-}
-.search-input {
-  border: none;
-  outline: none;
-  background: transparent;
-  flex: 1;
-  color: var(--text);
 }
 .clickable {
   cursor: pointer;

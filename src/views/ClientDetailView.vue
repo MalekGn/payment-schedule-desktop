@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
+import { useBack } from "@/composables/useBack";
 import { useUiStore } from "@/stores/ui";
 import { api } from "@/api";
 import type { ClientDetail, Payment } from "@/types/models";
@@ -15,25 +18,58 @@ const { t } = useI18n();
 const router = useRouter();
 const fmt = useFormat();
 const ui = useUiStore();
+const goBack = useBack("/clients");
 
 const detail = ref<ClientDetail | null>(null);
 const payments = ref<Payment[]>([]);
+const notFound = ref(false);
+
+const { sort: purchaseSort, sorted: sortedPurchases } = useSort(
+  computed(() => detail.value?.purchases ?? []),
+  {
+    reference: (p) => p.reference,
+    product: (p) => p.productLabel,
+    date: (p) => p.purchaseDate,
+    total: (p) => p.totalPrice,
+    remaining: (p) => p.remaining,
+    status: (p) => p.status,
+  },
+);
+
+const { sort: paymentSort, sorted: sortedPayments } = useSort(payments, {
+  date: (p) => p.paymentDate,
+  reference: (p) => p.purchaseReference,
+  tranche: (p) => p.installmentIndex,
+  amount: (p) => p.amount,
+  note: (p) => p.note,
+});
 
 async function load() {
   const clientId = Number(props.id);
-  detail.value = await api.getClientDetail(clientId);
-  payments.value = await api.listPaymentsForClient(clientId);
-  ui.pageTitle = `${detail.value.client.firstName} ${detail.value.client.lastName}`;
+  try {
+    detail.value = await api.getClientDetail(clientId);
+    payments.value = await api.listPaymentsForClient(clientId);
+    ui.pageTitle = `${detail.value.client.firstName} ${detail.value.client.lastName}`;
+  } catch {
+    notFound.value = true;
+  }
 }
 onMounted(load);
-
-const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
 </script>
 
 <template>
-  <div v-if="detail" class="page">
-    <button class="back-link" type="button" @click="router.push('/clients')">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("nav.clients") }}
+  <div v-if="notFound" class="page">
+    <button class="back-link" type="button" @click="goBack">
+      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+    </button>
+    <div class="card">
+      <EmptyState icon="users" :title="t('notFound.clientMissing')" />
+    </div>
+  </div>
+
+  <div v-else-if="detail" class="page">
+    <button class="back-link" type="button" @click="goBack">
+      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
     </button>
 
     <div class="top-grid">
@@ -45,9 +81,9 @@ const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
           </div>
           <div class="contact-info">
             <span class="contact-name">{{ detail.client.firstName }} {{ detail.client.lastName }}</span>
-            <a v-if="detail.client.phone" class="contact-line" :href="tel(detail.client.phone)">
+            <span v-if="detail.client.phone" class="contact-line">
               <AppIcon name="phone" :size="15" /> {{ detail.client.phone }}
-            </a>
+            </span>
             <span v-if="detail.client.address" class="contact-line">
               <AppIcon name="map-pin" :size="15" /> {{ detail.client.address }}
             </span>
@@ -80,17 +116,17 @@ const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("dashboard.table.reference") }}</th>
-            <th>{{ t("common.product") }}</th>
-            <th>{{ t("common.date") }}</th>
-            <th>{{ t("common.total") }}</th>
-            <th>{{ t("achats.columns.remaining") }}</th>
-            <th>{{ t("common.status") }}</th>
+            <SortHeader :sort="purchaseSort" field="reference" :label="t('dashboard.table.reference')" />
+            <SortHeader :sort="purchaseSort" field="product" :label="t('common.product')" />
+            <SortHeader :sort="purchaseSort" field="date" :label="t('common.date')" />
+            <SortHeader :sort="purchaseSort" field="total" :label="t('common.total')" />
+            <SortHeader :sort="purchaseSort" field="remaining" :label="t('achats.columns.remaining')" />
+            <SortHeader :sort="purchaseSort" field="status" :label="t('common.status')" />
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="p in detail.purchases"
+            v-for="p in sortedPurchases"
             :key="p.id"
             class="clickable"
             @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
@@ -112,15 +148,15 @@ const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("paiements.columns.date") }}</th>
-            <th>{{ t("paiements.columns.reference") }}</th>
-            <th>{{ t("paiements.columns.tranche") }}</th>
-            <th>{{ t("paiements.columns.amount") }}</th>
-            <th>{{ t("paiements.columns.note") }}</th>
+            <SortHeader :sort="paymentSort" field="date" :label="t('paiements.columns.date')" />
+            <SortHeader :sort="paymentSort" field="reference" :label="t('paiements.columns.reference')" />
+            <SortHeader :sort="paymentSort" field="tranche" :label="t('paiements.columns.tranche')" />
+            <SortHeader :sort="paymentSort" field="amount" :label="t('paiements.columns.amount')" />
+            <SortHeader :sort="paymentSort" field="note" :label="t('paiements.columns.note')" />
           </tr>
         </thead>
         <tbody>
-          <tr v-for="pay in payments" :key="pay.id">
+          <tr v-for="pay in sortedPayments" :key="pay.id">
             <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
             <td><span class="row-link">{{ pay.purchaseReference }}</span></td>
             <td class="tabular">{{ pay.installmentIndex }}</td>

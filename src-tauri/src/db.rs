@@ -17,7 +17,7 @@ pub type DbResult<T> = Result<T, String>;
 
 impl Db {
     /// Open (creating if needed) the database at `path`, apply the schema, and
-    /// seed demo data on a fresh database.
+    /// seed demo data on a fresh database — development builds only.
     pub fn open(path: &PathBuf) -> DbResult<Self> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -30,7 +30,14 @@ impl Db {
         Ok(db)
     }
 
+    /// Seed first-run demo data, but only in development builds. Production
+    /// bundles (AppImage/deb/MSI/NSIS — built in release mode) ship empty so
+    /// end users start with a clean database. Setting `PAYMENT_SCHEDULE_SEED`
+    /// to `1`/`true` forces seeding in a release build (useful for QA/demos).
     fn seed_if_empty(&self) -> DbResult<()> {
+        if !seeding_enabled() {
+            return Ok(());
+        }
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))
@@ -40,6 +47,23 @@ impl Db {
         }
         Ok(())
     }
+}
+
+/// Whether first-run demo seeding should run. Enabled in debug builds
+/// (`tauri dev`), or when `PAYMENT_SCHEDULE_SEED` is set to a truthy value.
+fn seeding_enabled() -> bool {
+    seeding_decision(
+        cfg!(debug_assertions),
+        std::env::var("PAYMENT_SCHEDULE_SEED").ok().as_deref(),
+    )
+}
+
+/// Pure gate for demo seeding, split out from the compile-time flag and the
+/// environment lookup so the policy can be unit-tested deterministically.
+/// Seed when this is a development (debug) build, or when the override env var
+/// is set to `1`/`true`.
+fn seeding_decision(debug_build: bool, seed_env: Option<&str>) -> bool {
+    debug_build || matches!(seed_env, Some("1") | Some("true"))
 }
 
 /// Apply the schema. Idempotent — safe to call on every startup.
@@ -166,4 +190,63 @@ pub fn split_amounts(total: i64, n: i64) -> Vec<i64> {
     (0..n)
         .map(|i| if i == n - 1 { base + remainder } else { base })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeding_decision_gate() {
+        // Development (debug) build: always seed, whatever the env override says.
+        assert!(seeding_decision(true, None));
+        assert!(seeding_decision(true, Some("0")));
+
+        // Release build: seed only when explicitly forced on. This `false, None`
+        // case is the one that keeps shipped production databases empty.
+        assert!(!seeding_decision(false, None));
+        assert!(!seeding_decision(false, Some("")));
+        assert!(!seeding_decision(false, Some("0")));
+        assert!(!seeding_decision(false, Some("yes")));
+        assert!(seeding_decision(false, Some("1")));
+        assert!(seeding_decision(false, Some("true")));
+    }
+
+    fn client_count(db: &Db) -> i64 {
+        db.conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "payment_schedule_test_{tag}_{}_{nanos}.db",
+            std::process::id()
+        ));
+        p
+    }
+
+    /// Exercises the real `Db::open` wiring: a fresh database is seeded when the
+    /// gate is enabled and left empty otherwise. Robust to both `cargo test`
+    /// (debug → seeds) and `cargo test --release` (no override → empty).
+    #[test]
+    fn open_honors_seeding_gate() {
+        let path = temp_db_path("open");
+        let db = Db::open(&path).unwrap();
+        let count = client_count(&db);
+        if seeding_enabled() {
+            assert!(count > 0, "gate enabled: fresh DB should hold demo clients");
+        } else {
+            assert_eq!(count, 0, "gate disabled: fresh DB should start empty");
+        }
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
 }

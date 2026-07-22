@@ -10,14 +10,18 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 | **Clients** | ✅ | CRUD with validation; overdue badges; delete safeguard when purchases exist; client detail page (purchases, payment history, outstanding). |
 | **Paiements (Payments)** | ✅ | Per-installment recording with partial-payment support; global payment log; per-purchase and per-client history. |
 | **Échéances (Due dates)** | ✅ | Full schedule with all/overdue/upcoming/paid filters; overdue rows highlighted. |
-| **Impayés (Overdue)** | ✅ | Clients with overdue installments; date-range + client filters; per-client contact shortcuts (call/SMS/view); CSV export. |
-| **Settings (Paramètres)** | ✅ | Language, currency, date format, shop logo upload, shop name/info — persisted in SQLite, applied live. |
+| **Impayés (Overdue)** | ✅ | Clients with overdue installments; shared `ListFilterBar` (reference/client search, amount min/max, From–To date range); per-client contact shortcuts (call/SMS/view); CSV export of the filtered list. |
+| **Settings (Paramètres)** | ✅ | Language, currency, date format, alert window (days ahead an installment counts as "due soon", 1–90), shop logo upload, shop name/info — persisted in SQLite, applied live. |
 | **Internationalization** | ✅ | Arabic (RTL), French, English. OS-locale default → French fallback. Full layout mirroring for Arabic. |
 | **Localized formatting** | ✅ | Currency (default TND) and date format (default dd/MM/yyyy) applied everywhere; locale-aware number grouping. |
 | **Logo management** | ✅ | Upload/replace/remove; stored in app-data dir; shown in sidebar/header. |
-| **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; seeded demo data on first run. |
+| **Offline SQLite storage** | ✅ | All data local via `rusqlite` behind Tauri commands; demo data seeded on first run in dev builds only (release starts empty). |
 | **Empty states & validation** | ✅ | Localized empty states and form validation across all modules. |
-| **Alertes** | 🟡 | Sidebar entry + styled placeholder page. Live alerts already surface on the dashboard; dedicated page logic deferred. |
+| **Sortable tables** | ✅ | Click any column header to sort (toggling asc/desc) across every list and detail table; locale-aware, numbers compared numerically. Tables keep the backend order until a column is chosen. |
+| **List filters** | ✅ | Purchases, Payments, Due-dates and Impayés share the same `ListFilterBar` (reference/client search + From–To date range; amount min/max on Payments, Due-dates and Impayés). |
+| **Custom date picker** | ✅ | Shared calendar `DatePicker` (localized month/weekday names, Today button, shows the configured date format). Used in the list filters and in the new-purchase and payment forms (purchase date and each installment due date). Popup teleports to `<body>` so it is never clipped by a scroll container or modal, and closes on outside-click, Esc, or selection. |
+| **Not-found handling** | ✅ | Unknown routes render a localized “page not found” screen with Back/Dashboard actions; detail pages for a missing/deleted id show a recoverable message instead of a blank page. |
+| **Alertes** | ✅ | Dedicated alerts center: consolidates every actionable installment (overdue, due today, due within 7 days) from the full schedule. Summary tiles (count + total per kind, clickable to filter), status tabs, shared `ListFilterBar`, sortable table with a days-late / due-in "timing" column; rows link to the purchase. |
 | **Rapports (Reports)** | 🟡 | Sidebar entry + styled placeholder page. Exportable reporting deferred. |
 | **Windows `.msi`/`.exe` build** | 🟡 | Bundler configuration present; must be built on Windows (see README). |
 
@@ -26,3 +30,9 @@ Status legend: ✅ done · 🟡 partial / placeholder · ⬜ planned
 - **Keyboard accessibility:** forms are tab-navigable, Enter submits, Esc closes modals.
 - **Responsive:** grid layouts collapse below ~1200px; minimum window size enforced (1024×680).
 - **Toasts:** success/error feedback on all mutations.
+
+## Testing
+
+- **Unit tests:** `npm test` (Vitest) — co-located in `src/**`, covering the finance helpers (`src/lib/finance.test.ts`) and the overdue data/sort logic (`src/views/impayes-overdue.test.ts`).
+- **Integration tests:** `npm run test:integration` (Vitest, `vitest.integration.config.ts`) — suites in `tests/integration/` drive the real `api` facade against the in-memory backend across multi-command flows: the purchase → schedule → payment lifecycle, and overdue/dashboard/cascade-delete consistency. Kept out of the default unit run so they stay opt-in.
+- **End-to-end tests:** `npm run test:e2e` — self-contained Playwright suite (`tests/e2e/run.mjs`) drives the real app in headless Chromium against the in-memory mock backend. Spawns its own Vite server on port 5199 and pins the browser locale to French for determinism. Covers app-shell render, dashboard KPIs, full sidebar navigation, client list + create flow, purchase list + search, and the overdue (impayés) page. Failures capture a full-page screenshot under `tests/e2e/artifacts/`.

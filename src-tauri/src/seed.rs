@@ -166,6 +166,7 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
         ("shop_name", "Électro Ménager"),
         ("shop_info", ""),
         ("logo_path", ""),
+        ("alert_soon_days", "7"),
     ];
     for (k, v) in defaults {
         conn.execute(

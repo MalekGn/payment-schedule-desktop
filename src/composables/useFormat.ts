@@ -5,7 +5,7 @@
 import { computed } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 
-const LOCALE_TAG: Record<string, string> = {
+export const LOCALE_TAG: Record<string, string> = {
   fr: "fr-FR",
   en: "en-US",
   // Tunisia commonly uses Western (Latin) digits even in Arabic UIs.

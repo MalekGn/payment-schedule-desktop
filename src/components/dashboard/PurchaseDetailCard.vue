@@ -3,7 +3,9 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import type { Installment, PurchaseDetail } from "@/types/models";
 
 const props = defineProps<{
@@ -18,6 +20,17 @@ const emit = defineEmits<{ pay: [installment: Installment] }>();
 const { t } = useI18n();
 const fmt = useFormat();
 const router = useRouter();
+
+const { sort, sorted: sortedInstallments } = useSort(
+  () => props.detail.installments,
+  {
+    tranche: (i) => i.index,
+    dueDate: (i) => i.dueDate,
+    amount: (i) => i.amount,
+    status: (i) => i.status,
+    paymentDate: (i) => i.paidDate,
+  },
+);
 
 function canPay(i: Installment): boolean {
   if (i.status === "paid") return false;
@@ -87,16 +100,16 @@ function goToPurchase() {
     <table class="table inst-table">
       <thead>
         <tr>
-          <th>{{ t("dashboard.detail.tranche") }}</th>
-          <th>{{ t("dashboard.detail.dueDate") }}</th>
-          <th>{{ t("dashboard.detail.amount") }}</th>
-          <th>{{ t("common.status") }}</th>
-          <th>{{ t("dashboard.detail.paymentDate") }}</th>
+          <SortHeader :sort="sort" field="tranche" :label="t('dashboard.detail.tranche')" />
+          <SortHeader :sort="sort" field="dueDate" :label="t('dashboard.detail.dueDate')" />
+          <SortHeader :sort="sort" field="amount" :label="t('dashboard.detail.amount')" />
+          <SortHeader :sort="sort" field="status" :label="t('common.status')" />
+          <SortHeader :sort="sort" field="paymentDate" :label="t('dashboard.detail.paymentDate')" />
           <th class="col-action">{{ t("common.actions") }}</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="i in detail.installments" :key="i.id" :class="{ 'is-late': i.status === 'late' }">
+        <tr v-for="i in sortedInstallments" :key="i.id" :class="{ 'is-late': i.status === 'late' }">
           <td class="tabular">{{ i.index }}/{{ detail.purchase.installmentCount }}</td>
           <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
           <td class="tabular">{{ fmt.number(i.amount) }}</td>
@@ -104,7 +117,7 @@ function goToPurchase() {
           <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
           <td class="col-action">
             <button v-if="canPay(i)" class="btn btn--primary btn--sm" type="button" @click="emit('pay', i)">
-              {{ t("dashboard.detail.register") }}
+              {{ fullActions ? t("common.edit") : t("dashboard.detail.register") }}
             </button>
             <a v-else-if="i.status === 'paid'" class="row-link" href="#" @click.prevent="goToPurchase">
               {{ t("dashboard.detail.view") }}

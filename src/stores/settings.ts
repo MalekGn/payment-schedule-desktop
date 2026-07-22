@@ -11,11 +11,15 @@ const DEFAULTS: Settings = {
   logoPath: null,
   shopName: "",
   shopInfo: "",
+  alertSoonDays: 7,
   languageIsDefault: true,
 };
 
 export const DATE_FORMATS = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
 export const CURRENCIES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
+/** Allowed bounds for the "due soon" alert window (days). */
+export const ALERT_SOON_DAYS_MIN = 1;
+export const ALERT_SOON_DAYS_MAX = 90;
 
 /** Detect the OS locale (Tauri OS plugin when available, else the browser). */
 async function detectOsLocale(): Promise<AppLocale> {
@@ -41,6 +45,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const dateFormat = computed(() => settings.value.dateFormat);
   const logoPath = computed(() => settings.value.logoPath);
   const shopName = computed(() => settings.value.shopName);
+  const alertSoonDays = computed(() => settings.value.alertSoonDays);
 
   async function load() {
     settings.value = await api.getSettings();
@@ -78,6 +83,7 @@ export const useSettingsStore = defineStore("settings", () => {
     dateFormat,
     logoPath,
     shopName,
+    alertSoonDays,
     load,
     update,
     setLanguage,

@@ -166,6 +166,8 @@ pub struct Payment {
     pub installment_index: i64,
     pub purchase_id: i64,
     pub purchase_reference: String,
+    pub client_id: i64,
+    pub client_name: String,
     pub amount: i64,
     pub payment_date: String,
     pub note: Option<String>,
@@ -286,6 +288,9 @@ pub struct Settings {
     pub logo_path: Option<String>,
     pub shop_name: String,
     pub shop_info: String,
+    /// Horizon (in days) within which an upcoming unpaid installment is surfaced
+    /// as a "due soon" alert on the Alertes page. Defaults to 7.
+    pub alert_soon_days: i64,
     /// True until the user changes the language for the first time; lets the
     /// frontend apply OS-locale detection only on a genuinely fresh install.
     pub language_is_default: bool,
@@ -299,4 +304,5 @@ pub struct SettingsPatch {
     pub date_format: Option<String>,
     pub shop_name: Option<String>,
     pub shop_info: Option<String>,
+    pub alert_soon_days: Option<i64>,
 }

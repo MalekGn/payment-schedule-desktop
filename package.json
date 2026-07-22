@@ -1,16 +1,18 @@
 {
-  "name": "echeancier",
+  "name": "payment-schedule",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Échéancier — installment-sale tracking for small Tunisian appliance shops",
+  "description": "paymentSchedule — installment-sale tracking for small Tunisian appliance shops",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "node tests/e2e/run.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

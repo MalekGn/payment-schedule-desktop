@@ -4,7 +4,10 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
+import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { ScheduleRow } from "@/types/models";
 
@@ -17,6 +20,12 @@ const rows = ref<ScheduleRow[]>([]);
 const filter = ref<Filter>("all");
 const loading = ref(true);
 
+const search = ref("");
+const amountMin = ref("");
+const amountMax = ref("");
+const dateFrom = ref("");
+const dateTo = ref("");
+
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "echeances.filter.all" },
   { key: "overdue", label: "echeances.filter.overdue" },
@@ -24,17 +33,41 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "paid", label: "echeances.filter.paid" },
 ];
 
-const filtered = computed(() => {
+function matchesStatus(r: ScheduleRow): boolean {
   switch (filter.value) {
     case "overdue":
-      return rows.value.filter((r) => r.status === "late");
+      return r.status === "late";
     case "upcoming":
-      return rows.value.filter((r) => r.status === "pending" || r.status === "partial");
+      return r.status === "pending" || r.status === "partial";
     case "paid":
-      return rows.value.filter((r) => r.status === "paid");
+      return r.status === "paid";
     default:
-      return rows.value;
+      return true;
   }
+}
+
+const filtered = computed(() => {
+  const needle = search.value.trim().toLowerCase();
+  const min = amountMin.value === "" ? null : Number(amountMin.value);
+  const max = amountMax.value === "" ? null : Number(amountMax.value);
+  return rows.value.filter((r) => {
+    if (!matchesStatus(r)) return false;
+    if (needle && !`${r.reference} ${r.clientName}`.toLowerCase().includes(needle)) return false;
+    if (min != null && r.amount < min) return false;
+    if (max != null && r.amount > max) return false;
+    if (dateFrom.value && r.dueDate < dateFrom.value) return false;
+    if (dateTo.value && r.dueDate > dateTo.value) return false;
+    return true;
+  });
+});
+
+const { sort, sorted } = useSort(filtered, {
+  reference: (r) => r.reference,
+  client: (r) => r.clientName,
+  tranche: (r) => r.index,
+  dueDate: (r) => r.dueDate,
+  amount: (r) => r.amount,
+  status: (r) => r.status,
 });
 
 onMounted(async () => {
@@ -65,21 +98,30 @@ onMounted(async () => {
         </div>
       </div>
 
+      <ListFilterBar
+        v-model:search="search"
+        v-model:amount-min="amountMin"
+        v-model:amount-max="amountMax"
+        v-model:date-from="dateFrom"
+        v-model:date-to="dateTo"
+        show-amount
+      />
+
       <EmptyState v-if="!loading && filtered.length === 0" icon="calendar" :title="t('echeances.empty')" />
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("echeances.columns.reference") }}</th>
-            <th>{{ t("echeances.columns.client") }}</th>
-            <th>{{ t("echeances.columns.tranche") }}</th>
-            <th>{{ t("echeances.columns.dueDate") }}</th>
-            <th>{{ t("echeances.columns.amount") }}</th>
-            <th>{{ t("echeances.columns.status") }}</th>
+            <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
+            <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
+            <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+            <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+            <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+            <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="r in filtered"
+            v-for="r in sorted"
             :key="r.installmentId"
             class="clickable"
             :class="{ 'is-late': r.status === 'late' }"

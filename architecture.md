@@ -2,7 +2,7 @@
 
 ## Overview
 
-Échéancier is a **Tauri 2** desktop app: a Rust **core process** owns all state
+paymentSchedule is a **Tauri 2** desktop app: a Rust **core process** owns all state
 and persistence, and a **Vue 3 WebView** renders the UI. The two communicate
 only through typed Tauri **commands** (request/response IPC). The frontend has no
 direct database or filesystem access.
@@ -21,7 +21,7 @@ direct database or filesystem access.
 │               Core process (Rust)              │
 │  lib.rs ── commands.rs ── db.rs ── seed.rs     │
 │                 │                              │
-│         rusqlite  →  echeancier.db (SQLite)    │
+│    rusqlite  →  payment_schedule.db (SQLite)   │
 │         app-data dir  →  logo.<ext>            │
 └────────────────────────────────────────────────┘
 ```
@@ -34,16 +34,22 @@ direct database or filesystem access.
   content area, and toasts.
 - **`views/`** — one component per route (Dashboard, Achats, PurchaseDetail,
   Clients, ClientDetail, Paiements, Echeances, Impayes, Settings, Alertes,
-  Rapports).
+  Rapports, NotFound — the router's catch-all).
 - **`components/`** — reusable UI (`ui/`: buttons via CSS, `BaseModal`,
-  `StatusBadge`, `KpiCard`, `EmptyState`, `ConfirmDialog`, `AppIcon`) and
-  feature components (`dashboard/*`, `PaymentModal`, `NewPurchaseModal`,
-  `ClientForm`).
+  `StatusBadge`, `KpiCard`, `EmptyState`, `ConfirmDialog`, `AppIcon`,
+  `SortHeader`) and feature components (`dashboard/*`, `PaymentModal`,
+  `NewPurchaseModal`, `ClientForm`).
 - **`stores/`** — Pinia: `settings` (language/currency/date/logo, OS-locale
   detection), `stats` (sidebar badge counters), `ui` (toasts, sidebar toggle,
   header-title override).
-- **`composables/useFormat.ts`** — locale-aware money/date/number formatting,
-  reactive to the settings store.
+- **`composables/`** — `useFormat` (locale-aware money/date/number formatting,
+  reactive to the settings store), `useSort` (client-side, direction-toggling
+  table sorting driven by `SortHeader`), `useBack` (returns to the real
+  previous page, falling back to a list route on a deep link), and
+  `useClickOutside` (dismiss popovers/menus — used by the header language menu,
+  `DatePicker`, and `DateRangeFilter`). UI filter pieces live in `ui/`:
+  `DatePicker` (calendar), `DateRangeFilter` (date popover), `ListFilterBar`
+  (reference/client/amount/date bar).
 - **`lib/finance.ts`** — pure, unit-tested installment/payment math (the TS
   mirror of `db.rs`), reused by the browser mock.
 - **`i18n/`** + **`locales/{ar,fr,en}.json`** — all UI strings; RTL applied via

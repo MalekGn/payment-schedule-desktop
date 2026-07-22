@@ -1,6 +1,6 @@
-# Échéancier
+# paymentSchedule
 
-**Échéancier** is an offline-first desktop app for small Tunisian
+**paymentSchedule** is an offline-first desktop app for small Tunisian
 electronics / appliance shops (*vente de produits électroménagers*) to track
 **installment sales**: clients, purchases (*achats*), payment schedules
 (*échéances*), payments, and overdue balances (*impayés*).
@@ -59,8 +59,9 @@ npm run tauri dev    # launch the desktop app (starts Vite, then the Tauri shell
 ```
 
 `npm run tauri dev` runs the Vite dev server on `http://localhost:5173` and opens
-the native window. On first launch the database is created and seeded with demo
-Tunisian data.
+the native window. On first launch the database is created, and in development
+builds it is seeded with demo Tunisian data. Release builds start empty (see
+below).
 
 ### Browser preview (no Rust)
 
@@ -75,8 +76,10 @@ browser. This is what the automated screenshots and tests use.
 ### Tests & type-checking
 
 ```bash
-npm test             # Vitest unit tests (installment/payment math)
-npm run build        # vue-tsc type-check + production build
+npm test                 # Vitest unit tests (installment/payment math, overdue logic)
+npm run test:integration # Vitest integration tests (api facade + backend flows)
+npm run test:e2e         # Playwright end-to-end suite (tests/e2e/run.mjs)
+npm run build            # vue-tsc type-check + production build
 ```
 
 ---
@@ -108,6 +111,30 @@ CI runner (e.g. GitHub Actions `windows-latest` with `tauri-apps/tauri-action`).
 The build **configuration** for both targets already lives in
 `src-tauri/tauri.conf.json` (`bundle.targets`).
 
+### Releases via CI (`.github/workflows/build.yml`)
+
+Pushing a **version tag** (`v*`) runs a GitHub Actions pipeline that typechecks
+and runs the unit tests, then builds native installers on two runners and
+publishes them to a **GitHub Release** for that tag:
+
+| Runner | Installers produced |
+|---|---|
+| `ubuntu-22.04` | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
+| `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11) |
+
+To cut a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Both runners attach their installers to one shared Release, published as a
+**draft** so you can review the assets and notes before making it public. The
+workflow can also be triggered manually via **workflow_dispatch**. Per-OS bundle
+targets are set with `tauri build --bundles …`, so each runner emits only its
+own package formats.
+
 ### App icons
 
 Icons are generated from a single source image:
@@ -126,16 +153,19 @@ Everything is stored locally in the OS **app-data directory**:
 
 | Platform | Location |
 |----------|----------|
-| Linux | `~/.local/share/tn.echeancier.app/` |
-| Windows | `%APPDATA%\tn.echeancier.app\` |
+| Linux | `~/.local/share/tn.paymentschedule.app/` |
+| Windows | `%APPDATA%\tn.paymentschedule.app\` |
 
-- **`echeancier.db`** — the SQLite database (clients, purchases, installments,
-  payments, settings). Created and seeded on first launch.
+- **`payment_schedule.db`** — the SQLite database (clients, purchases, installments,
+  payments, settings). Created on first launch. Demo data is seeded only in
+  development builds (`tauri dev`); release bundles start empty. Set
+  `PAYMENT_SCHEDULE_SEED=1` to force seeding a fresh DB in a release build.
 - **`logo.<ext>`** — the shop logo uploaded in Settings, copied into the app-data
   dir and referenced from the `setting` table. Displayed in the sidebar/header
   via Tauri's asset protocol.
 
-To reset the app to a fresh seeded state, delete `echeancier.db` and restart.
+To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
+development build it is re-seeded; in a release build it comes back empty.
 
 ---
 

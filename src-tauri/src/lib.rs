@@ -1,4 +1,4 @@
-//! Échéancier — Tauri application entry point.
+//! paymentSchedule — Tauri application entry point.
 //! Opens the SQLite database in the platform app-data directory, manages it as
 //! shared state, and registers the command handlers used by the Vue frontend.
 
@@ -18,7 +18,7 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("echeancier.db");
+            let db_path = data_dir.join("payment_schedule.db");
             let database = db::Db::open(&db_path)
                 .map_err(|e| format!("Failed to open database: {e}"))?;
             app.manage(database);
@@ -52,5 +52,5 @@ pub fn run() {
             commands::clear_logo,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Échéancier");
+        .expect("error while running paymentSchedule");
 }

@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseModal from "@/components/ui/BaseModal.vue";
+import DatePicker from "@/components/ui/DatePicker.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
@@ -148,8 +149,8 @@ async function submit() {
           <span v-if="errors.client" class="field-error">{{ errors.client }}</span>
         </div>
         <div class="field">
-          <label for="np-date">{{ t("achats.form.purchaseDate") }}</label>
-          <input id="np-date" v-model="form.purchaseDate" type="date" class="input" />
+          <label>{{ t("achats.form.purchaseDate") }}</label>
+          <DatePicker v-model="form.purchaseDate" />
         </div>
       </div>
 
@@ -226,7 +227,7 @@ async function submit() {
               class="input inst-amount"
               @input="onAmountEdit"
             />
-            <input v-model="r.dueDate" type="date" class="input inst-date" />
+            <DatePicker v-model="r.dueDate" />
           </div>
         </div>
         <div class="inst-sum" :class="{ ok: sumMatches, bad: !sumMatches }">

@@ -1,0 +1,111 @@
+name: Release desktop bundles
+
+# Build the Tauri desktop app for Linux (deb + rpm/RedHat) and Windows (msi + nsis)
+# and publish them to a GitHub Release whenever a version tag is pushed, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+# `workflow_dispatch` lets you also trigger a build manually from the Actions tab.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# A newer tag build supersedes an in-flight one for the same ref.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# tauri-action needs write access to create the Release and upload installers.
+permissions:
+  contents: write
+
+jobs:
+  # Fast gate: typecheck + unit tests must pass before we spend time on native bundling.
+  test:
+    name: Typecheck & unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Typecheck & build frontend
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  release:
+    name: ${{ matrix.label }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: build on 22.04 for broad glibc compatibility with older distros.
+          # deb -> Debian/Ubuntu, rpm -> RedHat/Fedora/openSUSE.
+          - os: ubuntu-22.04
+            label: Linux (deb + rpm)
+            bundles: deb,rpm
+          # Windows: msi + nsis installers run on Windows 10 and 11.
+          - os: windows-latest
+            label: Windows (msi + nsis)
+            bundles: msi,nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            file \
+            libssl-dev \
+            rpm
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # Builds the frontend (via beforeBuildCommand), then the native bundles, then
+      # creates/updates the GitHub Release for this tag and uploads the installers to it.
+      # Both matrix runners target the same tagName, so they attach to one shared Release.
+      # --bundles overrides tauri.conf.json targets so each OS emits only its own installers.
+      - name: Build & publish to GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'paymentSchedule ${{ github.ref_name }}'
+          releaseBody: 'Desktop installers for Linux (deb/rpm) and Windows (msi/nsis). See the assets below.'
+          # Published as a draft so you can review the assets and notes before it goes live.
+          releaseDraft: true
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}

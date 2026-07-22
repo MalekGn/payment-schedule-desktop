@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Échéancier",
+  "productName": "paymentSchedule",
   "version": "0.1.0",
-  "identifier": "tn.echeancier.app",
+  "identifier": "tn.paymentschedule",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Échéancier",
+        "title": "paymentSchedule",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,
@@ -42,7 +42,7 @@
       "icons/icon.ico"
     ],
     "category": "Business",
-    "shortDescription": "Suivi des ventes à crédit / paiements échelonnés",
-    "longDescription": "Application de bureau hors-ligne pour les commerces d'électroménager: gestion des clients, achats, échéances et impayés."
+    "shortDescription": "Tracking of sales on credit / deferred payments",
+    "longDescription": "A simple and efficient tool to track sales on credit, deferred payments, and overdue installments. Manage your clients, purchases, payments, and due dates with ease."
   }
 }

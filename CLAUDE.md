@@ -42,6 +42,12 @@ State the routing decision in one line before proceeding (e.g. "Routing: Impleme
 - Provide reproducible steps for any bug found
 - Flag edge cases and risks explicitly, even ones not covered by tests
 - Report findings as: Summary → Test cases run (or "not run — awaiting confirmation") → Issues found → Recommendations
+- **Generate or update a QA report** at `docs/e2e/qa-report.md` on every QA pass. Use the same Summary → Test cases → Issues → Recommendations structure, date each entry, and append a new dated section rather than discarding prior history. This is the durable record of what was tested and what remains open; the terminal summary is a mirror of it, not a replacement.
+
+Integration/E2E test layout for this project:
+- **Unit tests** live co-located in `src/**` and run with `npm test` (Vitest).
+- **Integration tests** live in `tests/integration/**` and run only via `npm run test:integration` (separate `vitest.integration.config.ts`) — kept out of the default unit run so they stay opt-in per the constraint below.
+- **End-to-end tests** live in `tests/e2e/` (`run.mjs`, Playwright) and run via `npm run test:e2e`; failure screenshots land in `tests/e2e/artifacts/`. The QA report itself stays under `docs/e2e/qa-report.md` (it is documentation, not test code).
 
 **Unit tests are the exception** — always run these automatically as part of Implementation (Phase 2), since they're fast and give immediate feedback on the change just made.
 
@@ -56,6 +62,7 @@ Update these only when their content is actually affected — don't touch them o
 | `features.md` | A feature is added, removed, or its status changes. Format: name, status, one-line description. |
 | `README.md` | Setup, usage, tech stack, or high-level architecture changes. |
 | `architecture.md` | System design, components, data flow, or a key technical decision changes. |
+| `docs/e2e/qa-report.md` | Every QA pass — append a dated entry (Summary → Test cases → Issues → Recommendations). Created if absent. |
 
 Each update should be a diff to the existing file, not a full rewrite, unless the file doesn't exist yet.
 

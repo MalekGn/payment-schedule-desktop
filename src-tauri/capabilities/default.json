@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Permissions for the main Échéancier window.",
+  "description": "Permissions for the main paymentSchedule window.",
   "windows": ["main"],
   "permissions": [
     "core:default",

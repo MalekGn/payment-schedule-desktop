@@ -1,31 +1,45 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import PurchaseDetailCard from "@/components/dashboard/PurchaseDetailCard.vue";
 import PaymentModal from "@/components/PaymentModal.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useSort } from "@/composables/useSort";
+import { useBack } from "@/composables/useBack";
 import { useUiStore } from "@/stores/ui";
 import { api } from "@/api";
 import type { Installment, Payment, PurchaseDetail } from "@/types/models";
 
 const props = defineProps<{ id: string }>();
 const { t } = useI18n();
-const router = useRouter();
 const fmt = useFormat();
 const ui = useUiStore();
+const goBack = useBack("/achats");
 
 const detail = ref<PurchaseDetail | null>(null);
 const payments = ref<Payment[]>([]);
 const payTarget = ref<Installment | null>(null);
+const notFound = ref(false);
+
+const { sort, sorted: sortedPayments } = useSort(payments, {
+  date: (p) => p.paymentDate,
+  tranche: (p) => p.installmentIndex,
+  amount: (p) => p.amount,
+  note: (p) => p.note,
+});
 
 async function load() {
   const pid = Number(props.id);
-  detail.value = await api.getPurchaseDetail(pid);
-  payments.value = await api.listPaymentsForPurchase(pid);
-  ui.pageTitle = detail.value.purchase.reference;
+  try {
+    detail.value = await api.getPurchaseDetail(pid);
+    payments.value = await api.listPaymentsForPurchase(pid);
+    ui.pageTitle = detail.value.purchase.reference;
+  } catch {
+    notFound.value = true;
+  }
 }
 onMounted(load);
 
@@ -37,9 +51,18 @@ async function onSaved(updated: PurchaseDetail) {
 </script>
 
 <template>
-  <div v-if="detail" class="page">
-    <button class="back-link" type="button" @click="router.push('/achats')">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("nav.achats") }}
+  <div v-if="notFound" class="page">
+    <button class="back-link" type="button" @click="goBack">
+      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+    </button>
+    <div class="card">
+      <EmptyState icon="cart" :title="t('notFound.purchaseMissing')" />
+    </div>
+  </div>
+
+  <div v-else-if="detail" class="page">
+    <button class="back-link" type="button" @click="goBack">
+      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
     </button>
 
     <PurchaseDetailCard :detail="detail" full-actions @pay="payTarget = $event" />
@@ -50,14 +73,14 @@ async function onSaved(updated: PurchaseDetail) {
       <table v-else class="table">
         <thead>
           <tr>
-            <th>{{ t("paiements.columns.date") }}</th>
-            <th>{{ t("paiements.columns.tranche") }}</th>
-            <th>{{ t("paiements.columns.amount") }}</th>
-            <th>{{ t("paiements.columns.note") }}</th>
+            <SortHeader :sort="sort" field="date" :label="t('paiements.columns.date')" />
+            <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
+            <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
+            <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
           </tr>
         </thead>
         <tbody>
-          <tr v-for="pay in payments" :key="pay.id">
+          <tr v-for="pay in sortedPayments" :key="pay.id">
             <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
             <td class="tabular">{{ pay.installmentIndex }}/{{ detail.purchase.installmentCount }}</td>
             <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
