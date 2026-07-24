@@ -50,9 +50,10 @@ jobs:
         include:
           # Linux: build on 22.04 for broad glibc compatibility with older distros.
           # deb -> Debian/Ubuntu, rpm -> RedHat/Fedora/openSUSE.
+          # appimage -> a single self-contained file that runs without installing.
           - os: ubuntu-22.04
-            label: Linux (deb + rpm)
-            bundles: deb,rpm
+            label: Linux (deb + rpm + AppImage)
+            bundles: deb,rpm,appimage
           # Windows: msi + nsis installers run on Windows 10 and 11.
           - os: windows-latest
             label: Windows (msi + nsis)
