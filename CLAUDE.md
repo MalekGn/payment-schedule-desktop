@@ -1,6 +1,6 @@
 # Software Delivery Workflow
 
-This project follows a structured delivery workflow with three phases: **Planning**, **Implementation**, and **QA**. Use real tools (Read, Write, Edit, Bash, Glob, Grep) to do the work — do not narrate actions as if simulating them.
+This project follows a structured delivery workflow with four phases: **Planning**, **Implementation**, **Code Review**, and **QA**. Use real tools (Read, Write, Edit, Bash, Glob, Grep) to do the work — do not narrate actions as if simulating them.
 
 ---
 
@@ -9,7 +9,7 @@ This project follows a structured delivery workflow with three phases: **Plannin
 For every new request, first classify it:
 
 - **Bug report, "test this," "validate," "does X work"** → go to **QA phase**
-- **"Add," "build," "implement," "refactor," "design"** → go to **Planning phase**, then **Implementation phase**
+- **"Add," "build," "implement," "refactor," "design"** → go to **Planning phase**, then **Implementation phase**, then **Code Review phase**
 - **Ambiguous or multi-part request** → split into sub-tasks, route each independently, note the split before starting
 
 State the routing decision in one line before proceeding (e.g. "Routing: Implementation — this adds a new feature").
@@ -33,7 +33,30 @@ State the routing decision in one line before proceeding (e.g. "Routing: Impleme
 - Update project docs (see below) if the change affects them
 - Run the test suite / linter if one exists in the project before considering the task done
 
-## Phase 3: QA
+## Phase 3: Code Review
+
+Every implementation goes through a self-review pass before QA. This is not optional and does not require the user to ask for it. Review the actual diff/files just written — don't review from memory or assumption.
+
+Check and explicitly report on each of the following:
+
+- **Organization & structure** — logical file/module layout, appropriate separation of concerns, no god-objects/god-functions, sensible dependency direction
+- **SOLID principles** — single responsibility, open/closed, Liskov substitution, interface segregation, dependency inversion, applied where relevant to the language/paradigm (not forced onto code where they don't fit, e.g. simple scripts)
+- **Data integrity (ACID-relevant changes)** — for any code touching persistence/transactions: atomicity, consistency, isolation, durability are preserved; no partial-write states, no race conditions on shared state
+- **Safety & robustness** — no memory leaks (unclosed handles/connections/listeners, unbounded caches, dangling references), no obvious concurrency hazards, resource cleanup (finally/using/defer/context managers) present where needed
+- **Error handling** — errors are caught at the right level, not swallowed silently, not overly broad (no bare `except:`/`catch {}`), failure paths leave the system in a consistent state, user-facing errors don't leak internals
+- **Security / vulnerabilities** — no injection risks (SQL, command, template, XSS), no hardcoded secrets/credentials, proper input validation and output encoding, safe handling of authN/authZ, no insecure deserialization, dependencies free of known-bad patterns, least-privilege access to resources
+- **Readability & naming** — names are descriptive and consistent with project convention, functions/methods are appropriately sized, control flow isn't needlessly nested or clever
+- **Formatting** — consistent with project linter/formatter config if one exists; run it rather than eyeballing
+- **Comments & documentation** — non-obvious logic is explained, public APIs/functions have docstrings/JSDoc, comments explain *why* not *what*, no stale/misleading comments left behind
+- **Logging** — meaningful log points at appropriate levels (not excessive, not silent on failure paths), no sensitive data (secrets, PII, tokens) logged
+
+Report the review as: **Summary → Findings by category (only categories with findings) → Severity (blocker / should-fix / nit) → Action taken**.
+
+- **Blockers** (security vulnerabilities, data-loss risks, broken error handling) must be fixed before moving to QA — fix them directly, then re-state that the blocker is resolved.
+- **Should-fix / nit** items: fix if trivial and low-risk; otherwise list them and ask the user whether to fix now or track for later.
+- If the review finds nothing to flag, say so explicitly rather than skipping the phase silently (e.g. "Code Review: no issues found across the categories above").
+
+## Phase 4: QA
 
 - Base test scenarios strictly on the actual implemented behavior — read the code, don't assume
 - Write integration and/or end-to-end tests as appropriate to the change
@@ -72,6 +95,8 @@ Each update should be a diff to the existing file, not a full rewrite, unless th
 
 - No mixing phases in one response without stating the transition (e.g. "Planning done, moving to Implementation")
 - No skipping confirmation on irreversible/architectural changes
+- No skipping Code Review after Implementation — every implementation gets reviewed before QA, even small changes
+- No moving to QA with unresolved security or data-loss blockers from Code Review
 - No test-writing based on assumed behavior — verify against actual code first
 - No doc updates that aren't tied to an actual change made in this task
 - No running integration/E2E test suites unless the user explicitly requests it — writing them is fine, executing them is not the default
