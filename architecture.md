@@ -45,7 +45,8 @@ direct database or filesystem access.
 - **`composables/`** — `useFormat` (locale-aware money/date/number formatting,
   reactive to the settings store), `useSort` (client-side, direction-toggling
   table sorting driven by `SortHeader`), `useBack` (returns to the real
-  previous page, falling back to a list route on a deep link), and
+  previous page, falling back to a list route on a deep link or when the previous
+  entry is itself an unknown URL), and
   `useClickOutside` (dismiss popovers/menus — used by the header language menu,
   `DatePicker`, and `DateRangeFilter`). UI filter pieces live in `ui/`:
   `DatePicker` (calendar), `DateRangeFilter` (date popover), `ListFilterBar`

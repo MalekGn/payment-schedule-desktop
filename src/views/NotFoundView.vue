@@ -14,7 +14,7 @@ const goBack = useBack("/");
     <p>{{ t("notFound.description") }}</p>
     <div class="stub-actions">
       <button class="btn btn--ghost" type="button" @click="goBack">
-        <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+        <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
       </button>
       <RouterLink class="btn btn--primary" to="/">{{ t("notFound.home") }}</RouterLink>
     </div>

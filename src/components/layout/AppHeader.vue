@@ -45,6 +45,7 @@ const NAV_KEY: Record<string, string> = {
   alertes: "nav.alertes",
   rapports: "nav.rapports",
   parametres: "nav.parametres",
+  "not-found": "notFound.title",
 };
 
 const title = computed(() => {

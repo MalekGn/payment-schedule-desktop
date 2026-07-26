@@ -60,7 +60,7 @@ onMounted(load);
 <template>
   <div v-if="notFound" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
     <div class="card">
       <EmptyState icon="users" :title="t('notFound.clientMissing')" />
@@ -69,7 +69,7 @@ onMounted(load);
 
   <div v-else-if="detail" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
 
     <div class="top-grid">

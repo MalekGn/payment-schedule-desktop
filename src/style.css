@@ -360,3 +360,9 @@ textarea {
 [dir="rtl"] .card-header .card-link {
   /* keep link on the inline-end automatically via flex */
 }
+
+/* Directional icons must mirror in RTL — "back" points right in Arabic. Opt-in
+   per usage so non-directional icons (clock, check, alert) are never flipped. */
+[dir="rtl"] .icon-flip {
+  transform: scaleX(-1);
+}

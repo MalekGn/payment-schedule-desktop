@@ -74,6 +74,7 @@ export default defineConfigWithVueTs(
         URL: "readonly",
         document: "readonly",
         window: "readonly",
+        getComputedStyle: "readonly",
       },
     },
   },

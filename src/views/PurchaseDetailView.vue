@@ -53,7 +53,7 @@ async function onSaved(updated: PurchaseDetail) {
 <template>
   <div v-if="notFound" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
     <div class="card">
       <EmptyState icon="cart" :title="t('notFound.purchaseMissing')" />
@@ -62,7 +62,7 @@ async function onSaved(updated: PurchaseDetail) {
 
   <div v-else-if="detail" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
 
     <PurchaseDetailCard :detail="detail" full-actions @pay="payTarget = $event" />

@@ -595,6 +595,122 @@ test("alertes: a row links through to its purchase detail", async (page) => {
   );
 });
 
+// --- Not-found recovery ------------------------------------------------------
+// Unknown URLs hit the router's catch-all (`name: "not-found"`) and render
+// NotFoundView: a localized card with a ghost "Retour" button (useBack) and a
+// primary link to the dashboard.
+//
+// Coverage limit, deliberate: `open()` does a full document load, and vue-router
+// replaceState's fresh history state on initial navigation, so `state.back` is
+// always null here — these tests exercise the *fallback* branch. There is no UI
+// path that router-navigates to an unknown URL, so the genuine `router.back()`
+// branch and the "don't go back into another 404" skip are covered by the
+// `shouldGoBack` unit tests in src/composables/useBack.test.ts instead.
+
+test("unknown route renders the localized not-found page", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+
+  assertEqual(await page.locator(".stub h2").innerText(), "Page introuvable", "not-found heading");
+  // The catch-all is in AppHeader's NAV_KEY, so the header names the page
+  // rather than falling back to the app name.
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    "Page introuvable",
+    "header title on the not-found page",
+  );
+  assertEqual(
+    await page.locator(".stub-actions .btn").count(),
+    2,
+    "not-found offers two ways out (back + dashboard)",
+  );
+  assertEqual(
+    (await page.locator(".stub-actions .btn--ghost").innerText()).trim(),
+    "Retour",
+    "back button label",
+  );
+});
+
+test("not-found Back falls back to the dashboard when there is no in-app history", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  await page.locator(".stub-actions .btn--ghost").click();
+
+  await page.waitForFunction(() => window.location.pathname === "/", undefined, { timeout: 5000 });
+  assertEqual(await page.evaluate(() => window.location.pathname), "/", "landed on the dashboard");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "header title after recovering from the not-found page",
+  );
+});
+
+test("not-found dashboard link returns to the dashboard", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  await page.locator(".stub-actions .btn--primary").click();
+
+  await page.waitForFunction(() => window.location.pathname === "/", undefined, { timeout: 5000 });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "dashboard link reaches the dashboard",
+  );
+  assertEqual(await page.locator(".kpi-row .kpi").count(), 5, "dashboard actually rendered");
+});
+
+test("not-found back arrow mirrors in Arabic (RTL)", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  const arrow = page.locator(".stub-actions .btn--ghost .app-icon");
+
+  // Baseline: French, LTR, arrow drawn as authored.
+  assertEqual(await page.locator("html").getAttribute("dir"), "ltr", "baseline dir is ltr");
+  assertEqual(
+    await arrow.evaluate((el) => getComputedStyle(el).transform),
+    "none",
+    "arrow is not flipped in LTR",
+  );
+
+  await page.locator(".lang-btn").click();
+  await page.locator(".lang-option", { hasText: "العربية" }).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute("dir") === "rtl",
+    undefined,
+    { timeout: 5000 },
+  );
+
+  assertEqual(
+    await page.locator(".stub h2").innerText(),
+    "الصفحة غير موجودة",
+    "not-found heading re-renders in Arabic",
+  );
+  // `.icon-flip` under [dir="rtl"] applies scaleX(-1) so "back" points right.
+  assertEqual(
+    await arrow.evaluate((el) => getComputedStyle(el).transform),
+    "matrix(-1, 0, 0, 1, 0, 0)",
+    "back arrow is mirrored in RTL",
+  );
+});
+
+test("a deleted record's detail page offers a mirrored way back", async (page) => {
+  // Same recovery affordance on the in-page missing-record state, which is a
+  // valid route (client-detail) rather than the router's catch-all.
+  await open(page, "/clients/999999");
+  await page.locator(".back-link").waitFor({ timeout: 10000 });
+
+  assertEqual(
+    await page.locator(".empty .empty-title").innerText(),
+    "Ce client n'existe pas ou a été supprimé.",
+    "missing client renders a recoverable message, not a blank page",
+  );
+  await page.locator(".back-link").click();
+  await page.waitForFunction(() => window.location.pathname === "/clients", undefined, {
+    timeout: 5000,
+  });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.clients,
+    "back from a missing client falls back to the clients list",
+  );
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {
