@@ -154,7 +154,12 @@ pub fn add_interval(date: NaiveDate, kind: &str, interval_days: Option<i64>, k: 
 /// Effective per-installment status computed against `today`.
 /// "paid" once fully covered; "late" if past due with a balance;
 /// "partial" if part-paid but not yet due; "pending" otherwise.
-pub fn installment_status(amount: i64, paid: i64, due: NaiveDate, today: NaiveDate) -> &'static str {
+pub fn installment_status(
+    amount: i64,
+    paid: i64,
+    due: NaiveDate,
+    today: NaiveDate,
+) -> &'static str {
     if paid >= amount {
         "paid"
     } else if due < today {
@@ -170,7 +175,7 @@ pub fn installment_status(amount: i64, paid: i64, due: NaiveDate, today: NaiveDa
 pub fn purchase_status(statuses: &[&str], any_paid: bool) -> &'static str {
     if !statuses.is_empty() && statuses.iter().all(|s| *s == "paid") {
         "paid"
-    } else if statuses.iter().any(|s| *s == "late") {
+    } else if statuses.contains(&"late") {
         "late"
     } else if any_paid {
         "in_progress"

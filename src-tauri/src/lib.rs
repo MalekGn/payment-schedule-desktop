@@ -19,8 +19,8 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("payment_schedule.db");
-            let database = db::Db::open(&db_path)
-                .map_err(|e| format!("Failed to open database: {e}"))?;
+            let database =
+                db::Db::open(&db_path).map_err(|e| format!("Failed to open database: {e}"))?;
             app.manage(database);
             Ok(())
         })

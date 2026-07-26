@@ -89,12 +89,48 @@ class MockDb {
 
   private seed() {
     const clients: Omit<ClientRow, "id" | "createdAt">[] = [
-      { firstName: "Mohamed", lastName: "Trabelsi", phone: "+216 20 123 456", address: "Cité El Ghazala, Ariana", email: "mohamed.trabelsi@email.tn" },
-      { firstName: "Fatma", lastName: "Ben Salah", phone: "+216 22 345 678", address: "Avenue Habib Bourguiba, Tunis", email: "fatma.bensalah@email.tn" },
-      { firstName: "Ahmed", lastName: "Gharbi", phone: "+216 24 567 890", address: "Rue de Marseille, Sfax", email: null },
-      { firstName: "Salma", lastName: "Jlassi", phone: "+216 26 789 012", address: "Menzah 6, Tunis", email: "salma.jlassi@email.tn" },
-      { firstName: "Youssef", lastName: "Hamdi", phone: "+216 28 901 234", address: "Médina, Sousse", email: "youssef.hamdi@email.tn" },
-      { firstName: "Nour", lastName: "Khelifi", phone: "+216 29 012 345", address: "La Marsa, Tunis", email: "nour.khelifi@email.tn" },
+      {
+        firstName: "Mohamed",
+        lastName: "Trabelsi",
+        phone: "+216 20 123 456",
+        address: "Cité El Ghazala, Ariana",
+        email: "mohamed.trabelsi@email.tn",
+      },
+      {
+        firstName: "Fatma",
+        lastName: "Ben Salah",
+        phone: "+216 22 345 678",
+        address: "Avenue Habib Bourguiba, Tunis",
+        email: "fatma.bensalah@email.tn",
+      },
+      {
+        firstName: "Ahmed",
+        lastName: "Gharbi",
+        phone: "+216 24 567 890",
+        address: "Rue de Marseille, Sfax",
+        email: null,
+      },
+      {
+        firstName: "Salma",
+        lastName: "Jlassi",
+        phone: "+216 26 789 012",
+        address: "Menzah 6, Tunis",
+        email: "salma.jlassi@email.tn",
+      },
+      {
+        firstName: "Youssef",
+        lastName: "Hamdi",
+        phone: "+216 28 901 234",
+        address: "Médina, Sousse",
+        email: "youssef.hamdi@email.tn",
+      },
+      {
+        firstName: "Nour",
+        lastName: "Khelifi",
+        phone: "+216 29 012 345",
+        address: "La Marsa, Tunis",
+        email: "nour.khelifi@email.tn",
+      },
     ];
     const clientIds = clients.map((c) => {
       const id = this.nextId("client");
@@ -103,7 +139,14 @@ class MockDb {
     });
 
     const purchases = [
-      { ci: 0, product: "Réfrigérateur Samsung 260L", total: 2400, count: 6, monthsAgo: 5, paid: 1 },
+      {
+        ci: 0,
+        product: "Réfrigérateur Samsung 260L",
+        total: 2400,
+        count: 6,
+        monthsAgo: 5,
+        paid: 1,
+      },
       { ci: 1, product: "Machine à laver LG 8kg", total: 1800, count: 5, monthsAgo: 4, paid: 2 },
       { ci: 2, product: 'Téléviseur Smart 55"', total: 3200, count: 8, monthsAgo: 6, paid: 3 },
       { ci: 3, product: "Cuisinière 4 feux", total: 1200, count: 4, monthsAgo: 4, paid: 4 },
@@ -286,14 +329,10 @@ class MockDb {
     const today = todayIso();
     return this.clients
       .slice()
-      .sort((a, b) =>
-        `${a.lastName}${a.firstName}`.localeCompare(`${b.lastName}${b.firstName}`),
-      )
+      .sort((a, b) => `${a.lastName}${a.firstName}`.localeCompare(`${b.lastName}${b.firstName}`))
       .map((c) => {
         const purchases = this.purchases.filter((p) => p.clientId === c.id);
-        const insts = this.installments.filter((i) =>
-          purchases.some((p) => p.id === i.purchaseId),
-        );
+        const insts = this.installments.filter((i) => purchases.some((p) => p.id === i.purchaseId));
         const outstanding = insts.reduce((s, i) => s + (i.amount - i.paidAmount), 0);
         const overdue = insts.filter(
           (i) => dayDiff(i.dueDate, today) < 0 && i.amount > i.paidAmount,
@@ -359,7 +398,9 @@ class MockDb {
     const count = this.purchases.filter((p) => p.clientId === id).length;
     if (count > 0 && !force) throw new Error(`CLIENT_HAS_PURCHASES:${count}`);
     const purchaseIds = this.purchases.filter((p) => p.clientId === id).map((p) => p.id);
-    const instIds = this.installments.filter((i) => purchaseIds.includes(i.purchaseId)).map((i) => i.id);
+    const instIds = this.installments
+      .filter((i) => purchaseIds.includes(i.purchaseId))
+      .map((i) => i.id);
     this.payments = this.payments.filter((pay) => !instIds.includes(pay.installmentId));
     this.installments = this.installments.filter((i) => !purchaseIds.includes(i.purchaseId));
     this.purchases = this.purchases.filter((p) => p.clientId !== id);
@@ -487,7 +528,9 @@ class MockDb {
 
   listPaymentsForClient(clientId: number): Payment[] {
     const purchaseIds = this.purchases.filter((p) => p.clientId === clientId).map((p) => p.id);
-    const instIds = this.installments.filter((i) => purchaseIds.includes(i.purchaseId)).map((i) => i.id);
+    const instIds = this.installments
+      .filter((i) => purchaseIds.includes(i.purchaseId))
+      .map((i) => i.id);
     return this.payments
       .filter((p) => instIds.includes(p.installmentId))
       .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id)
@@ -614,7 +657,9 @@ class MockDb {
     if (patch.shopInfo !== undefined) this.settings.shop_info = patch.shopInfo;
     if (patch.alertSoonDays !== undefined) {
       // Mirror the backend's defensive clamp (1..90).
-      this.settings.alert_soon_days = String(Math.min(90, Math.max(1, Math.round(patch.alertSoonDays))));
+      this.settings.alert_soon_days = String(
+        Math.min(90, Math.max(1, Math.round(patch.alertSoonDays))),
+      );
     }
     return this.getSettings();
   }

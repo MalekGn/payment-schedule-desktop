@@ -98,7 +98,10 @@ async function submit() {
           <DatePicker v-model="paymentDate" />
         </div>
         <div class="field">
-          <label for="pay-note">{{ t("paiements.note") }} <span class="muted">({{ t("common.optional") }})</span></label>
+          <label for="pay-note"
+            >{{ t("paiements.note") }}
+            <span class="muted">({{ t("common.optional") }})</span></label
+          >
           <input id="pay-note" v-model="note" type="text" class="input" />
         </div>
         <p class="partial-info">{{ t("paiements.partialInfo") }}</p>

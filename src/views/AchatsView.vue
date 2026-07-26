@@ -84,7 +84,11 @@ function onSaved(detail: PurchaseDetail) {
         :search-placeholder="t('achats.searchPlaceholder')"
       />
 
-      <EmptyState v-if="!loading && purchases.length === 0" icon="cart" :title="t('achats.empty')" />
+      <EmptyState
+        v-if="!loading && purchases.length === 0"
+        icon="cart"
+        :title="t('achats.empty')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
@@ -104,7 +108,9 @@ function onSaved(detail: PurchaseDetail) {
             class="clickable"
             @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
           >
-            <td><span class="row-link">{{ p.reference }}</span></td>
+            <td>
+              <span class="row-link">{{ p.reference }}</span>
+            </td>
             <td>{{ p.clientName }}</td>
             <td class="ellipsis">{{ p.productLabel }}</td>
             <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>

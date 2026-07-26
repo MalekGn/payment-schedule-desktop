@@ -162,7 +162,8 @@ pub fn list_clients(db: State<Db>) -> DbResult<Vec<ClientSummary>> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -171,7 +172,9 @@ pub fn get_client_detail(db: State<Db>, id: i64) -> DbResult<ClientDetail> {
     let client = fetch_client(&conn, id)?;
 
     let mut stmt = conn
-        .prepare("SELECT id FROM purchase WHERE client_id = ?1 ORDER BY purchase_date DESC, id DESC")
+        .prepare(
+            "SELECT id FROM purchase WHERE client_id = ?1 ORDER BY purchase_date DESC, id DESC",
+        )
         .map_err(|e| e.to_string())?;
     let ids: Vec<i64> = stmt
         .query_map([id], |r| r.get(0))
@@ -273,16 +276,15 @@ pub fn list_purchases(db: State<Db>, search: Option<String>) -> DbResult<Vec<Pur
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
 
-    let needle = search.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+    let needle = search
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
     let mut out = Vec::new();
     for pid in ids {
         let s = build_purchase_summary(&conn, pid)?;
         if let Some(n) = &needle {
-            let hay = format!(
-                "{} {} {}",
-                s.reference, s.client_name, s.product_label
-            )
-            .to_lowercase();
+            let hay =
+                format!("{} {} {}", s.reference, s.client_name, s.product_label).to_lowercase();
             if !hay.contains(n) {
                 continue;
             }
@@ -353,8 +355,13 @@ pub fn create_purchase(db: State<Db>, input: PurchaseInput) -> DbResult<Purchase
                 .unwrap_or_else(|| purchase_date.to_string()),
             // k = i (0-based): the first installment falls on the purchase
             // date, subsequent ones one interval apart.
-            _ => add_interval(purchase_date, &input.interval_kind, input.interval_days, i as i64)
-                .to_string(),
+            _ => add_interval(
+                purchase_date,
+                &input.interval_kind,
+                input.interval_days,
+                i as i64,
+            )
+            .to_string(),
         };
         tx.execute(
             "INSERT INTO installment (purchase_id, idx, amount, due_date)
@@ -466,7 +473,8 @@ pub fn list_payments_for_purchase(db: State<Db>, purchase_id: i64) -> DbResult<V
     let rows = stmt
         .query_map([purchase_id], map_payment)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -487,7 +495,8 @@ pub fn list_all_payments(db: State<Db>, limit: Option<i64>) -> DbResult<Vec<Paym
     let rows = stmt
         .query_map([limit.unwrap_or(500)], map_payment)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -508,7 +517,8 @@ pub fn list_payments_for_client(db: State<Db>, client_id: i64) -> DbResult<Vec<P
     let rows = stmt
         .query_map([client_id], map_payment)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 // ===========================================================================
@@ -627,9 +637,10 @@ fn build_impayes(
         entry.installments.push(inst);
     }
 
-    let mut result: Vec<ImpayeClient> = order.into_iter().filter_map(|id| map.remove(&id)).collect();
+    let mut result: Vec<ImpayeClient> =
+        order.into_iter().filter_map(|id| map.remove(&id)).collect();
     // Most owed first for the dashboard panel.
-    result.sort_by(|a, b| b.total_overdue.cmp(&a.total_overdue));
+    result.sort_by_key(|c| std::cmp::Reverse(c.total_overdue));
     if let Some(n) = limit {
         result.truncate(n);
     }
@@ -679,7 +690,8 @@ pub fn list_schedule(db: State<Db>) -> DbResult<Vec<ScheduleRow>> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 // ===========================================================================
@@ -697,10 +709,16 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
         .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let total_sales: i64 = conn
-        .query_row("SELECT COALESCE(SUM(total_price),0) FROM purchase", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(SUM(total_price),0) FROM purchase",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let total_collected: i64 = conn
-        .query_row("SELECT COALESCE(SUM(amount),0) FROM payment", [], |r| r.get(0))
+        .query_row("SELECT COALESCE(SUM(amount),0) FROM payment", [], |r| {
+            r.get(0)
+        })
         .map_err(|e| e.to_string())?;
     let total_outstanding: i64 = conn
         .query_row(
@@ -855,7 +873,9 @@ fn read_settings(conn: &Connection) -> Settings {
         logo_path: if logo.is_empty() { None } else { Some(logo) },
         shop_name: get_setting(conn, "shop_name", ""),
         shop_info: get_setting(conn, "shop_info", ""),
-        alert_soon_days: get_setting(conn, "alert_soon_days", "7").parse().unwrap_or(7),
+        alert_soon_days: get_setting(conn, "alert_soon_days", "7")
+            .parse()
+            .unwrap_or(7),
         language_is_default: get_setting(conn, "language_is_default", "1") == "1",
     }
 }
@@ -898,16 +918,9 @@ pub fn update_settings(db: State<Db>, patch: SettingsPatch) -> DbResult<Settings
 /// Copy a picked image file into the app data dir and store its path as the
 /// shop logo. Returns the updated settings.
 #[tauri::command]
-pub fn set_logo(
-    db: State<Db>,
-    app: tauri::AppHandle,
-    source_path: String,
-) -> DbResult<Settings> {
+pub fn set_logo(db: State<Db>, app: tauri::AppHandle, source_path: String) -> DbResult<Settings> {
     use tauri::Manager;
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
     let ext = std::path::Path::new(&source_path)
@@ -971,9 +984,18 @@ mod tests {
 
         let filters = [
             ImpayeFilter::default(),
-            ImpayeFilter { date_from: Some("2000-01-01".into()), ..Default::default() },
-            ImpayeFilter { date_to: Some("2999-12-31".into()), ..Default::default() },
-            ImpayeFilter { client_id: cid, ..Default::default() },
+            ImpayeFilter {
+                date_from: Some("2000-01-01".into()),
+                ..Default::default()
+            },
+            ImpayeFilter {
+                date_to: Some("2999-12-31".into()),
+                ..Default::default()
+            },
+            ImpayeFilter {
+                client_id: cid,
+                ..Default::default()
+            },
             ImpayeFilter {
                 date_from: Some("2000-01-01".into()),
                 date_to: Some("2999-12-31".into()),

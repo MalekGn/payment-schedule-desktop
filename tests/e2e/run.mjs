@@ -39,7 +39,9 @@ function assert(cond, msg) {
 }
 function assertEqual(actual, expected, msg) {
   if (actual !== expected) {
-    throw new Error(`${msg}\n    expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`);
+    throw new Error(
+      `${msg}\n    expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`,
+    );
   }
 }
 
@@ -98,7 +100,11 @@ test("app shell + sidebar render on first load", async (page) => {
   assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "brand line 1");
   assertEqual(await page.locator(".brand-line2").innerText(), "Échelonnés", "brand line 2");
   assertEqual(await page.locator(".nav-item").count(), 9, "sidebar should have 9 nav items");
-  assertEqual(await page.locator("h1.page-title").innerText(), NAV.dashboard, "header title on dashboard");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "header title on dashboard",
+  );
 });
 
 test("dashboard shows 5 KPI cards seeded from mock (8 purchases)", async (page) => {
@@ -214,7 +220,11 @@ test("record a partial payment on a purchase (PaymentModal)", async (page) => {
   );
 
   // Amount pre-fills with the full remaining (400); pay a partial 150 instead.
-  assertEqual(await page.locator("#pay-amount").inputValue(), "400", "amount pre-filled with remaining");
+  assertEqual(
+    await page.locator("#pay-amount").inputValue(),
+    "400",
+    "amount pre-filled with remaining",
+  );
   await page.locator("#pay-amount").fill("150");
   await dialog.getByRole("button", { name: "Enregistrer" }).click();
 
@@ -252,13 +262,15 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   await page.locator("#np-count").fill("3");
 
   // Amounts auto-split 3000 / 3 = 1000 each and the running sum matches the total.
-  await page.waitForFunction(
-    () => document.querySelectorAll(".inst-row").length === 3,
-    undefined,
-    { timeout: 5000 },
-  );
+  await page.waitForFunction(() => document.querySelectorAll(".inst-row").length === 3, undefined, {
+    timeout: 5000,
+  });
   await page.locator(".inst-sum.ok").waitFor({ timeout: 5000 });
-  assertEqual(await page.locator(".inst-amount").first().inputValue(), "1000", "first tranche auto-split to 1000");
+  assertEqual(
+    await page.locator(".inst-amount").first().inputValue(),
+    "1000",
+    "first tranche auto-split to 1000",
+  );
 
   // Break the balance by hand-editing one tranche -> the sum no longer matches.
   await page.locator(".inst-amount").first().fill("999");
@@ -281,7 +293,11 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
     undefined,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("h1.page-title").innerText(), "A-000009", "navigated to new purchase detail");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    "A-000009",
+    "navigated to new purchase detail",
+  );
 });
 
 test("delete-client safeguard warns when the client has purchases", async (page) => {
@@ -295,7 +311,11 @@ test("delete-client safeguard warns when the client has purchases", async (page)
 
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
-  assertEqual(await dialog.locator(".modal-head h2").innerText(), "Supprimer le client", "confirm dialog title");
+  assertEqual(
+    await dialog.locator(".modal-head h2").innerText(),
+    "Supprimer le client",
+    "confirm dialog title",
+  );
   const msg = await dialog.locator(".confirm-msg").innerText();
   assert(/2 achat/.test(msg), `message should warn about the 2 purchases, got: ${msg}`);
 
@@ -334,7 +354,11 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   );
   assertEqual(await page.locator("html").getAttribute("dir"), "rtl", "dir switches to rtl");
   assertEqual(await page.locator("html").getAttribute("lang"), "ar", "lang switches to ar");
-  assertEqual(await page.locator(".brand-line1").innerText(), "الدفع", "brand re-renders in Arabic");
+  assertEqual(
+    await page.locator(".brand-line1").innerText(),
+    "الدفع",
+    "brand re-renders in Arabic",
+  );
   assertEqual(
     await page.locator(".nav-item", { hasText: "لوحة التحكم" }).count(),
     1,
@@ -407,8 +431,7 @@ test("impayés: sorting by amount reorders a client's installment rows", async (
   }
   assert(target, "expected at least one client with 2+ overdue installments");
 
-  const amountCells = () =>
-    target.locator("tbody tr td:nth-child(4)").allInnerTexts();
+  const amountCells = () => target.locator("tbody tr td:nth-child(4)").allInnerTexts();
   const num = (s) => Number(s.replace(/[^\d]/g, ""));
 
   // Click the "amount" column header (4th column) to sort ascending.
@@ -441,9 +464,19 @@ test("impayés: export button is present and each card exposes call/SMS/view act
   const first = page.locator(".impaye-card").first();
   const tel = await first.locator("a.contact-btn--call").getAttribute("href");
   const sms = await first.locator("a.contact-btn--msg").getAttribute("href");
-  assert(tel?.startsWith("tel:") && !/\s/.test(tel), `call link should be a spaceless tel:, got ${tel}`);
-  assert(sms?.startsWith("sms:") && !/\s/.test(sms), `message link should be a spaceless sms:, got ${sms}`);
-  assertEqual(await first.locator("button.contact-btn--view").count(), 1, "view-client button present");
+  assert(
+    tel?.startsWith("tel:") && !/\s/.test(tel),
+    `call link should be a spaceless tel:, got ${tel}`,
+  );
+  assert(
+    sms?.startsWith("sms:") && !/\s/.test(sms),
+    `message link should be a spaceless sms:, got ${sms}`,
+  );
+  assertEqual(
+    await first.locator("button.contact-btn--view").count(),
+    1,
+    "view-client button present",
+  );
 });
 
 test("impayés: deep link ?client=<id> pre-filters the search to that client", async (page) => {
@@ -523,7 +556,11 @@ test("alertes: clicking the Overdue tile filters the table to overdue rows", asy
     overdue,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("table.table tbody tr").count(), overdue, "rows narrowed to overdue count");
+  assertEqual(
+    await page.locator("table.table tbody tr").count(),
+    overdue,
+    "rows narrowed to overdue count",
+  );
 
   // Every visible timing cell is an overdue label ("… de retard") and every row
   // carries the late-row highlight class.
@@ -551,7 +588,11 @@ test("alertes: a row links through to its purchase detail", async (page) => {
     reference,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("h1.page-title").innerText(), reference, "navigated to the purchase detail");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    reference,
+    "navigated to the purchase detail",
+  );
 });
 
 // --- runner ------------------------------------------------------------------
@@ -584,8 +625,17 @@ async function main() {
       } catch (err) {
         const shot = path.join(ARTIFACTS, `${t.name.replace(/[^a-z0-9]+/gi, "-")}.png`);
         await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
-        results.push({ name: t.name, ok: false, ms: Date.now() - started, error: err.message, shot, consoleErrors });
-        console.log(`  \x1b[31mFAIL\x1b[0m ${t.name}\n       ${err.message.replace(/\n/g, "\n       ")}`);
+        results.push({
+          name: t.name,
+          ok: false,
+          ms: Date.now() - started,
+          error: err.message,
+          shot,
+          consoleErrors,
+        });
+        console.log(
+          `  \x1b[31mFAIL\x1b[0m ${t.name}\n       ${err.message.replace(/\n/g, "\n       ")}`,
+        );
         console.log(`       screenshot: ${shot}`);
       } finally {
         await context.close();

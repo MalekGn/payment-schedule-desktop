@@ -6,12 +6,61 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-24 — Tooling QA: clean & secure code baseline
+
+### Summary
+
+Validation pass for the new clean/secure tooling baseline (ESLint + Prettier +
+security plugins, rustfmt/clippy/cargo-audit/cargo-deny, husky/lint-staged, and
+the CI/Dependabot/CodeQL workflows), plus the vite 7 / vitest 4 upgrade done to
+clear pre-existing dev-tooling advisories. Existing behavior was re-verified
+against the upgraded toolchain.
+
+### Test cases run
+
+Executed (all green):
+
+- **Unit** — `npm test`: 36/36 passing on vitest 4.
+- **Integration** — `npm run test:integration`: 19/19 passing on the upgraded
+  separate vitest config (validates the vite 7 / vitest 4 upgrade end-to-end).
+- **Rust unit** — `cargo test` (src-tauri): 3/3 passing after the two clippy
+  refactors in `commands.rs`/`db.rs`.
+- **Typecheck/build** — `npm run build` (vue-tsc + vite build): passes.
+
+Quality/security gates (all green):
+
+- `npm run lint` (ESLint) — 0 problems.
+- `npm run format:check` (Prettier) — clean.
+- `cargo fmt --check` — clean; `cargo clippy --all-targets -- -D warnings` — clean.
+- `npm audit --audit-level=high` — 0 vulnerabilities (was 1 critical + 1 high
+  before the vite/vitest upgrade).
+
+Not run locally (execute in CI — tools not installed in this environment):
+`cargo audit`, `cargo deny check`, CodeQL analysis.
+
+### Issues found
+
+- None outstanding. The pre-existing vite/vitest/esbuild advisories (1 critical,
+  1 high, 3 moderate — dev-tooling only) were resolved by upgrading to vite 7 /
+  vitest 4. The `v-html` in `AppIcon.vue` was reviewed and confirmed XSS-safe
+  (static SVG map, key-only selection) and annotated accordingly.
+
+### Recommendations
+
+- After first push, confirm the `security.yml` (`cargo audit` / `cargo deny`) and
+  `codeql.yml` runs are green; triage any RustSec advisory they surface.
+- Commit `src-tauri/Cargo.lock` (now un-ignored) so the Rust audit scans a pinned
+  dep set.
+- Keep Node ≥ 20.19 locally (CI uses 22) — required by Vite 7.
+
+---
+
 ## 2026-07-22 — Feature QA: Alertes (alerts center) page
 
 ### Summary
 
 QA pass for the newly implemented **Alertes** page (`src/views/AlertesView.vue`),
-which replaced the styled placeholder. The page consolidates every *actionable*
+which replaced the styled placeholder. The page consolidates every _actionable_
 installment — overdue, due today, or due within 7 days — derived from
 `api.listSchedule()` through the pure `buildAlerts` classifier
 (`src/lib/alerts.ts`). It renders three summary tiles (count + total per kind,
@@ -24,18 +73,21 @@ integration, E2E) — the user requested execution. All green.
 ### Test cases — RUN
 
 Unit — `src/lib/alerts.test.ts` (9 cases, `npm test`): **36/36 passed** overall.
+
 - `classifyAlert` boundaries against a fixed `today`: overdue (positive days late), due-today (0 days), due-soon (days remaining).
 - Horizon edge: last day inside the window is `dueSoon`, the day after is dropped; custom horizon respected.
 - Fully-paid past-due rows are ignored; partially-paid overdue rows still alert with the correct `remaining`.
 - `buildAlerts` keeps only actionable rows in input order and returns `[]` when nothing qualifies.
 
 Integration — `tests/integration/alerts.integration.test.ts` (4 cases, `npm run test:integration`): **17/17 passed** overall.
+
 - Derived alerts are all unpaid, in-window, and their `days`/`kind` match `dayDiff(dueDate, today)`.
 - Overdue-alert count equals `dashboard.stats.overdueCount`.
 - Overdue alerts match `listImpayes` exactly — same installment-id set and same summed remaining total.
 - Settling an overdue tranche in full removes it from the model and shrinks the overdue set by one.
 
 E2E — `tests/e2e/run.mjs`, 4 new Alertes scenarios (`npm run test:e2e`): **20/20 passed, 0 console errors**.
+
 - Three summary tiles render; on the default "all" tab the table row count equals the summed tile counts.
 - The overdue tile value equals the sidebar warning badge (both = overdue installment count).
 - Clicking the Overdue tile activates the "En retard" tab, narrows rows to the overdue count, and every visible row shows an overdue timing + late-row highlight.
@@ -69,7 +121,7 @@ mock (`src/api/mock.ts`) instead of the SQLite-backed Tauri command.
 - **Root-cause reproduction** (temporary diagnostic test against the live DB at
   `~/.local/share/tn.paymentschedule/payment_schedule.db`): `build_impayes` with
   the default filter returned `Err("Wrong number of parameters passed to query.
-  Got 2, needed 1")` — confirming the command rejected the query and the view
+Got 2, needed 1")` — confirming the command rejected the query and the view
   swallowed it into a blank page. After the fix the same call returned 6 client
   groups / 20 overdue installments, fully serialized.
 - **Rust unit suite** (`cargo test`): 3/3 passed, including the new regression
@@ -168,6 +220,7 @@ Per the QA workflow, integration tests are not executed automatically. Run them
 with `npm run test:integration`.
 
 `tests/integration/purchase-lifecycle.integration.test.ts`
+
 - Auto-split of a total across installments matches `splitAmounts` (1000/3 → 333/333/334) and starts fully `pending`.
 - Caller-supplied uneven split is honoured when the amounts sum to the total.
 - Explicit split whose amounts don't sum to the total is rejected (`SUM_MISMATCH`).
@@ -177,6 +230,7 @@ with `npm run test:integration`.
 - Creating a purchase and paying it bumps the dashboard's purchase/sales/collected/outstanding aggregates correctly.
 
 `tests/integration/overdue-dashboard.integration.test.ts`
+
 - Dashboard aggregates reconcile with `listImpayes`, `listClients`, `listPurchases`, `listAllPayments` on the seed.
 - `ImpayeFilter` by `clientId` narrows to one client and preserves that client's installments.
 - Impossible date window yields an empty overdue list.

@@ -27,7 +27,8 @@ const filtered = computed(() => {
   const min = amountMin.value === "" ? null : Number(amountMin.value);
   const max = amountMax.value === "" ? null : Number(amountMax.value);
   return payments.value.filter((p) => {
-    if (needle && !`${p.purchaseReference} ${p.clientName}`.toLowerCase().includes(needle)) return false;
+    if (needle && !`${p.purchaseReference} ${p.clientName}`.toLowerCase().includes(needle))
+      return false;
     if (min != null && p.amount < min) return false;
     if (max != null && p.amount > max) return false;
     if (dateFrom.value && p.paymentDate < dateFrom.value) return false;
@@ -54,7 +55,9 @@ onMounted(async () => {
 <template>
   <div class="page">
     <div class="card">
-      <div class="card-header"><h2>{{ t("paiements.title") }}</h2></div>
+      <div class="card-header">
+        <h2>{{ t("paiements.title") }}</h2>
+      </div>
       <ListFilterBar
         v-model:search="search"
         v-model:amount-min="amountMin"
@@ -64,7 +67,11 @@ onMounted(async () => {
         show-amount
       />
       <p class="partial-note">{{ t("paiements.partialInfo") }}</p>
-      <EmptyState v-if="!loading && filtered.length === 0" icon="card" :title="t('paiements.empty')" />
+      <EmptyState
+        v-if="!loading && filtered.length === 0"
+        icon="card"
+        :title="t('paiements.empty')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
@@ -80,7 +87,13 @@ onMounted(async () => {
           <tr v-for="pay in sorted" :key="pay.id">
             <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
             <td>
-              <a class="row-link" href="#" @click.prevent="router.push({ name: 'achat-detail', params: { id: pay.purchaseId } })">
+              <a
+                class="row-link"
+                href="#"
+                @click.prevent="
+                  router.push({ name: 'achat-detail', params: { id: pay.purchaseId } })
+                "
+              >
                 {{ pay.purchaseReference }}
               </a>
             </td>

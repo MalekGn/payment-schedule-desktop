@@ -65,8 +65,9 @@
   --sidebar-w: 232px;
   --header-h: 68px;
 
-  --font: "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic",
-    "Helvetica Neue", Arial, sans-serif;
+  --font:
+    "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic", "Helvetica Neue", Arial,
+    sans-serif;
 
   font-family: var(--font);
   color: var(--text);
@@ -197,7 +198,10 @@ textarea {
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
   white-space: nowrap;
 }
 .btn--primary {
@@ -253,7 +257,9 @@ textarea {
   background: var(--surface);
   color: var(--text);
   outline: none;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
 }
 .input:focus,
 .select:focus,

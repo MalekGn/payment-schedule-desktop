@@ -107,7 +107,11 @@ onMounted(async () => {
         show-amount
       />
 
-      <EmptyState v-if="!loading && filtered.length === 0" icon="calendar" :title="t('echeances.empty')" />
+      <EmptyState
+        v-if="!loading && filtered.length === 0"
+        icon="calendar"
+        :title="t('echeances.empty')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
@@ -127,7 +131,9 @@ onMounted(async () => {
             :class="{ 'is-late': r.status === 'late' }"
             @click="router.push({ name: 'achat-detail', params: { id: r.purchaseId } })"
           >
-            <td><span class="row-link">{{ r.reference }}</span></td>
+            <td>
+              <span class="row-link">{{ r.reference }}</span>
+            </td>
             <td>{{ r.clientName }}</td>
             <td class="tabular">{{ r.index }}/{{ r.installmentCount }}</td>
             <td class="tabular">{{ fmt.date(r.dueDate) }}</td>

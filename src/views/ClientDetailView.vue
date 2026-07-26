@@ -74,13 +74,17 @@ onMounted(load);
 
     <div class="top-grid">
       <section class="card contact-card">
-        <div class="card-header"><h2>{{ t("clients.detail.contact") }}</h2></div>
+        <div class="card-header">
+          <h2>{{ t("clients.detail.contact") }}</h2>
+        </div>
         <div class="contact-body">
           <div class="contact-avatar">
             {{ detail.client.firstName.charAt(0) }}{{ detail.client.lastName.charAt(0) }}
           </div>
           <div class="contact-info">
-            <span class="contact-name">{{ detail.client.firstName }} {{ detail.client.lastName }}</span>
+            <span class="contact-name"
+              >{{ detail.client.firstName }} {{ detail.client.lastName }}</span
+            >
             <span v-if="detail.client.phone" class="contact-line">
               <AppIcon name="phone" :size="15" /> {{ detail.client.phone }}
             </span>
@@ -101,26 +105,44 @@ onMounted(load);
         </div>
         <div class="fig-card card">
           <span class="fig-label">{{ t("clients.detail.totalPaid") }}</span>
-          <span class="fig-value tabular" style="color: var(--success)">{{ fmt.money(detail.totalPaid) }}</span>
+          <span class="fig-value tabular" style="color: var(--success)">{{
+            fmt.money(detail.totalPaid)
+          }}</span>
         </div>
         <div class="fig-card card">
           <span class="fig-label">{{ t("clients.detail.outstanding") }}</span>
-          <span class="fig-value tabular" style="color: var(--warning-text)">{{ fmt.money(detail.totalOutstanding) }}</span>
+          <span class="fig-value tabular" style="color: var(--warning-text)">{{
+            fmt.money(detail.totalOutstanding)
+          }}</span>
         </div>
       </div>
     </div>
 
     <section class="card">
-      <div class="card-header"><h2>{{ t("clients.detail.purchases") }}</h2></div>
-      <EmptyState v-if="detail.purchases.length === 0" icon="cart" :title="t('clients.detail.noPurchases')" />
+      <div class="card-header">
+        <h2>{{ t("clients.detail.purchases") }}</h2>
+      </div>
+      <EmptyState
+        v-if="detail.purchases.length === 0"
+        icon="cart"
+        :title="t('clients.detail.noPurchases')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
-            <SortHeader :sort="purchaseSort" field="reference" :label="t('dashboard.table.reference')" />
+            <SortHeader
+              :sort="purchaseSort"
+              field="reference"
+              :label="t('dashboard.table.reference')"
+            />
             <SortHeader :sort="purchaseSort" field="product" :label="t('common.product')" />
             <SortHeader :sort="purchaseSort" field="date" :label="t('common.date')" />
             <SortHeader :sort="purchaseSort" field="total" :label="t('common.total')" />
-            <SortHeader :sort="purchaseSort" field="remaining" :label="t('achats.columns.remaining')" />
+            <SortHeader
+              :sort="purchaseSort"
+              field="remaining"
+              :label="t('achats.columns.remaining')"
+            />
             <SortHeader :sort="purchaseSort" field="status" :label="t('common.status')" />
           </tr>
         </thead>
@@ -131,7 +153,9 @@ onMounted(load);
             class="clickable"
             @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
           >
-            <td><span class="row-link">{{ p.reference }}</span></td>
+            <td>
+              <span class="row-link">{{ p.reference }}</span>
+            </td>
             <td class="ellipsis">{{ p.productLabel }}</td>
             <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
             <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
@@ -143,14 +167,28 @@ onMounted(load);
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>{{ t("clients.detail.paymentHistory") }}</h2></div>
-      <EmptyState v-if="payments.length === 0" icon="card" :title="t('clients.detail.noPayments')" />
+      <div class="card-header">
+        <h2>{{ t("clients.detail.paymentHistory") }}</h2>
+      </div>
+      <EmptyState
+        v-if="payments.length === 0"
+        icon="card"
+        :title="t('clients.detail.noPayments')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
             <SortHeader :sort="paymentSort" field="date" :label="t('paiements.columns.date')" />
-            <SortHeader :sort="paymentSort" field="reference" :label="t('paiements.columns.reference')" />
-            <SortHeader :sort="paymentSort" field="tranche" :label="t('paiements.columns.tranche')" />
+            <SortHeader
+              :sort="paymentSort"
+              field="reference"
+              :label="t('paiements.columns.reference')"
+            />
+            <SortHeader
+              :sort="paymentSort"
+              field="tranche"
+              :label="t('paiements.columns.tranche')"
+            />
             <SortHeader :sort="paymentSort" field="amount" :label="t('paiements.columns.amount')" />
             <SortHeader :sort="paymentSort" field="note" :label="t('paiements.columns.note')" />
           </tr>
@@ -158,7 +196,9 @@ onMounted(load);
         <tbody>
           <tr v-for="pay in sortedPayments" :key="pay.id">
             <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
-            <td><span class="row-link">{{ pay.purchaseReference }}</span></td>
+            <td>
+              <span class="row-link">{{ pay.purchaseReference }}</span>
+            </td>
             <td class="tabular">{{ pay.installmentIndex }}</td>
             <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
             <td class="muted">{{ pay.note || "—" }}</td>

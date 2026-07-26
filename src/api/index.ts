@@ -64,15 +64,15 @@ export const api = {
 
   // -- payments --
   recordPayment: (input: PaymentInput): Promise<PurchaseDetail> =>
-    isTauri()
-      ? invoke("record_payment", { input })
-      : Promise.resolve(mockDb.recordPayment(input)),
+    isTauri() ? invoke("record_payment", { input }) : Promise.resolve(mockDb.recordPayment(input)),
   listPaymentsForPurchase: (purchaseId: number): Promise<Payment[]> =>
     isTauri()
       ? invoke("list_payments_for_purchase", { purchaseId })
       : Promise.resolve(mockDb.listPaymentsForPurchase(purchaseId)),
   listAllPayments: (limit = 500): Promise<Payment[]> =>
-    isTauri() ? invoke("list_all_payments", { limit }) : Promise.resolve(mockDb.listAllPayments(limit)),
+    isTauri()
+      ? invoke("list_all_payments", { limit })
+      : Promise.resolve(mockDb.listAllPayments(limit)),
   listPaymentsForClient: (clientId: number): Promise<Payment[]> =>
     isTauri()
       ? invoke("list_payments_for_client", { clientId })
@@ -94,7 +94,9 @@ export const api = {
   getSettings: (): Promise<Settings> =>
     isTauri() ? invoke("get_settings") : Promise.resolve(mockDb.getSettings()),
   updateSettings: (patch: SettingsPatch): Promise<Settings> =>
-    isTauri() ? invoke("update_settings", { patch }) : Promise.resolve(mockDb.updateSettings(patch)),
+    isTauri()
+      ? invoke("update_settings", { patch })
+      : Promise.resolve(mockDb.updateSettings(patch)),
   setLogo: (sourcePath: string): Promise<Settings> =>
     isTauri() ? invoke("set_logo", { sourcePath }) : Promise.resolve(mockDb.setLogo(sourcePath)),
   clearLogo: (): Promise<Settings> =>

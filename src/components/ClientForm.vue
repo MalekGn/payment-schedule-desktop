@@ -65,18 +65,34 @@ async function submit() {
       <div class="grid-2">
         <div class="field">
           <label for="cf-first">{{ t("clients.form.firstName") }}</label>
-          <input id="cf-first" v-model="form.firstName" class="input" :class="{ 'input--error': errors.firstName }" />
+          <input
+            id="cf-first"
+            v-model="form.firstName"
+            class="input"
+            :class="{ 'input--error': errors.firstName }"
+          />
           <span v-if="errors.firstName" class="field-error">{{ errors.firstName }}</span>
         </div>
         <div class="field">
           <label for="cf-last">{{ t("clients.form.lastName") }}</label>
-          <input id="cf-last" v-model="form.lastName" class="input" :class="{ 'input--error': errors.lastName }" />
+          <input
+            id="cf-last"
+            v-model="form.lastName"
+            class="input"
+            :class="{ 'input--error': errors.lastName }"
+          />
           <span v-if="errors.lastName" class="field-error">{{ errors.lastName }}</span>
         </div>
       </div>
       <div class="field">
         <label for="cf-phone">{{ t("clients.form.phone") }}</label>
-        <input id="cf-phone" v-model="form.phone" class="input" :placeholder="t('clients.form.phonePlaceholder')" inputmode="tel" />
+        <input
+          id="cf-phone"
+          v-model="form.phone"
+          class="input"
+          :placeholder="t('clients.form.phonePlaceholder')"
+          inputmode="tel"
+        />
       </div>
       <div class="field">
         <label for="cf-addr">{{ t("clients.form.address") }}</label>
@@ -86,13 +102,21 @@ async function submit() {
         <label for="cf-email">
           {{ t("clients.form.email") }} <span class="muted">({{ t("common.optional") }})</span>
         </label>
-        <input id="cf-email" v-model="form.email" class="input" :class="{ 'input--error': errors.email }" type="email" />
+        <input
+          id="cf-email"
+          v-model="form.email"
+          class="input"
+          :class="{ 'input--error': errors.email }"
+          type="email"
+        />
         <span v-if="errors.email" class="field-error">{{ errors.email }}</span>
       </div>
     </form>
 
     <template #footer>
-      <button class="btn btn--ghost" type="button" @click="emit('close')">{{ t("common.cancel") }}</button>
+      <button class="btn btn--ghost" type="button" @click="emit('close')">
+        {{ t("common.cancel") }}
+      </button>
       <button class="btn btn--primary" type="button" :disabled="saving" @click="submit">
         {{ client ? t("common.saveChanges") : t("common.create") }}
       </button>

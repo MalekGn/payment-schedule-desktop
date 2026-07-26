@@ -133,7 +133,9 @@ onMounted(async () => {
         <span class="tile-icon tile-icon--blue"><AppIcon name="bell" :size="22" /></span>
         <span class="tile-body">
           <span class="tile-value tabular">{{ summary.dueSoon.count }}</span>
-          <span class="tile-label">{{ t("alertes.summary.dueSoon", { days: settings.alertSoonDays }) }}</span>
+          <span class="tile-label">{{
+            t("alertes.summary.dueSoon", { days: settings.alertSoonDays })
+          }}</span>
           <span class="tile-sub tabular">{{ fmt.money(summary.dueSoon.total) }}</span>
         </span>
       </button>
@@ -168,7 +170,11 @@ onMounted(async () => {
         show-amount
       />
 
-      <EmptyState v-if="!loading && filtered.length === 0" icon="bell" :title="t('alertes.empty')" />
+      <EmptyState
+        v-if="!loading && filtered.length === 0"
+        icon="bell"
+        :title="t('alertes.empty')"
+      />
       <table v-else class="table">
         <thead>
           <tr>
@@ -189,7 +195,9 @@ onMounted(async () => {
             :class="{ 'is-late': a.kind === 'overdue' }"
             @click="router.push({ name: 'achat-detail', params: { id: a.purchaseId } })"
           >
-            <td><span class="row-link">{{ a.reference }}</span></td>
+            <td>
+              <span class="row-link">{{ a.reference }}</span>
+            </td>
             <td>{{ a.clientName }}</td>
             <td class="tabular">{{ a.index }}/{{ a.installmentCount }}</td>
             <td class="tabular">{{ fmt.date(a.dueDate) }}</td>

@@ -11,7 +11,9 @@ const { t } = useI18n();
   <BaseModal :title="title" @close="emit('close')">
     <p class="confirm-msg">{{ message }}</p>
     <template #footer>
-      <button class="btn btn--ghost" type="button" @click="emit('close')">{{ t("common.cancel") }}</button>
+      <button class="btn btn--ghost" type="button" @click="emit('close')">
+        {{ t("common.cancel") }}
+      </button>
       <button
         class="btn"
         :class="danger ? 'btn--danger' : 'btn--primary'"

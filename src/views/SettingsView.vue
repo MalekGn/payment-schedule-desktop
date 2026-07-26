@@ -103,12 +103,16 @@ function dateSample(pattern: string): string {
 <template>
   <div class="settings">
     <section class="card set-card">
-      <div class="card-header"><h2>{{ t("settings.general") }}</h2></div>
+      <div class="card-header">
+        <h2>{{ t("settings.general") }}</h2>
+      </div>
       <div class="set-body">
         <div class="field">
           <label for="set-lang">{{ t("settings.language") }}</label>
           <select id="set-lang" class="select" :value="settings.language" @change="onLanguage">
-            <option v-for="l in SUPPORTED_LOCALES" :key="l" :value="l">{{ LANGUAGE_LABELS[l] }}</option>
+            <option v-for="l in SUPPORTED_LOCALES" :key="l" :value="l">
+              {{ LANGUAGE_LABELS[l] }}
+            </option>
           </select>
           <span class="hint">{{ t("settings.languageHint") }}</span>
         </div>
@@ -124,7 +128,9 @@ function dateSample(pattern: string): string {
         <div class="field">
           <label for="set-date">{{ t("settings.dateFormat") }}</label>
           <select id="set-date" class="select" :value="settings.dateFormat" @change="onDateFormat">
-            <option v-for="f in DATE_FORMATS" :key="f" :value="f">{{ f }} — {{ dateSample(f) }}</option>
+            <option v-for="f in DATE_FORMATS" :key="f" :value="f">
+              {{ f }} — {{ dateSample(f) }}
+            </option>
           </select>
         </div>
 
@@ -146,7 +152,9 @@ function dateSample(pattern: string): string {
     </section>
 
     <section class="card set-card">
-      <div class="card-header"><h2>{{ t("settings.shop") }}</h2></div>
+      <div class="card-header">
+        <h2>{{ t("settings.shop") }}</h2>
+      </div>
       <div class="set-body">
         <div class="logo-field">
           <span class="field-label">{{ t("settings.logo") }}</span>

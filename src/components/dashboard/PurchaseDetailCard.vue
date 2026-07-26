@@ -21,16 +21,13 @@ const { t } = useI18n();
 const fmt = useFormat();
 const router = useRouter();
 
-const { sort, sorted: sortedInstallments } = useSort(
-  () => props.detail.installments,
-  {
-    tranche: (i) => i.index,
-    dueDate: (i) => i.dueDate,
-    amount: (i) => i.amount,
-    status: (i) => i.status,
-    paymentDate: (i) => i.paidDate,
-  },
-);
+const { sort, sorted: sortedInstallments } = useSort(() => props.detail.installments, {
+  tranche: (i) => i.index,
+  dueDate: (i) => i.dueDate,
+  amount: (i) => i.amount,
+  status: (i) => i.status,
+  paymentDate: (i) => i.paidDate,
+});
 
 function canPay(i: Installment): boolean {
   if (i.status === "paid") return false;
@@ -65,8 +62,12 @@ function goToPurchase() {
           <a class="ident-client" href="#" @click.prevent="goToClient">
             {{ detail.client.firstName }} {{ detail.client.lastName }}
           </a>
-          <span class="ident-line"><AppIcon name="phone" :size="14" /> {{ detail.client.phone }}</span>
-          <span class="ident-line"><AppIcon name="map-pin" :size="14" /> {{ detail.client.address }}</span>
+          <span class="ident-line"
+            ><AppIcon name="phone" :size="14" /> {{ detail.client.phone }}</span
+          >
+          <span class="ident-line"
+            ><AppIcon name="map-pin" :size="14" /> {{ detail.client.address }}</span
+          >
           <span v-if="detail.client.email" class="ident-line">
             <AppIcon name="mail" :size="14" /> {{ detail.client.email }}
           </span>
@@ -116,10 +117,20 @@ function goToPurchase() {
           <td><StatusBadge :status="i.status" feminine /></td>
           <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
           <td class="col-action">
-            <button v-if="canPay(i)" class="btn btn--primary btn--sm" type="button" @click="emit('pay', i)">
+            <button
+              v-if="canPay(i)"
+              class="btn btn--primary btn--sm"
+              type="button"
+              @click="emit('pay', i)"
+            >
               {{ fullActions ? t("common.edit") : t("dashboard.detail.register") }}
             </button>
-            <a v-else-if="i.status === 'paid'" class="row-link" href="#" @click.prevent="goToPurchase">
+            <a
+              v-else-if="i.status === 'paid'"
+              class="row-link"
+              href="#"
+              @click.prevent="goToPurchase"
+            >
               {{ t("dashboard.detail.view") }}
             </a>
             <span v-else class="muted">—</span>

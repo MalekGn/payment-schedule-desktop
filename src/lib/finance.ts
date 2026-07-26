@@ -75,10 +75,7 @@ export function installmentStatus(
 }
 
 /** Roll installment statuses up to a purchase-level status. */
-export function purchaseStatus(
-  statuses: InstallmentStatus[],
-  anyPaid: boolean,
-): PurchaseStatus {
+export function purchaseStatus(statuses: InstallmentStatus[], anyPaid: boolean): PurchaseStatus {
   if (statuses.length > 0 && statuses.every((s) => s === "paid")) return "paid";
   if (statuses.some((s) => s === "late")) return "late";
   if (anyPaid) return "in_progress";

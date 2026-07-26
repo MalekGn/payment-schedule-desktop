@@ -61,6 +61,8 @@ const dim = computed(() => (typeof props.size === "number" ? `${props.size}px` :
 </script>
 
 <template>
+  <!-- eslint-disable vue/no-v-html -- `body` is a lookup into the static ICONS map above
+       (props.name only picks a key), never user input, so there is no XSS surface. -->
   <svg
     :width="dim"
     :height="dim"
@@ -74,6 +76,7 @@ const dim = computed(() => (typeof props.size === "number" ? `${props.size}px` :
     aria-hidden="true"
     v-html="body"
   />
+  <!-- eslint-enable vue/no-v-html -->
 </template>
 
 <style scoped>

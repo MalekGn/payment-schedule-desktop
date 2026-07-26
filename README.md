@@ -1,9 +1,9 @@
 # paymentSchedule
 
 **paymentSchedule** is an offline-first desktop app for small Tunisian
-electronics / appliance shops (*vente de produits électroménagers*) to track
-**installment sales**: clients, purchases (*achats*), payment schedules
-(*échéances*), payments, and overdue balances (*impayés*).
+electronics / appliance shops (_vente de produits électroménagers_) to track
+**installment sales**: clients, purchases (_achats_), payment schedules
+(_échéances_), payments, and overdue balances (_impayés_).
 
 Built with **Tauri 2** (Rust core) + **Vue 3** (`<script setup>`, TypeScript,
 Composition API) + **Vite**. All data lives in a local **SQLite** database — no
@@ -15,7 +15,7 @@ network or cloud dependency.
   configurable in Settings and applied everywhere.
 - 🧾 Auto-computed installment schedules with per-line overrides, partial
   payments, and a full payment audit trail.
-- 🔴 Overdue tracking (dashboard counters, due-date alerts, dedicated *Impayés*
+- 🔴 Overdue tracking (dashboard counters, due-date alerts, dedicated _Impayés_
   page with filters, contact shortcuts, and CSV export).
 
 ---
@@ -30,10 +30,10 @@ pixel-accurate implementation of `docs/intsallment.png`.
 
 ## Prerequisites
 
-| Tool | Version |
-|------|---------|
-| **Node.js** | ≥ 18 (tested on 24) |
-| **Rust** | ≥ 1.77 (stable) |
+| Tool          | Version                                                 |
+| ------------- | ------------------------------------------------------- |
+| **Node.js**   | ≥ 20.19 (Vite 7 requirement; CI uses 22, tested on 24)  |
+| **Rust**      | ≥ 1.77 (stable)                                         |
 | **Tauri CLI** | v2 (installed as a dev dependency; use `npm run tauri`) |
 
 ### Linux system libraries (for `tauri dev` / `tauri build`)
@@ -82,6 +82,33 @@ npm run test:e2e         # Playwright end-to-end suite (tests/e2e/run.mjs)
 npm run build            # vue-tsc type-check + production build
 ```
 
+### Code quality & security
+
+Linting, formatting, and dependency/security scanning are set up for both the
+frontend and the Rust backend. A `husky` **pre-commit hook** runs `lint-staged`
+(ESLint `--fix` + Prettier) on staged files automatically after `npm install`.
+
+```bash
+# Frontend (Vue / TypeScript)
+npm run lint             # ESLint (eslint-plugin-vue, typescript-eslint, security, no-unsanitized)
+npm run lint:fix         # ESLint with autofix
+npm run format           # Prettier write
+npm run format:check     # Prettier check (CI gate)
+
+# Rust backend (run from src-tauri/)
+cargo fmt --check                          # rustfmt (config: src-tauri/rustfmt.toml)
+cargo clippy --all-targets -- -D warnings  # clippy, warnings as errors
+cargo audit                                # RustSec advisory scan
+cargo deny check                           # advisories/licenses/bans/sources (src-tauri/deny.toml)
+```
+
+`cargo audit` / `cargo deny` need the tools installed once
+(`cargo install cargo-audit cargo-deny`, or via `taiki-e/install-action` in CI).
+CI enforces all of the above on every push/PR (`build.yml` lint gates,
+`security.yml` audits, `codeql.yml` static analysis), and Dependabot
+(`.github/dependabot.yml`) keeps npm, cargo, and GitHub Actions dependencies
+current.
+
 ---
 
 ## Building release binaries
@@ -117,10 +144,10 @@ Pushing a **version tag** (`v*`) runs a GitHub Actions pipeline that typechecks
 and runs the unit tests, then builds native installers on two runners and
 publishes them to a **GitHub Release** for that tag:
 
-| Runner | Installers produced |
-|---|---|
-| `ubuntu-22.04` | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
-| `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11) |
+| Runner           | Installers produced                             |
+| ---------------- | ----------------------------------------------- |
+| `ubuntu-22.04`   | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
+| `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11)      |
 
 To cut a release:
 
@@ -151,10 +178,10 @@ A generated set is committed under `src-tauri/icons/`.
 
 Everything is stored locally in the OS **app-data directory**:
 
-| Platform | Location |
-|----------|----------|
-| Linux | `~/.local/share/tn.paymentschedule.app/` |
-| Windows | `%APPDATA%\tn.paymentschedule.app\` |
+| Platform | Location                                 |
+| -------- | ---------------------------------------- |
+| Linux    | `~/.local/share/tn.paymentschedule.app/` |
+| Windows  | `%APPDATA%\tn.paymentschedule.app\`      |
 
 - **`payment_schedule.db`** — the SQLite database (clients, purchases, installments,
   payments, settings). Created on first launch. Demo data is seeded only in

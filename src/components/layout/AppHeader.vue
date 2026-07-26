@@ -58,7 +58,12 @@ const alertCount = computed(() => stats.overdueInstallments);
 
 <template>
   <header class="header">
-    <button class="icon-btn menu-btn" type="button" @click="ui.toggleSidebar()" :aria-label="'menu'">
+    <button
+      class="icon-btn menu-btn"
+      type="button"
+      :aria-label="'menu'"
+      @click="ui.toggleSidebar()"
+    >
       <AppIcon name="menu" :size="22" />
     </button>
     <h1 class="page-title">{{ title }}</h1>
@@ -127,7 +132,9 @@ const alertCount = computed(() => stats.overdueInstallments);
   border-radius: 10px;
   background: transparent;
   color: var(--text-secondary);
-  transition: background 0.13s ease, color 0.13s ease;
+  transition:
+    background 0.13s ease,
+    color 0.13s ease;
   position: relative;
 }
 .icon-btn:hover {
@@ -154,7 +161,9 @@ const alertCount = computed(() => stats.overdueInstallments);
   color: var(--text-secondary);
   font-weight: 600;
   font-size: 13.5px;
-  transition: background 0.13s ease, border-color 0.13s ease;
+  transition:
+    background 0.13s ease,
+    border-color 0.13s ease;
 }
 .lang-btn:hover {
   background: var(--bg);

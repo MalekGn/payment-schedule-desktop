@@ -86,14 +86,70 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
 
     // A spread of purchases: some overdue, some on track, one fully paid.
     let purchases = [
-        SeedPurchase { client_idx: 0, product: "Réfrigérateur Samsung 260L", total: 2400, count: 6, months_ago: 5, paid: 1 },
-        SeedPurchase { client_idx: 1, product: "Machine à laver LG 8kg",      total: 1800, count: 5, months_ago: 4, paid: 2 },
-        SeedPurchase { client_idx: 2, product: "Téléviseur Smart 55\"",       total: 3200, count: 8, months_ago: 6, paid: 3 },
-        SeedPurchase { client_idx: 3, product: "Cuisinière 4 feux",           total: 1200, count: 4, months_ago: 4, paid: 4 },
-        SeedPurchase { client_idx: 4, product: "Climatiseur 1.5 CV",          total: 2100, count: 6, months_ago: 3, paid: 1 },
-        SeedPurchase { client_idx: 5, product: "Congélateur 200L",            total: 1500, count: 5, months_ago: 1, paid: 1 },
-        SeedPurchase { client_idx: 0, product: "Four électrique",             total: 900,  count: 3, months_ago: 0, paid: 0 },
-        SeedPurchase { client_idx: 1, product: "Lave-vaisselle Bosch",        total: 1600, count: 4, months_ago: 2, paid: 1 },
+        SeedPurchase {
+            client_idx: 0,
+            product: "Réfrigérateur Samsung 260L",
+            total: 2400,
+            count: 6,
+            months_ago: 5,
+            paid: 1,
+        },
+        SeedPurchase {
+            client_idx: 1,
+            product: "Machine à laver LG 8kg",
+            total: 1800,
+            count: 5,
+            months_ago: 4,
+            paid: 2,
+        },
+        SeedPurchase {
+            client_idx: 2,
+            product: "Téléviseur Smart 55\"",
+            total: 3200,
+            count: 8,
+            months_ago: 6,
+            paid: 3,
+        },
+        SeedPurchase {
+            client_idx: 3,
+            product: "Cuisinière 4 feux",
+            total: 1200,
+            count: 4,
+            months_ago: 4,
+            paid: 4,
+        },
+        SeedPurchase {
+            client_idx: 4,
+            product: "Climatiseur 1.5 CV",
+            total: 2100,
+            count: 6,
+            months_ago: 3,
+            paid: 1,
+        },
+        SeedPurchase {
+            client_idx: 5,
+            product: "Congélateur 200L",
+            total: 1500,
+            count: 5,
+            months_ago: 1,
+            paid: 1,
+        },
+        SeedPurchase {
+            client_idx: 0,
+            product: "Four électrique",
+            total: 900,
+            count: 3,
+            months_ago: 0,
+            paid: 0,
+        },
+        SeedPurchase {
+            client_idx: 1,
+            product: "Lave-vaisselle Bosch",
+            total: 1600,
+            count: 4,
+            months_ago: 2,
+            paid: 1,
+        },
     ];
 
     let base = today();

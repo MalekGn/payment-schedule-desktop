@@ -43,7 +43,11 @@ function open(id: number) {
           <SortHeader :sort="sort" field="reference" :label="t('dashboard.table.reference')" />
           <SortHeader :sort="sort" field="client" :label="t('dashboard.table.client')" />
           <SortHeader :sort="sort" field="product" :label="t('dashboard.table.product')" />
-          <SortHeader :sort="sort" field="purchaseDate" :label="t('dashboard.table.purchaseDate')" />
+          <SortHeader
+            :sort="sort"
+            field="purchaseDate"
+            :label="t('dashboard.table.purchaseDate')"
+          />
           <SortHeader :sort="sort" field="total" :label="t('dashboard.table.totalAmount')" />
           <SortHeader :sort="sort" field="status" :label="t('common.status')" />
         </tr>

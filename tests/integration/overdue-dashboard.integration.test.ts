@@ -30,17 +30,13 @@ describe("the dashboard aggregates reconcile with the individual read models", (
 
     // Overdue: one impayé group per client, installment counts line up.
     expect(dash.stats.overdueClients).toBe(impayes.length);
-    expect(dash.stats.overdueCount).toBe(
-      impayes.reduce((s, c) => s + c.overdueCount, 0),
-    );
+    expect(dash.stats.overdueCount).toBe(impayes.reduce((s, c) => s + c.overdueCount, 0));
 
     // Money aggregates are just fan-ins of the per-entity numbers.
     expect(dash.stats.totalPurchases).toBe(purchases.length);
     expect(dash.stats.totalSales).toBe(purchases.reduce((s, p) => s + p.totalPrice, 0));
     expect(dash.stats.totalCollected).toBe(payments.reduce((s, p) => s + p.amount, 0));
-    expect(dash.stats.totalOutstanding).toBe(
-      clients.reduce((s, c) => s + c.totalOutstanding, 0),
-    );
+    expect(dash.stats.totalOutstanding).toBe(clients.reduce((s, c) => s + c.totalOutstanding, 0));
 
     // The embedded impayés preview is a most-owed-first prefix of the full list.
     expect(dash.impayes.length).toBeLessThanOrEqual(impayes.length);
@@ -107,7 +103,9 @@ describe("deleting a client cascades across purchases, impayés, and the dashboa
     } catch (e) {
       error = e;
     }
-    expect(String(error)).toMatch(new RegExp(`CLIENT_HAS_PURCHASES:${withPurchases.purchaseCount}`));
+    expect(String(error)).toMatch(
+      new RegExp(`CLIENT_HAS_PURCHASES:${withPurchases.purchaseCount}`),
+    );
 
     // The refusal must not have partially deleted anything.
     expect((await api.listClients()).length).toBe(clients.length);

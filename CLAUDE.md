@@ -47,7 +47,7 @@ Check and explicitly report on each of the following:
 - **Security / vulnerabilities** — no injection risks (SQL, command, template, XSS), no hardcoded secrets/credentials, proper input validation and output encoding, safe handling of authN/authZ, no insecure deserialization, dependencies free of known-bad patterns, least-privilege access to resources
 - **Readability & naming** — names are descriptive and consistent with project convention, functions/methods are appropriately sized, control flow isn't needlessly nested or clever
 - **Formatting** — consistent with project linter/formatter config if one exists; run it rather than eyeballing
-- **Comments & documentation** — non-obvious logic is explained, public APIs/functions have docstrings/JSDoc, comments explain *why* not *what*, no stale/misleading comments left behind
+- **Comments & documentation** — non-obvious logic is explained, public APIs/functions have docstrings/JSDoc, comments explain _why_ not _what_, no stale/misleading comments left behind
 - **Logging** — meaningful log points at appropriate levels (not excessive, not silent on failure paths), no sensitive data (secrets, PII, tokens) logged
 
 Report the review as: **Summary → Findings by category (only categories with findings) → Severity (blocker / should-fix / nit) → Action taken**.
@@ -68,6 +68,7 @@ Report the review as: **Summary → Findings by category (only categories with f
 - **Generate or update a QA report** at `docs/e2e/qa-report.md` on every QA pass. Use the same Summary → Test cases → Issues → Recommendations structure, date each entry, and append a new dated section rather than discarding prior history. This is the durable record of what was tested and what remains open; the terminal summary is a mirror of it, not a replacement.
 
 Integration/E2E test layout for this project:
+
 - **Unit tests** live co-located in `src/**` and run with `npm test` (Vitest).
 - **Integration tests** live in `tests/integration/**` and run only via `npm run test:integration` (separate `vitest.integration.config.ts`) — kept out of the default unit run so they stay opt-in per the constraint below.
 - **End-to-end tests** live in `tests/e2e/` (`run.mjs`, Playwright) and run via `npm run test:e2e`; failure screenshots land in `tests/e2e/artifacts/`. The QA report itself stays under `docs/e2e/qa-report.md` (it is documentation, not test code).
@@ -80,11 +81,11 @@ Integration/E2E test layout for this project:
 
 Update these only when their content is actually affected — don't touch them otherwise:
 
-| File | Update when... |
-|---|---|
-| `features.md` | A feature is added, removed, or its status changes. Format: name, status, one-line description. |
-| `README.md` | Setup, usage, tech stack, or high-level architecture changes. |
-| `architecture.md` | System design, components, data flow, or a key technical decision changes. |
+| File                    | Update when...                                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `features.md`           | A feature is added, removed, or its status changes. Format: name, status, one-line description.            |
+| `README.md`             | Setup, usage, tech stack, or high-level architecture changes.                                              |
+| `architecture.md`       | System design, components, data flow, or a key technical decision changes.                                 |
 | `docs/e2e/qa-report.md` | Every QA pass — append a dated entry (Summary → Test cases → Issues → Recommendations). Created if absent. |
 
 Each update should be a diff to the existing file, not a full rewrite, unless the file doesn't exist yet.

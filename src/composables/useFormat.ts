@@ -21,10 +21,7 @@ export function formatDatePattern(iso: string | null | undefined, pattern: strin
   if (!iso) return "—";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
-  return pattern
-    .replace(/yyyy/g, String(y))
-    .replace(/MM/g, pad(m))
-    .replace(/dd/g, pad(d));
+  return pattern.replace(/yyyy/g, String(y)).replace(/MM/g, pad(m)).replace(/dd/g, pad(d));
 }
 
 export function useFormat() {

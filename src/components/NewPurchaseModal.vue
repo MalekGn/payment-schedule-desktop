@@ -58,7 +58,13 @@ function rebuild() {
 }
 
 watch(
-  () => [form.totalPrice, form.installmentCount, form.intervalKind, form.intervalDays, form.purchaseDate],
+  () => [
+    form.totalPrice,
+    form.installmentCount,
+    form.intervalKind,
+    form.intervalDays,
+    form.purchaseDate,
+  ],
   rebuild,
 );
 
@@ -83,7 +89,8 @@ function validate(): boolean {
   }
   if (!form.productLabel.trim()) errors.product = t("validation.required");
   if (!form.totalPrice || form.totalPrice <= 0) errors.totalPrice = t("validation.positive");
-  if (!form.installmentCount || form.installmentCount < 1) errors.installmentCount = t("validation.minInstallments");
+  if (!form.installmentCount || form.installmentCount < 1)
+    errors.installmentCount = t("validation.minInstallments");
   if (form.intervalKind === "custom" && (!form.intervalDays || form.intervalDays < 1))
     errors.intervalDays = t("validation.positive");
   if (!sumMatches.value) errors.sum = t("validation.sumMismatch");
@@ -139,7 +146,12 @@ async function submit() {
       <div class="grid-2">
         <div class="field">
           <label for="np-client">{{ t("achats.form.client") }}</label>
-          <select id="np-client" v-model="form.clientId" class="select" :class="{ 'input--error': errors.client }">
+          <select
+            id="np-client"
+            v-model="form.clientId"
+            class="select"
+            :class="{ 'input--error': errors.client }"
+          >
             <option value="" disabled>{{ t("achats.form.selectClient") }}</option>
             <option value="new">➕ {{ t("achats.form.newClient") }}</option>
             <option v-for="c in clients" :key="c.id" :value="String(c.id)">
@@ -158,19 +170,31 @@ async function submit() {
         <div class="grid-2">
           <div class="field">
             <label>{{ t("clients.form.firstName") }}</label>
-            <input v-model="inlineClient.firstName" class="input" :class="{ 'input--error': errors.firstName }" />
+            <input
+              v-model="inlineClient.firstName"
+              class="input"
+              :class="{ 'input--error': errors.firstName }"
+            />
             <span v-if="errors.firstName" class="field-error">{{ errors.firstName }}</span>
           </div>
           <div class="field">
             <label>{{ t("clients.form.lastName") }}</label>
-            <input v-model="inlineClient.lastName" class="input" :class="{ 'input--error': errors.lastName }" />
+            <input
+              v-model="inlineClient.lastName"
+              class="input"
+              :class="{ 'input--error': errors.lastName }"
+            />
             <span v-if="errors.lastName" class="field-error">{{ errors.lastName }}</span>
           </div>
         </div>
         <div class="grid-2">
           <div class="field">
             <label>{{ t("clients.form.phone") }}</label>
-            <input v-model="inlineClient.phone" class="input" :placeholder="t('clients.form.phonePlaceholder')" />
+            <input
+              v-model="inlineClient.phone"
+              class="input"
+              :placeholder="t('clients.form.phonePlaceholder')"
+            />
           </div>
           <div class="field">
             <label>{{ t("clients.form.address") }}</label>
@@ -181,20 +205,43 @@ async function submit() {
 
       <div class="field">
         <label for="np-product">{{ t("achats.form.product") }}</label>
-        <input id="np-product" v-model="form.productLabel" class="input" :class="{ 'input--error': errors.product }" :placeholder="t('achats.form.productPlaceholder')" />
+        <input
+          id="np-product"
+          v-model="form.productLabel"
+          class="input"
+          :class="{ 'input--error': errors.product }"
+          :placeholder="t('achats.form.productPlaceholder')"
+        />
         <span v-if="errors.product" class="field-error">{{ errors.product }}</span>
       </div>
 
       <div class="grid-4">
         <div class="field">
           <label for="np-total">{{ t("achats.form.totalPrice") }}</label>
-          <input id="np-total" v-model.number="form.totalPrice" type="number" min="1" class="input" :class="{ 'input--error': errors.totalPrice }" />
+          <input
+            id="np-total"
+            v-model.number="form.totalPrice"
+            type="number"
+            min="1"
+            class="input"
+            :class="{ 'input--error': errors.totalPrice }"
+          />
           <span v-if="errors.totalPrice" class="field-error">{{ errors.totalPrice }}</span>
         </div>
         <div class="field">
           <label for="np-count">{{ t("achats.form.installmentCount") }}</label>
-          <input id="np-count" v-model.number="form.installmentCount" type="number" min="1" max="60" class="input" :class="{ 'input--error': errors.installmentCount }" />
-          <span v-if="errors.installmentCount" class="field-error">{{ errors.installmentCount }}</span>
+          <input
+            id="np-count"
+            v-model.number="form.installmentCount"
+            type="number"
+            min="1"
+            max="60"
+            class="input"
+            :class="{ 'input--error': errors.installmentCount }"
+          />
+          <span v-if="errors.installmentCount" class="field-error">{{
+            errors.installmentCount
+          }}</span>
         </div>
         <div class="field">
           <label for="np-interval">{{ t("achats.form.interval") }}</label>
@@ -205,8 +252,18 @@ async function submit() {
           </select>
         </div>
         <div class="field">
-          <label for="np-days" :class="{ disabled: form.intervalKind !== 'custom' }">{{ t("achats.form.intervalDays") }}</label>
-          <input id="np-days" v-model.number="form.intervalDays" type="number" min="1" class="input" :disabled="form.intervalKind !== 'custom'" :class="{ 'input--error': errors.intervalDays }" />
+          <label for="np-days" :class="{ disabled: form.intervalKind !== 'custom' }">{{
+            t("achats.form.intervalDays")
+          }}</label>
+          <input
+            id="np-days"
+            v-model.number="form.intervalDays"
+            type="number"
+            min="1"
+            class="input"
+            :disabled="form.intervalKind !== 'custom'"
+            :class="{ 'input--error': errors.intervalDays }"
+          />
         </div>
       </div>
 
@@ -231,15 +288,25 @@ async function submit() {
           </div>
         </div>
         <div class="inst-sum" :class="{ ok: sumMatches, bad: !sumMatches }">
-          <span>{{ t("achats.form.sumLabel") }}: <strong class="tabular">{{ fmt.money(sum) }}</strong></span>
+          <span
+            >{{ t("achats.form.sumLabel") }}:
+            <strong class="tabular">{{ fmt.money(sum) }}</strong></span
+          >
           <span v-if="sumMatches">✓ {{ t("achats.form.sumOk") }}</span>
-          <span v-else>{{ t("achats.form.sumMismatch", { sum: fmt.number(sum), total: fmt.number(form.totalPrice ?? 0) }) }}</span>
+          <span v-else>{{
+            t("achats.form.sumMismatch", {
+              sum: fmt.number(sum),
+              total: fmt.number(form.totalPrice ?? 0),
+            })
+          }}</span>
         </div>
       </div>
     </form>
 
     <template #footer>
-      <button class="btn btn--ghost" type="button" @click="emit('close')">{{ t("common.cancel") }}</button>
+      <button class="btn btn--ghost" type="button" @click="emit('close')">
+        {{ t("common.cancel") }}
+      </button>
       <button class="btn btn--primary" type="button" :disabled="saving" @click="submit">
         {{ t("achats.form.submit") }}
       </button>

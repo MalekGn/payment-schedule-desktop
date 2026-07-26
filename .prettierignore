@@ -1,0 +1,18 @@
+# Build output & dependencies
+dist/
+dist-ssr/
+coverage/
+node_modules/
+
+# Tooling / vendored agent content (not project source)
+.claude/
+.github/
+
+# Rust / Tauri (formatted by rustfmt, not prettier)
+src-tauri/target/
+src-tauri/gen/
+
+# Generated / binary artifacts
+package-lock.json
+tests/e2e/artifacts/
+*.png

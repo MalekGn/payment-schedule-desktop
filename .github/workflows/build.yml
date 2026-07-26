@@ -6,7 +6,7 @@ name: Release desktop bundles
 # `workflow_dispatch` lets you also trigger a build manually from the Actions tab.
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
   workflow_dispatch:
 
 # A newer tag build supersedes an in-flight one for the same ref.
@@ -18,22 +18,31 @@ concurrency:
 permissions:
   contents: write
 
+# Third-party actions are pinned to a full commit SHA (with the human-readable
+# version in a trailing comment) so a moved tag can't silently swap the code we run.
+# Dependabot (see .github/dependabot.yml) keeps these pins current.
 jobs:
-  # Fast gate: typecheck + unit tests must pass before we spend time on native bundling.
+  # Fast gate: lint + typecheck + unit tests must pass before we spend time on native bundling.
   test:
-    name: Typecheck & unit tests
+    name: Lint, typecheck & unit tests
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install JS dependencies
         run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier format check
+        run: npm run format:check
 
       - name: Typecheck & build frontend
         run: npm run build
@@ -41,9 +50,44 @@ jobs:
       - name: Unit tests
         run: npm test
 
+  # Rust lint gate: format + clippy on the Tauri backend.
+  rust-lint:
+    name: Rust format & clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - name: Set up Rust (with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: src-tauri -> target
+
+      - name: rustfmt (check)
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: clippy (warnings as errors)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
   release:
     name: ${{ matrix.label }}
-    needs: test
+    needs: [test, rust-lint]
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +104,7 @@ jobs:
             bundles: msi,nsis
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -78,16 +122,16 @@ jobs:
             rpm
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
         with:
           workspaces: src-tauri -> target
 
@@ -99,13 +143,13 @@ jobs:
       # Both matrix runners target the same tagName, so they attach to one shared Release.
       # --bundles overrides tauri.conf.json targets so each OS emits only its own installers.
       - name: Build & publish to GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@42e9df6c59070d114bf90dcd3943a1b8f138b113 # v0.5.20
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'paymentSchedule ${{ github.ref_name }}'
-          releaseBody: 'Desktop installers for Linux (deb/rpm) and Windows (msi/nsis). See the assets below.'
+          releaseName: "paymentSchedule ${{ github.ref_name }}"
+          releaseBody: "Desktop installers for Linux (deb/rpm) and Windows (msi/nsis). See the assets below."
           # Published as a draft so you can review the assets and notes before it goes live.
           releaseDraft: true
           prerelease: false

@@ -48,7 +48,8 @@ const filtered = computed<ImpayeClient[]>(() => {
   const out: ImpayeClient[] = [];
   for (const c of impayes.value) {
     const installments = c.installments.filter((i) => {
-      if (needle && !`${i.purchaseReference} ${c.clientName}`.toLowerCase().includes(needle)) return false;
+      if (needle && !`${i.purchaseReference} ${c.clientName}`.toLowerCase().includes(needle))
+        return false;
       if (min != null && i.remaining < min) return false;
       if (max != null && i.remaining > max) return false;
       if (dateFrom.value && i.dueDate < dateFrom.value) return false;
@@ -82,7 +83,15 @@ const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
 const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
 
 function exportCsv() {
-  const header = ["Client", "Téléphone", "N° Achat", "Tranche", "Échéance", "Montant", "Jours de retard"];
+  const header = [
+    "Client",
+    "Téléphone",
+    "N° Achat",
+    "Tranche",
+    "Échéance",
+    "Montant",
+    "Jours de retard",
+  ];
   const lines = [header.join(",")];
   for (const c of filtered.value) {
     for (const i of c.installments) {
@@ -142,7 +151,10 @@ function exportCsv() {
             <span class="impaye-name">{{ c.clientName }}</span>
             <span class="impaye-contact">
               <AppIcon name="phone" :size="13" /> {{ c.phone }}
-              <template v-if="c.address"><span class="sep">·</span><AppIcon name="map-pin" :size="13" /> {{ c.address }}</template>
+              <template v-if="c.address"
+                ><span class="sep">·</span><AppIcon name="map-pin" :size="13" />
+                {{ c.address }}</template
+              >
             </span>
           </div>
           <div class="impaye-right">
@@ -151,10 +163,18 @@ function exportCsv() {
               <span class="impaye-total tabular">{{ fmt.money(c.totalOverdue) }}</span>
             </div>
             <div class="impaye-actions">
-              <a class="contact-btn contact-btn--call" :href="tel(c.phone)" :title="t('impaye.call')">
+              <a
+                class="contact-btn contact-btn--call"
+                :href="tel(c.phone)"
+                :title="t('impaye.call')"
+              >
                 <AppIcon name="phone" :size="17" />
               </a>
-              <a class="contact-btn contact-btn--msg" :href="sms(c.phone)" :title="t('impaye.message')">
+              <a
+                class="contact-btn contact-btn--msg"
+                :href="sms(c.phone)"
+                :title="t('impaye.message')"
+              >
                 <AppIcon name="message" :size="17" />
               </a>
               <button
@@ -172,7 +192,11 @@ function exportCsv() {
         <table class="table inner-table">
           <thead>
             <tr>
-              <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
+              <SortHeader
+                :sort="sort"
+                field="reference"
+                :label="t('echeances.columns.reference')"
+              />
               <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
               <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
               <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
@@ -180,9 +204,19 @@ function exportCsv() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in sortedInstallments(c.installments)" :key="i.installmentId" class="is-late">
+            <tr
+              v-for="i in sortedInstallments(c.installments)"
+              :key="i.installmentId"
+              class="is-late"
+            >
               <td>
-                <a class="row-link" href="#" @click.prevent="router.push({ name: 'achat-detail', params: { id: i.purchaseId } })">
+                <a
+                  class="row-link"
+                  href="#"
+                  @click.prevent="
+                    router.push({ name: 'achat-detail', params: { id: i.purchaseId } })
+                  "
+                >
                   {{ i.purchaseReference }}
                 </a>
               </td>

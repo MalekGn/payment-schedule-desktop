@@ -95,7 +95,11 @@ function openDetail(id: number) {
     <div class="toolbar">
       <div class="search-box">
         <AppIcon name="search" :size="18" class="muted" />
-        <input v-model="search" class="search-input" :placeholder="t('clients.searchPlaceholder')" />
+        <input
+          v-model="search"
+          class="search-input"
+          :placeholder="t('clients.searchPlaceholder')"
+        />
       </div>
       <button class="btn btn--primary" type="button" @click="openNew">
         <AppIcon name="plus" :size="18" /> {{ t("clients.new") }}
@@ -115,7 +119,11 @@ function openDetail(id: number) {
             <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
             <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
             <SortHeader :sort="sort" field="purchases" :label="t('clients.columns.purchases')" />
-            <SortHeader :sort="sort" field="outstanding" :label="t('clients.columns.outstanding')" />
+            <SortHeader
+              :sort="sort"
+              field="outstanding"
+              :label="t('clients.columns.outstanding')"
+            />
             <th class="col-action">{{ t("common.actions") }}</th>
           </tr>
         </thead>
@@ -134,10 +142,20 @@ function openDetail(id: number) {
             <td class="tabular">{{ c.purchaseCount }}</td>
             <td class="tabular strong">{{ fmt.money(c.totalOutstanding) }}</td>
             <td class="col-action" @click.stop>
-              <button class="icon-action" type="button" :title="t('common.edit')" @click="openEdit(c)">
+              <button
+                class="icon-action"
+                type="button"
+                :title="t('common.edit')"
+                @click="openEdit(c)"
+              >
                 <AppIcon name="edit" :size="17" />
               </button>
-              <button class="icon-action icon-action--danger" type="button" :title="t('common.delete')" @click="askDelete(c)">
+              <button
+                class="icon-action icon-action--danger"
+                type="button"
+                :title="t('common.delete')"
+                @click="askDelete(c)"
+              >
                 <AppIcon name="trash" :size="17" />
               </button>
             </td>
@@ -219,7 +237,9 @@ function openDetail(id: number) {
   color: var(--text-muted);
   padding: 6px;
   border-radius: 8px;
-  transition: background 0.13s, color 0.13s;
+  transition:
+    background 0.13s,
+    color 0.13s;
 }
 .icon-action:hover {
   background: var(--bg);

@@ -29,11 +29,41 @@ const kpis = computed(() => {
   const s = data.value?.stats;
   if (!s) return [];
   return [
-    { icon: "cart", tone: "blue" as const, label: t("dashboard.kpi.totalPurchases"), value: fmt.number(s.totalPurchases), sub: t("dashboard.thisMonth") },
-    { icon: "banknote", tone: "green" as const, label: t("dashboard.kpi.totalSales"), value: fmt.money(s.totalSales), sub: t("dashboard.thisMonth") },
-    { icon: "card", tone: "purple" as const, label: t("dashboard.kpi.collected"), value: fmt.money(s.totalCollected), sub: t("dashboard.thisMonth") },
-    { icon: "alert", tone: "orange" as const, label: t("dashboard.kpi.outstanding"), value: fmt.money(s.totalOutstanding), sub: t("dashboard.thisMonth") },
-    { icon: "calendar", tone: "red" as const, label: t("dashboard.kpi.latePayments"), value: fmt.number(s.overdueCount), sub: t("dashboard.clientsConcerned") },
+    {
+      icon: "cart",
+      tone: "blue" as const,
+      label: t("dashboard.kpi.totalPurchases"),
+      value: fmt.number(s.totalPurchases),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "banknote",
+      tone: "green" as const,
+      label: t("dashboard.kpi.totalSales"),
+      value: fmt.money(s.totalSales),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "card",
+      tone: "purple" as const,
+      label: t("dashboard.kpi.collected"),
+      value: fmt.money(s.totalCollected),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "alert",
+      tone: "orange" as const,
+      label: t("dashboard.kpi.outstanding"),
+      value: fmt.money(s.totalOutstanding),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "calendar",
+      tone: "red" as const,
+      label: t("dashboard.kpi.latePayments"),
+      value: fmt.number(s.overdueCount),
+      sub: t("dashboard.clientsConcerned"),
+    },
   ];
 });
 

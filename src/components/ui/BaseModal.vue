@@ -25,7 +25,7 @@ void props;
     <div class="modal" :class="{ 'modal--wide': wide }" role="dialog" aria-modal="true">
       <div class="modal-head">
         <h2>{{ title }}</h2>
-        <button class="icon-btn" type="button" @click="emit('close')" aria-label="close">
+        <button class="icon-btn" type="button" aria-label="close" @click="emit('close')">
           <AppIcon name="x" :size="18" />
         </button>
       </div>

@@ -1,11 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  addInterval,
-  dayDiff,
-  installmentStatus,
-  purchaseStatus,
-  splitAmounts,
-} from "./finance";
+import { addInterval, dayDiff, installmentStatus, purchaseStatus, splitAmounts } from "./finance";
 
 describe("splitAmounts", () => {
   it("splits evenly when divisible", () => {

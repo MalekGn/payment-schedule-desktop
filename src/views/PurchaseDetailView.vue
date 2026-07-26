@@ -68,7 +68,9 @@ async function onSaved(updated: PurchaseDetail) {
     <PurchaseDetailCard :detail="detail" full-actions @pay="payTarget = $event" />
 
     <section class="card">
-      <div class="card-header"><h2>{{ t("dashboard.detail.paymentHistory") }}</h2></div>
+      <div class="card-header">
+        <h2>{{ t("dashboard.detail.paymentHistory") }}</h2>
+      </div>
       <EmptyState v-if="payments.length === 0" icon="card" :title="t('paiements.empty')" />
       <table v-else class="table">
         <thead>
@@ -82,7 +84,9 @@ async function onSaved(updated: PurchaseDetail) {
         <tbody>
           <tr v-for="pay in sortedPayments" :key="pay.id">
             <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
-            <td class="tabular">{{ pay.installmentIndex }}/{{ detail.purchase.installmentCount }}</td>
+            <td class="tabular">
+              {{ pay.installmentIndex }}/{{ detail.purchase.installmentCount }}
+            </td>
             <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
             <td class="muted">{{ pay.note || "—" }}</td>
           </tr>
