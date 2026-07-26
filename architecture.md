@@ -46,7 +46,8 @@ direct database or filesystem access.
   reactive to the settings store), `useSort` (client-side, direction-toggling
   table sorting driven by `SortHeader`), `useBack` (returns to the real
   previous page, falling back to a list route on a deep link or when the previous
-  entry is itself an unknown URL), and
+  entry is itself an unknown URL), `useContactActions` (validates a client phone
+  number and hands a `tel:`/`sms:` URI to the OS, toasting on failure), and
   `useClickOutside` (dismiss popovers/menus — used by the header language menu,
   `DatePicker`, and `DateRangeFilter`). UI filter pieces live in `ui/`:
   `DatePicker` (calendar), `DateRangeFilter` (date popover), `ListFilterBar`
@@ -61,8 +62,11 @@ direct database or filesystem access.
 
 ## Backend (`src-tauri/src/`)
 
-- **`lib.rs`** — Tauri builder: registers plugins (os, dialog, fs), opens/seeds
-  the DB into managed state, and registers every command.
+- **`lib.rs`** — Tauri builder: registers plugins (os, dialog, fs, opener),
+  opens/seeds the DB into managed state, and registers every command. The
+  `opener` plugin exists so `tel:`/`sms:` URIs go to the OS default handler —
+  navigating the WebView to them instead destroys the SPA. Its capability is
+  scoped to those two schemes only.
 - **`commands.rs`** — the full API surface (`#[tauri::command]`): clients,
   purchases, installments, payments, impayés, schedule, dashboard, settings,
   logo. Each locks the shared connection and returns serde models.

@@ -15,6 +15,10 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Hands `tel:`/`sms:` URIs to the OS default handler. Without this the
+        // WebView tries to navigate to them itself, fails, and replaces the SPA
+        // with its native error page. Scoped in capabilities/default.json.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;

@@ -118,7 +118,10 @@
     "allClients": "All clients",
     "call": "Call",
     "message": "Message",
-    "since": "Overdue since"
+    "since": "Overdue since",
+    "callFailed": "Can't call {phone} — no phone app on this computer.",
+    "messageFailed": "Can't text {phone} — no messaging app on this computer.",
+    "invalidPhone": "Unusable phone number: {phone}"
   },
   "achats": {
     "title": "Purchases",

@@ -76,6 +76,8 @@ class MockDb {
   installments: InstallmentRow[] = [];
   payments: PaymentRow[] = [];
   settings: Record<string, string> = {};
+  /** Last URI passed to `openExternal`, for assertions in tests. */
+  lastExternalUrl: string | null = null;
   private seq = { client: 0, purchase: 0, installment: 0, payment: 0 };
 
   constructor() {
@@ -672,6 +674,17 @@ class MockDb {
   clearLogo(): Settings {
     this.settings.logo_path = "";
     return this.getSettings();
+  }
+
+  // -- system --
+
+  /**
+   * Browser stand-in for Tauri's opener. Records the URI and does nothing else —
+   * actually navigating to it here would unload the SPA, which is precisely the
+   * failure the opener call exists to avoid.
+   */
+  openExternal(url: string): void {
+    this.lastExternalUrl = url;
   }
 }
 

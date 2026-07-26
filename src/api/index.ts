@@ -29,6 +29,11 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return invoke<T>(cmd, args);
 }
 
+async function openWithOs(url: string): Promise<void> {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  return openUrl(url);
+}
+
 export const api = {
   // -- clients --
   listClients: (): Promise<ClientSummary[]> =>
@@ -101,4 +106,16 @@ export const api = {
     isTauri() ? invoke("set_logo", { sourcePath }) : Promise.resolve(mockDb.setLogo(sourcePath)),
   clearLogo: (): Promise<Settings> =>
     isTauri() ? invoke("clear_logo") : Promise.resolve(mockDb.clearLogo()),
+
+  // -- system --
+  /**
+   * Hand a URI to the OS default handler (`tel:`, `sms:` — the capability scope
+   * in `src-tauri/capabilities/default.json` allows nothing else).
+   *
+   * Never navigate the WebView to these schemes directly: it cannot load them
+   * and replaces the whole SPA with its native error page. Rejects when the OS
+   * has no handler registered, which callers must surface to the user.
+   */
+  openExternal: (url: string): Promise<void> =>
+    isTauri() ? openWithOs(url) : Promise.resolve(mockDb.openExternal(url)),
 };

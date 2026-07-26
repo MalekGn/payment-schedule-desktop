@@ -118,7 +118,10 @@
     "allClients": "Tous les clients",
     "call": "Appeler",
     "message": "Message",
-    "since": "En retard depuis"
+    "since": "En retard depuis",
+    "callFailed": "Impossible de lancer l'appel vers {phone} — aucune application téléphone sur cet ordinateur.",
+    "messageFailed": "Impossible d'envoyer un SMS au {phone} — aucune application de messagerie sur cet ordinateur.",
+    "invalidPhone": "Numéro de téléphone inutilisable : {phone}"
   },
   "achats": {
     "title": "Achats",

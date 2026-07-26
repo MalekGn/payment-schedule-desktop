@@ -461,21 +461,91 @@ test("impayés: export button is present and each card exposes call/SMS/view act
   await exportBtn.waitFor({ timeout: 5000 });
   assertEqual(await exportBtn.count(), 1, "one export button while results exist");
 
+  // Contact actions must be buttons, never <a href="tel:…"> — see the
+  // not-stranding test below for why.
   const first = page.locator(".impaye-card").first();
-  const tel = await first.locator("a.contact-btn--call").getAttribute("href");
-  const sms = await first.locator("a.contact-btn--msg").getAttribute("href");
-  assert(
-    tel?.startsWith("tel:") && !/\s/.test(tel),
-    `call link should be a spaceless tel:, got ${tel}`,
+  assertEqual(
+    await first.locator("button.contact-btn--call").count(),
+    1,
+    "call action is a button",
   );
-  assert(
-    sms?.startsWith("sms:") && !/\s/.test(sms),
-    `message link should be a spaceless sms:, got ${sms}`,
+  assertEqual(
+    await first.locator("button.contact-btn--msg").count(),
+    1,
+    "message action is a button",
   );
   assertEqual(
     await first.locator("button.contact-btn--view").count(),
     1,
     "view-client button present",
+  );
+  assertEqual(
+    await first.locator("a[href^='tel:'], a[href^='sms:']").count(),
+    0,
+    "no external-scheme anchors remain",
+  );
+});
+
+// Regression guard for the 2026-07-26 bug: the call/SMS actions used to be
+// <a href="tel:…"> anchors. Tauri's WebView cannot load those schemes, so the
+// click navigated the WebView itself and replaced the whole SPA with a native
+// error page the user could not escape.
+//
+// Note on strength: the *structural* assertions above and below (the actions are
+// buttons, no tel:/sms: anchors exist) are what actually catch a revert.
+// Playwright drives Chromium, which does not reproduce WebKitGTK's failure mode,
+// so "the app is still here after clicking" is a sanity check rather than a
+// faithful reproduction. The full path is exercised though: click → composable →
+// api gateway → mock, and a rejection there would raise an error toast.
+
+test("impayés: contact actions never navigate the app away", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+  const before = page.url();
+
+  await page.locator("button.contact-btn--call").first().click();
+  await page.locator("button.contact-btn--msg").first().click();
+
+  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(page.url(), before, "URL unchanged after call + message");
+  assert(
+    (await page.locator(".impaye-card").count()) > 0,
+    "overdue cards still rendered after contact actions",
+  );
+  // A seeded client's number is dialable and the mock resolves, so the happy
+  // path must stay silent — an error toast here means validation or the gateway
+  // rejected a perfectly good number.
+  assertEqual(
+    await page.locator(".toast--error").count(),
+    0,
+    "no error toast for a valid seeded phone number",
+  );
+});
+
+test("dashboard: overdue panel contact actions are buttons, not scheme links", async (page) => {
+  await open(page, "/");
+  await page.locator(".impaye-list .impaye-row").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator(".impaye-list .impaye-row").first();
+  assertEqual(await row.locator("button.contact-btn--call").count(), 1, "call action is a button");
+  assertEqual(
+    await row.locator("button.contact-btn--msg").count(),
+    1,
+    "message action is a button",
+  );
+  assertEqual(
+    await page.locator("a[href^='tel:'], a[href^='sms:']").count(),
+    0,
+    "dashboard has no external-scheme anchors either",
+  );
+
+  // Same defect lived here, reachable without ever opening Impayés.
+  await row.locator("button.contact-btn--call").click();
+  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await page.locator(".kpi-row .kpi").count(),
+    5,
+    "dashboard still rendered after a call action",
   );
 });
 

@@ -8,6 +8,7 @@ import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useSortState, sortRows } from "@/composables/useSort";
+import { useContactActions } from "@/composables/useContactActions";
 import { api } from "@/api";
 import type { ImpayeClient, OverdueInstallment } from "@/types/models";
 
@@ -79,8 +80,7 @@ onMounted(async () => {
   }
 });
 
-const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
-const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
+const contact = useContactActions();
 
 function exportCsv() {
   const header = [
@@ -163,20 +163,22 @@ function exportCsv() {
               <span class="impaye-total tabular">{{ fmt.money(c.totalOverdue) }}</span>
             </div>
             <div class="impaye-actions">
-              <a
+              <button
                 class="contact-btn contact-btn--call"
-                :href="tel(c.phone)"
+                type="button"
                 :title="t('impaye.call')"
+                @click="contact.call(c.phone)"
               >
                 <AppIcon name="phone" :size="17" />
-              </a>
-              <a
+              </button>
+              <button
                 class="contact-btn contact-btn--msg"
-                :href="sms(c.phone)"
+                type="button"
                 :title="t('impaye.message')"
+                @click="contact.message(c.phone)"
               >
                 <AppIcon name="message" :size="17" />
-              </a>
+              </button>
               <button
                 class="contact-btn contact-btn--view"
                 type="button"

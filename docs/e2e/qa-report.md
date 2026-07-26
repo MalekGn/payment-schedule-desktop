@@ -6,6 +6,277 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-26 — Bug: call/SMS buttons strand the user on a WebView error page
+
+### Summary
+
+**Reported:** on the Impayés (overdue) page, clicking the phone-call button shows
+a blank page reading "The URL can't be shown", with no way back.
+
+**Confirmed, and it is not a routing bug.** The call and message buttons are plain
+anchors to external URI schemes:
+
+```vue
+<a class="contact-btn contact-btn--call" :href="tel(c.phone)">   <!-- tel:21698… -->
+<a class="contact-btn contact-btn--msg"  :href="sms(c.phone)">   <!-- sms:21698… -->
+```
+
+Nothing intercepts the click. Tauri 2 does not delegate non-`http(s)` schemes to
+the OS by default, and this app registers no opener/shell plugin
+(`src-tauri/src/lib.rs:15-17` has only `os`, `dialog`, `fs`) and no
+`on_navigation` hook. So the click becomes a **top-level navigation of the
+WebView itself**; WebKitGTK cannot load `tel:` and replaces the document with its
+own error page — the text the user saw.
+
+Severity: **blocker-class UX**. Because the SPA document is destroyed, Vue, the
+router and every in-app control are gone. The Tauri window has no browser chrome
+(no back button, no address bar), so **the only recovery is quitting and
+reopening the app**. Unsaved modal state is lost.
+
+This is why the not-found work from the earlier pass today does not help here:
+`vue-router` never sees this navigation. The fix must _prevent_ it, not react to
+it — no Vue-rendered back button can exist on a page Vue is no longer running on.
+
+### The fix (implemented this pass)
+
+User approved adding the opener dependency. All four call sites now go through
+one path:
+
+- `@tauri-apps/plugin-opener` + `tauri-plugin-opener` (both 2.5.4), registered in
+  `src-tauri/src/lib.rs`.
+- `src-tauri/capabilities/default.json` grants `opener:allow-open-url` scoped to
+  exactly `{ "url": "tel:*" }` and `{ "url": "sms:*" }`. Deliberately **not**
+  `opener:default`, which additionally grants `http://*`, `https://*`,
+  `mailto:*` and `reveal-item-in-dir` — and which, despite that breadth, does not
+  cover `sms:`. Verified against Tauri's generated ACL
+  (`src-tauri/gen/schemas/capabilities.json`).
+- `api.openExternal(url)` added to the gateway with a matching `mockDb`
+  implementation that records the URI and does not navigate.
+- New `src/composables/useContactActions.ts` — `contactUri()` validates the
+  number and builds the URI; `call()`/`message()` await the gateway and toast on
+  failure. `console.error` keeps the underlying plugin error for diagnostics while
+  the toast stays free of internals.
+- The four anchors became `<button type="button">` in `ImpayesView.vue` and
+  `ImpayesPanelCard.vue`. With no `href`, navigating away is now impossible by
+  construction rather than by interception.
+
+### Test cases run
+
+**Unit — RUN, 56/56 passing** (`npm test`; 9 new for `contactUri`). Frontend gates
+clean: `npm run lint`, `npm run build`. Rust gates clean (`src-tauri/` changed):
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
+(3 passing).
+
+`contactUri` — accepts and normalizes:
+
+- `tel:` for calls, `sms:` for messages.
+- Strips presentational separators: `98 123 456`, `(216) 98-123.456`, padded
+  input.
+- Keeps a leading `+` for international numbers.
+
+`contactUri` — rejects, so it never reaches the OS handler:
+
+- Empty/whitespace-only, free text (`appeler le bureau`, `N/A`).
+- Other schemes and URI syntax: `javascript:alert(1)`, `file:///etc/passwd`,
+  `?foo=bar`, `#frag`, `,999`.
+- Too short (`12`, `+`), implausibly long (40 digits), separators-only (`()-.`).
+- A `+` that is not the international prefix — refused rather than normalized.
+
+**E2E — RUN, 27/27 passing** (`npm run test:e2e`; 2 new, 1 rewritten):
+
+- The inverted assertion: call/message/view are all `<button>`, and
+  `a[href^='tel:'], a[href^='sms:']` count is **0**. This replaces the old
+  assertion that required `href` to start with `tel:` — the one that kept the
+  suite green while the defect was live.
+- Impayés: clicking call then message leaves the URL unchanged, `.app-shell`
+  present, cards still rendered, and **no error toast** for a valid seeded number
+  (proving the click → composable → gateway → mock path works end to end).
+- Dashboard: the overdue panel's actions are buttons, no scheme anchors anywhere
+  on the page, and the dashboard still renders 5 KPI cards after a call click.
+
+**Not verified in the real WebView.** This is the one gap. Playwright drives
+Chromium, which does not reproduce WebKitGTK's failure mode, so the automated
+suite proves the markup and the gateway path but not the OS hand-off. A
+`npm run tauri dev` attempt was made and the binary did build with the plugin
+compiled in, but the launch aborted because port 5173 was already occupied by a
+running dev server, and no screenshot/input-automation tooling is available here.
+Manual confirmation steps are in Recommendations.
+
+### Diagnosis evidence
+
+- Traced the click path from the anchor markup to the absent handler: no
+  `@click.prevent`, no `target`, no navigation guard, no opener plugin.
+- Enumerated every external-scheme surface in `src/` — 4 affected call sites in 2
+  files (below).
+- Probed the host for a handler: `xdg-mime query default x-scheme-handler/tel`
+  returns **empty** on this Linux box — nothing is registered for `tel:` at all.
+- Confirmed CSP is not the cause: `default-src 'self'` does not govern link
+  navigation, and the failure is the WebView being unable to load the scheme.
+
+### Issues found
+
+1. **Call button strands the user** (blocker, **fixed**) —
+   `src/views/ImpayesView.vue:167`. Repro before the fix: `npm run tauri dev` →
+   sidebar **Impayés** → click the green phone button on any overdue client card →
+   WebView shows "The URL can't be shown"; no back affordance; must quit the app.
+2. **SMS button had the identical defect** (blocker, **fixed**) —
+   `src/views/ImpayesView.vue:174`. Same repro via the message button. One click
+   away from the reported path, same root cause.
+3. **The dashboard reproduced both** (blocker, **fixed**) —
+   `src/components/dashboard/ImpayesPanelCard.vue:72` (tel) and `:75` (sms). The
+   overdue panel on the **home screen** carried the same anchors, so a user could
+   brick the window without ever visiting Impayés. Not in the original report.
+4. **The E2E suite enshrined the bug** (should-fix, **fixed**) —
+   `tests/e2e/run.mjs`, test "impayés: export button is present and each card
+   exposes call/SMS/view actions", asserted `href` starts with `tel:` / `sms:`. The
+   suite was green _because_ the broken markup was present, which is why 25/25
+   passed earlier today while this defect was live. Playwright never follows the
+   scheme, so it cannot observe the stranding. Assertion now inverted.
+5. **`tel:` has no handler on desktop Linux** (design constraint, not a defect,
+   **accommodated**). Even a correct hand-off has nothing to hand off to here, so
+   the fix treats rejection as a first-class path: an error toast naming the number
+   (`impaye.callFailed` / `impaye.messageFailed`, all three locales) rather than a
+   silent no-op.
+6. **Phone field was unvalidated** (should-fix, **fixed**) — found while
+   implementing. `c.phone` is free text and the old helpers only stripped
+   whitespace, so whatever was typed went straight into a URI. `contactUri` now
+   rejects on character set before touching digits and rebuilds the URI from
+   digits plus an optional leading `+`.
+7. **CSV export is a related but distinct risk** (should-fix, **open — tracked at
+   user's request**) — `src/views/ImpayesView.vue:112-118` downloads via
+   `URL.createObjectURL` + `a.download`. `a.download` on a `blob:` URL is
+   unreliable in WKWebView/WebKitGTK. Failure mode is a silent no-op rather than
+   stranding, so it is not urgent, but it is the same class of problem: browser
+   affordances assumed to work inside a WebView. Not investigated this pass.
+
+### Recommendations
+
+- **Confirm in the real app** — the one thing automation could not cover. Stop any
+  dev server on port 5173, then `npm run tauri dev` → **Impayés** → click the
+  phone button. Expected: the app stays put and an error toast names the number
+  (this desktop has no `tel:` handler). Repeat on the dashboard's overdue panel,
+  and on a machine that _does_ have a handler to confirm the hand-off itself.
+- Verify the toast in Arabic too — the new strings are RTL and untested visually.
+- Sweep for the same anti-pattern before it reappears: any `<a href>` to a
+  non-`http(s)` scheme, `target="_blank"`, or `window.open` inside this WebView
+  will fail the same way. Currently there are none outside the CSV export.
+- Address issue #7 when convenient; a Rust command writing the CSV via the
+  existing `fs`/`dialog` plugins needs no new dependency.
+- Consider `aria-label` instead of `title` on the icon-only contact buttons — the
+  accessible name currently comes from `title`, matching the pre-existing
+  `contact-btn--view` pattern, but `aria-label` is more reliable.
+- Replace the assertion in issue #4 with one that proves the click does **not**
+  navigate away (e.g. the document still has `.app-shell` afterwards).
+
+---
+
+## 2026-07-26 — Feature QA: not-found recovery (back navigation)
+
+### Summary
+
+Audited the "let the user get back when a page isn't found" behaviour and closed
+four gaps around it. The affordance itself already existed — the router's
+catch-all (`name: "not-found"`) renders `NotFoundView.vue` with a Back button
+(`useBack`) plus a dashboard link, and the detail views show a recoverable
+message for a missing/deleted id. What was missing: correct RTL presentation, a
+guard against Back landing on a second not-found page, a page title, and any
+test coverage at all.
+
+Changes under test:
+
+- `src/composables/useBack.ts` — the back/fallback decision is extracted into a
+  pure `shouldGoBack(back, resolveName)` helper, which now also refuses a stored
+  history entry that resolves to the `not-found` route.
+- `src/style.css` — new opt-in `[dir="rtl"] .icon-flip { transform: scaleX(-1) }`
+  utility; applied to the back arrow in `NotFoundView`, `ClientDetailView` and
+  `PurchaseDetailView` (both the missing-record and normal branches).
+- `src/components/layout/AppHeader.vue` — `not-found` added to `NAV_KEY`, reusing
+  the existing `notFound.title` key (no new strings, so all three locales stay at
+  261 identical keys).
+- `src/router/index.ts` — comment recording that the `"not-found"` route name is
+  string-matched by `useBack` and `AppHeader`.
+
+### Test cases run
+
+**Unit — RUN, 46/46 passing** (`npm test`; 9 new in
+`src/composables/useBack.test.ts`). `npm run lint` and `npm run build`
+(`vue-tsc --noEmit`) also clean.
+
+`shouldGoBack` — no usable history:
+
+- `null` back entry (fresh document load, the deep-link case) → fallback.
+- `undefined` / empty-string entry → fallback.
+- Non-string history values (number, object) → fallback rather than trusted.
+
+`shouldGoBack` — history points at a real page:
+
+- List, detail, and dashboard paths → `router.back()`.
+
+`shouldGoBack` — history points at another unknown URL:
+
+- `/nope` and `/achats/12/nope` → fallback, so Back never swaps one not-found
+  screen for another.
+- A resolver that throws → fallback, not a propagated exception.
+
+**E2E — RUN at the user's request, 25/25 passing** (`npm run test:e2e`; 5 new
+scenarios in `tests/e2e/run.mjs`, plus the 20 pre-existing ones, no regressions).
+The Playwright browser had to be provisioned first with
+`npx playwright install chromium` — a fresh checkout will need that before the
+suite can run.
+
+- Unknown route renders the localized card, the header reads "Page introuvable"
+  (not the app name), and two ways out are offered.
+- Back on a deep-linked not-found page falls back to the dashboard.
+- The dashboard link reaches a genuinely rendered dashboard (5 KPI cards).
+- Switching to Arabic flips the document to RTL and the back arrow's computed
+  transform becomes `matrix(-1, 0, 0, 1, 0, 0)`.
+- A deleted record's detail page (`/clients/999999`) shows the recoverable
+  message and its Back button falls back to the clients list.
+
+### Issues found
+
+All four were found by this audit and fixed in this pass.
+
+1. **Back arrow not mirrored in RTL** (should-fix, fixed). The three back buttons
+   hardcoded `<AppIcon name="arrow-left" />` and `style.css` had essentially no
+   `[dir="rtl"]` rules, so in Arabic the arrow pointed away from where "back" is.
+   Repro: open any client detail page, switch to العربية, observe the arrow.
+2. **Back could loop into a second not-found page** (should-fix, fixed).
+   `useBack` tested `history.state.back` for truthiness without checking where it
+   pointed. Repro (pre-fix): in-app navigate to one unknown URL, then another,
+   then press Retour — you land on a not-found page again.
+3. **Header showed the app name on the 404 page** (nit, fixed). `not-found` was
+   absent from `AppHeader`'s `NAV_KEY`, so `title` fell through to `t("app.name")`.
+4. **No test coverage** (should-fix, fixed). No unit test for `useBack`, no E2E
+   scenario touching an unknown route, no QA record.
+
+### Recommendations
+
+- The computed-transform assertion (`matrix(-1, 0, 0, 1, 0, 0)`) is the only
+  automated check on the RTL mirroring, and it passes. Keep it if `.icon-flip`
+  is ever refactored — a plain screenshot diff would not catch a silent regression
+  here.
+- CI provisioning: the E2E stage needs `npx playwright install chromium` (or the
+  Playwright Docker image) before `npm run test:e2e`; the binary is not vendored.
+- **Known limitation, accepted:** backing into a _valid_ route whose record was
+  since deleted (`/achats/999` → `achat-detail`) still renders the in-page
+  missing state; the router cannot know the row is gone. That screen carries the
+  same Back button with a list fallback, so the user is never stranded. Documented
+  in `useBack.ts`.
+- **Coverage limitation:** `open()` does a full document load and vue-router
+  `replaceState`s fresh history state on initial navigation, so `state.back` is
+  always null in E2E — the suite can only exercise the _fallback_ branch. There is
+  no UI path that router-navigates to an unknown URL. The genuine `router.back()`
+  branch and the 404-skip are covered by the unit tests instead.
+- `.icon-flip` is opt-in and currently used only on back arrows. Any future
+  directional icon (`chevron-left`/`chevron-right` in pagination, for example)
+  needs the class added explicitly — worth a sweep if pagination lands.
+- Unrelated, noted while auditing: `architecture.md` references a
+  `ui/DateRangeFilter` component twice, but no such file exists — that UI lives in
+  `ListFilterBar.vue` / `DatePicker.vue`. Stale doc reference, not fixed here.
+
+---
+
 ## 2026-07-24 — Tooling QA: clean & secure code baseline
 
 ### Summary
