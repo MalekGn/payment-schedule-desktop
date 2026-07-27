@@ -7,6 +7,8 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import LoadError from "@/components/ui/LoadError.vue";
+import { buildImpayesCsv } from "@/lib/csv";
+import { todayIso } from "@/lib/finance";
 import { useFormat } from "@/composables/useFormat";
 import { useLoader } from "@/composables/useLoader";
 import { useSortState, sortRows } from "@/composables/useSort";
@@ -87,37 +89,31 @@ onMounted(load);
 
 const contact = useContactActions();
 
+/**
+ * Download the filtered overdue list as a spreadsheet.
+ *
+ * Escaping and formula-injection defence live in `@/lib/csv`; this only does
+ * the browser plumbing. Headers reuse the same keys as the on-screen table
+ * above — the file used to be hard-coded French, so an Arabic or English user
+ * got a localized UI and a French export.
+ */
 function exportCsv() {
-  const header = [
-    "Client",
-    "Téléphone",
-    "N° Achat",
-    "Tranche",
-    "Échéance",
-    "Montant",
-    "Jours de retard",
-  ];
-  const lines = [header.join(",")];
-  for (const c of filtered.value) {
-    for (const i of c.installments) {
-      lines.push(
-        [
-          `"${c.clientName}"`,
-          `"${c.phone}"`,
-          i.purchaseReference,
-          `${i.index}/${i.installmentCount}`,
-          i.dueDate,
-          i.remaining,
-          i.daysLate,
-        ].join(","),
-      );
-    }
-  }
-  const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const csv = buildImpayesCsv(filtered.value, {
+    client: t("impayes.columns.client"),
+    phone: t("clients.columns.phone"),
+    reference: t("echeances.columns.reference"),
+    installment: t("echeances.columns.tranche"),
+    dueDate: t("echeances.columns.dueDate"),
+    amount: t("echeances.columns.amount"),
+    daysLate: t("impaye.since"),
+  });
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "impayes.csv";
+  // Dated so successive exports don't silently overwrite one another.
+  a.download = `impayes-${todayIso()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }

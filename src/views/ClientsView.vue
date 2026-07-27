@@ -8,7 +8,7 @@ import LoadError from "@/components/ui/LoadError.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ClientForm from "@/components/ClientForm.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
-import { toUserMessage } from "@/lib/errors";
+import { parseErrorCode, toUserMessage } from "@/lib/errors";
 import { useFormat } from "@/composables/useFormat";
 import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
@@ -29,6 +29,9 @@ const showForm = ref(false);
 const editing = ref<Client | null>(null);
 const deleteTarget = ref<ClientSummary | null>(null);
 const deleteMessage = ref("");
+// Whether the open confirm dialog is showing the cascade warning. Doubles as
+// the `force` flag sent to the backend — see `confirmDelete`.
+const cascadeWarned = ref(false);
 
 const filtered = computed(() => {
   const n = search.value.trim().toLowerCase();
@@ -71,20 +74,43 @@ async function onSaved() {
 
 function askDelete(c: ClientSummary) {
   deleteTarget.value = c;
-  deleteMessage.value =
-    c.purchaseCount > 0
-      ? t("clients.delete.hasPurchases", { n: c.purchaseCount })
-      : t("clients.delete.confirmText");
+  // The list row's `purchaseCount` is only a first guess — it is as old as the
+  // last load. `confirmDelete` treats it as such.
+  cascadeWarned.value = c.purchaseCount > 0;
+  deleteMessage.value = cascadeWarned.value
+    ? t("clients.delete.hasPurchases", { n: c.purchaseCount })
+    : t("clients.delete.confirmText");
 }
+
+/**
+ * Delete the selected client, letting the backend own the cascade decision.
+ *
+ * `force` is not hard-coded: it says whether the user has actually been shown
+ * the "this also deletes their purchases" warning. So when the list is stale —
+ * the client gained a purchase in another window since it loaded — the backend
+ * refuses with `CLIENT_HAS_PURCHASES:{n}` instead of cascading silently, and we
+ * re-prompt with the count the database reports *now*. Previously this always
+ * sent `true`, which made that guard, and the whole code path behind it,
+ * unreachable in the app.
+ */
 async function confirmDelete() {
-  if (!deleteTarget.value) return;
+  const target = deleteTarget.value;
+  if (!target) return;
   try {
-    await api.deleteClient(deleteTarget.value.id, true);
+    await api.deleteClient(target.id, cascadeWarned.value);
     ui.notify(t("common.delete"));
     deleteTarget.value = null;
     await load();
     await stats.refresh();
   } catch (e) {
+    const parsed = parseErrorCode(e);
+    if (parsed?.code === "CLIENT_HAS_PURCHASES") {
+      // Not an error the user needs to see as one: re-open the dialog with the
+      // authoritative count and let them confirm the cascade.
+      cascadeWarned.value = true;
+      deleteMessage.value = t("clients.delete.hasPurchases", { n: Number(parsed.params[0] ?? 0) });
+      return;
+    }
     ui.notify(toUserMessage(e, t), "error");
   }
 }

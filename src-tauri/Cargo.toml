@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "paymentSchedule — installment-sale tracking for small Tunisian appliance shops"
 authors = ["paymentSchedule"]
 edition = "2021"
-rust-version = "1.77"
+# Measured against the locked dependency set, not guessed: `darling`, `plist`,
+# `time` and `serde_with` all declare 1.88. The previous value (1.77) advertised
+# a floor that could never have built.
+rust-version = "1.88"
+repository = "https://github.com/MalekGn/payment-schedule-desktop"
+# Proprietary — see the LICENSE file at the repository root. `publish = false`
+# keeps this off crates.io and lets `cargo deny` skip the SPDX check for our own
+# crate (see `[licenses.private]` in deny.toml).
+license-file = "../LICENSE"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

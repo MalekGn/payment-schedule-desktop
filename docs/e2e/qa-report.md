@@ -6,6 +6,112 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-27 (b) — Remediation of the Low-severity findings in `AUDIT_REPORT.md`
+
+### Summary
+
+Closes the Low findings #20–#29 from the 2026-07-26 audit. #22 was already fixed
+by the previous pass; #25 is documented as not-actionable; #26 is partially done
+with the runtime majors deferred by decision; #30 was confirmed to need no change.
+
+Unlike the previous pass, **the integration and E2E suites were executed** at the
+user's request — 87 integration tests and 31 E2E scenarios, all passing. That
+also retroactively validated the two E2E scenarios written but not run last time.
+
+### Test cases run
+
+**TS unit — `npm test`, 110 passed / 0 failed** (was 85). The 25 new tests are
+`src/lib/csv.test.ts`:
+
+| Area              | Cases                                                                                                                                                                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Quoting           | plain strings; empty; embedded `"` doubled; a bare `"`; embedded comma; embedded newline; Arabic and accented text preserved                                                                                                                          |
+| Formula injection | `=cmd\|'/c calc'!A1`, `=1+1`, `+1`, `-1+2`, `@SUM(A1)`, leading TAB and leading CR each neutralized; guard applied _before_ escaping so the apostrophe lands inside the field; values that merely _contain_ a trigger (`Ben-Salah`, `a=b`) left alone |
+| Numbers           | emitted bare so sheets treat them as numeric; a negative number is **not** apostrophe-prefixed; `NaN`/`Infinity` render empty                                                                                                                         |
+| Document          | BOM first, CRLF line endings, trailing newline, header cells escaped too                                                                                                                                                                              |
+| `buildImpayesCsv` | one row per overdue installment; several clients/installments flattened; empty list is header-only; a hostile name keeps the row at exactly 7 fields                                                                                                  |
+
+**Rust — `cargo test`, 25 passed / 0 failed** (was 24). The new test is
+`payment_rows_resolve_join_columns_from_the_right_table`: it asserts
+`purchase_reference`, `purchase_id`, `installment_index`, `client_id` and
+`amount` each resolve from the correct table in the four-table payment join —
+the property `pay.*` could silently break.
+
+**Integration — `npm run test:integration`, 87 passed / 0 failed** (4 files).
+
+**E2E — `npm run test:e2e`, 31 passed / 0 failed** (was 29). Two new scenarios:
+
+- _deleting a client with no purchases needs a single confirm_ — the path that
+  now genuinely sends `force: false`, so the backend gate decides.
+- _impayés: the exported CSV is localized and properly quoted_ — captures the
+  actual download and asserts the BOM, the dated filename, the **localized**
+  header row, and that every data row parses to exactly seven fields.
+
+**Gates:** `eslint` clean · `vue-tsc --noEmit` clean · `npm run build` clean ·
+`prettier --check` clean · `npm audit --audit-level=high` 0 vulnerabilities ·
+`cargo fmt --check` clean · `cargo clippy --all-targets -- -D warnings` clean ·
+**`cargo deny check` → `advisories ok, bans ok, licenses ok, sources ok`** (the
+licence change was the step most likely to break this) · `cargo audit` unchanged
+at 0 vulnerabilities / 17 warnings.
+
+### Issues found
+
+1. **The CSV guard fires on every phone number, and that is correct.** A unit
+   test caught that `+216 …` — the format of every Tunisian number — starts with
+   a formula trigger and so gets an apostrophe. Kept deliberately: unguarded,
+   Excel parses `+216 98 123 456` as a formula and renders `#NAME?`, so the
+   guard fixes the phone column as well as securing it. Documented in `csv.ts`
+   and pinned by two tests.
+2. **The CSP risk flagged in the plan turned out not to exist.** Rather than
+   leave it to manual testing, I read `replace_csp_nonce` in `tauri-2.11.5`:
+   when it injects nonces it does `csp.entry("script-src").or_default()` and
+   **pushes `'self'` if absent**. So the old implicit form and the new explicit
+   `script-src 'self'` produce an identical effective policy. `object-src` is
+   untouched by Tauri. No runtime behaviour change.
+3. **The playwright 1.61 → 1.62 bump needs `npx playwright install`.** The E2E
+   suite failed outright until the matching browser was downloaded. CI installs
+   browsers already, but anyone pulling this branch locally will hit it.
+4. **Pre-existing, not fixed: the "Tranche" column (`2/6`) is coerced to a date
+   by Excel on import.** Quoting does not prevent it; only an apostrophe prefix
+   would, at the cost of a visible apostrophe on every row. Out of scope for
+   this pass and unrelated to the injection finding — flagged rather than
+   silently changed. See recommendations.
+5. **The stale-list re-prompt branch of the new delete gate is not covered
+   end-to-end.** Making the client list stale requires two independent backend
+   states, and the browser mock is a per-page-load singleton, so E2E cannot
+   express it. The backend half (`force: false` → `CLIENT_HAS_PURCHASES`) is
+   covered by the integration suite and by `delete_client_is_gated_then_cascades`
+   in Rust; the UI half is covered only by inspection.
+
+### Recommendations
+
+- **Decide on the `2/6` date-coercion quirk** (issue 4). Options: prefix the
+  tranche cell with `'`, emit two separate columns (`Tranche` / `Sur`), or leave
+  it. Two columns is probably the cleanest and costs one locale key.
+- **Add `npx playwright install` to the contributor setup notes** or a
+  `postinstall`, so issue 3 doesn't bite the next person.
+- **The MSRV is now verified, not just declared.** `rust-version = "1.88"` was
+  measured against the locked graph (max dependency MSRV is exactly 1.88.0), and
+  a new `MSRV (1.88)` job in `build.yml` runs `cargo +1.88 check --locked` so the
+  claim cannot drift back to fiction the way 1.77 did.
+- **Deferred: #26 runtime majors** — pinia 4, vue-router 5, vue-i18n 11, Vite 8,
+  TypeScript 7, as one PR gated on the E2E suite. Two findings for whoever picks
+  it up: `@vitejs/plugin-vue@6.0.8` and `vitest@4.1.10` **already declare
+  `vite ^8.0.0`**, so Vite 8 needs no companion bumps; and
+  `typescript-eslint@8.65.0` pins `typescript <6.1.0`, which **hard-blocks
+  TypeScript 7** until that ceiling lifts — sequence TS last.
+- **#25 stays open by design.** 17 RustSec warnings (16 unmaintained, 1 unsound
+  `glib`), all transitive through Tauri's GTK3 stack with no fixed versions.
+  `deny.toml` now states the policy explicitly (`unmaintained = "workspace"`)
+  with the reasoning inline, and `ignore = []` keeps them visible weekly.
+- **The LICENSE copyright holder is the placeholder `paymentSchedule`**, taken
+  from `Cargo.toml`'s `authors`. Replace it with your legal name or company
+  before distributing any build — `build.yml` publishes GitHub Releases.
+- **Still open from earlier passes:** the N+1 → `GROUP BY` rewrite (#7) and
+  `rusqlite` 0.32 → 0.40 (#16).
+
+---
+
 ## 2026-07-27 — Remediation of the High & Medium findings in `AUDIT_REPORT.md`
 
 ### Summary

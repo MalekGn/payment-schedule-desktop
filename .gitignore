@@ -33,3 +33,15 @@ launch.json
 # logs
 *.log
 npm-debug.log*
+
+# local databases & backups — these hold real client PII (names, phones,
+# addresses, debt positions). The app keeps its database in the OS app-data dir,
+# but `backup_database` writes wherever the user points it and a dev can point
+# the app at the repo, so nothing here should ever be committable.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.part
+*.sqlite
+*.sqlite3

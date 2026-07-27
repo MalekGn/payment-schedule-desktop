@@ -134,6 +134,20 @@ setting (key/value)
 - FK cascades: deleting a client cascades to its purchases → installments →
   payments. Indices on `purchase.client_id`, `installment.purchase_id`,
   `installment.due_date`, `payment.installment_id`.
+
+  **`delete_client` gates that cascade, and the frontend must let it.**
+  `ClientsView` sends `force` = whether the user has actually been shown the
+  "this also deletes their purchases" warning — never a hard-coded `true`. When
+  the client list is stale (the client gained a purchase in another window since
+  it loaded) the backend refuses with `CLIENT_HAS_PURCHASES:{n}` and the view
+  re-prompts using the count the database reports _now_. Passing `true`
+  unconditionally makes the guard, and every code path behind it, unreachable —
+  which is exactly what it was before.
+
+- **Queries name their columns.** No `SELECT *`: the payment queries join four
+  tables and `map_payment` resolves columns by name, so a star would let a new
+  `payment.reference` or `payment.purchase_id` column silently shadow the
+  purchase's value — wrong data on screen with no error anywhere.
 - **Money** is stored as whole currency units (`INTEGER`) so the installment
   split is exact. **Dates** are ISO `YYYY-MM-DD` text.
 - **Installment status** is derived on read (`paid`/`partial`/`late`/`pending`)

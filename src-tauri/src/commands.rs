@@ -46,7 +46,11 @@ fn map_client(row: &rusqlite::Row) -> rusqlite::Result<Client> {
 }
 
 fn fetch_client(conn: &Connection, id: i64) -> DbResult<Client> {
-    conn.query_row("SELECT * FROM client WHERE id = ?1", [id], map_client)
+    conn.query_row(
+        "SELECT id, first_name, last_name, phone, address, email, created_at FROM client WHERE id = ?1",
+        [id],
+        map_client,
+    )
         .map_err(missing_row(CLIENT_NOT_FOUND))
 }
 
@@ -110,7 +114,10 @@ fn load_installments(conn: &Connection, purchase_id: i64) -> DbResult<Vec<Instal
 fn build_purchase_detail(conn: &Connection, purchase_id: i64) -> DbResult<PurchaseDetail> {
     let purchase = conn
         .query_row(
-            "SELECT * FROM purchase WHERE id = ?1",
+            "SELECT id, reference, client_id, product_label, total_price,
+                    installment_count, interval_kind, interval_days,
+                    purchase_date, created_at
+             FROM purchase WHERE id = ?1",
             [purchase_id],
             map_purchase,
         )
@@ -165,7 +172,8 @@ pub async fn list_clients(db: State<'_, Db>) -> DbResult<Vec<ClientSummary>> {
     let conn = db.lock();
     let today_str = today().to_string();
     let mut stmt = conn.prepare(
-        "SELECT c.*,
+        "SELECT c.id, c.first_name, c.last_name, c.phone, c.address, c.email,
+                c.created_at,
                 COUNT(DISTINCT p.id) AS purchase_count,
                 COALESCE(SUM(i.amount - i.paid_amount), 0) AS outstanding,
                 COALESCE(SUM(CASE WHEN i.due_date < ?1 AND i.amount > i.paid_amount
@@ -543,7 +551,9 @@ pub async fn list_payments_for_purchase(
 ) -> DbResult<Vec<Payment>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
-        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+        "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
+                    pay.note, pay.created_at,
+                    i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -560,7 +570,9 @@ pub async fn list_payments_for_purchase(
 pub async fn list_all_payments(db: State<'_, Db>, limit: Option<i64>) -> DbResult<Vec<Payment>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
-        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+        "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
+                    pay.note, pay.created_at,
+                    i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -577,7 +589,9 @@ pub async fn list_all_payments(db: State<'_, Db>, limit: Option<i64>) -> DbResul
 pub async fn list_payments_for_client(db: State<'_, Db>, client_id: i64) -> DbResult<Vec<Payment>> {
     let conn = db.lock();
     let mut stmt = conn.prepare(
-        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+        "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
+                    pay.note, pay.created_at,
+                    i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -1665,6 +1679,63 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(code_of(missing), "INSTALLMENT_NOT_FOUND");
+    }
+
+    /// The payment queries join four tables and `map_payment` resolves columns
+    /// **by name**, so the projection has to name them explicitly.
+    ///
+    /// This used to select `pay.*`. The day a migration adds a `reference`,
+    /// `purchase_id` or `idx` column to `payment`, the star would start
+    /// shadowing the purchase's value — no compile error, no runtime error,
+    /// just the wrong reference on the payments screen. The migration ladder
+    /// makes that a plausible future change rather than a hypothetical one.
+    #[test]
+    fn payment_rows_resolve_join_columns_from_the_right_table() {
+        let f = Fixture::new("payment_join");
+        let detail = seeded_purchase(&f);
+        {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: detail.installments[1].id,
+                    amount: 250,
+                    payment_date: "2024-02-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let conn = f.db.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
+                        pay.note, pay.created_at,
+                        i.idx, i.purchase_id, pu.reference,
+                        c.id AS client_id, c.first_name, c.last_name
+                 FROM payment pay
+                 JOIN installment i ON i.id = pay.installment_id
+                 JOIN purchase pu ON pu.id = i.purchase_id
+                 JOIN client c ON c.id = pu.client_id",
+            )
+            .unwrap();
+        let rows: Vec<Payment> = stmt
+            .query_map([], map_payment)
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        let p = &rows[0];
+        // reference and purchase_id must come from `purchase`/`installment`...
+        assert_eq!(p.purchase_reference, detail.purchase.reference);
+        assert_eq!(p.purchase_id, detail.purchase.id);
+        // ...idx from `installment` (2nd tranche), not from `payment`...
+        assert_eq!(p.installment_index, 2);
+        // ...client_id from `client`, and the amount from `payment`.
+        assert_eq!(p.client_id, f.client_id);
+        assert_eq!(p.amount, 250);
     }
 
     // --- deletes / cascades ------------------------------------------------

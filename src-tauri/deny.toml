@@ -5,6 +5,15 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Only fail on unmaintained crates we could actually act on. `cargo audit`
+# currently reports 0 vulnerabilities and 17 warnings — 10 gtk-rs GTK3 bindings
+# (RUSTSEC-2024-0411..0418), `glib` 0.18.5 unsoundness (RUSTSEC-2024-0429),
+# `proc-macro-error`, and five `unic-*` crates. Every one is transitive through
+# `tauri` -> `tauri-runtime-wry` -> `tao`/`gtk`, and no fixed version exists;
+# they clear when Tauri's Linux backend leaves GTK3. Stating the policy here
+# makes that a decision on the record rather than a reliance on cargo-deny's
+# defaults, while the warnings stay visible in the weekly run.
+unmaintained = "workspace"
 # Advisory IDs to temporarily ignore (with a tracking note). Keep this empty by default.
 ignore = []
 
@@ -30,6 +39,13 @@ allow = [
   # public-domain dedication.
   "blessing",
 ]
+
+# This crate is proprietary (`license-file = "../LICENSE"`, `publish = false`).
+# It carries no SPDX expression, so exempt our own unpublished crate rather than
+# inventing a licence identifier for it. Third-party crates are still held to
+# the allow-list above.
+[licenses.private]
+ignore = true
 
 # Flag duplicate crate versions and wildcard version requirements — both are
 # supply-chain smells — as warnings rather than hard errors to start with.

@@ -13,6 +13,7 @@
 // Usage: node tests/e2e/run.mjs   (spawns Vite itself, tears it down on exit)
 
 import { chromium } from "playwright";
+import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -333,6 +334,92 @@ test("delete-client safeguard warns when the client has purchases", async (page)
     0,
     "deleted client no longer listed",
   );
+});
+
+test("deleting a client with no purchases needs a single confirm", async (page) => {
+  // This is the path that now genuinely sends `force: false`, so the backend
+  // gate decides rather than the UI asserting `true` unconditionally. A freshly
+  // created client is guaranteed to have no purchases.
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  await page.getByRole("button", { name: "Nouveau client" }).click();
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await page.locator("#cf-first").fill("Zied");
+  await page.locator("#cf-last").fill("Zzzsupprime");
+  await page.locator("#cf-phone").fill("+216 21 000 000");
+  await dialog.getByRole("button", { name: "Créer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 7,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  const row = page.locator("table.table tbody tr", { hasText: "Zzzsupprime" });
+  await row.locator(".icon-action--danger").click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  // No purchases -> the plain confirmation, not the cascade warning.
+  const msg = await dialog.locator(".confirm-msg").innerText();
+  assert(!/achat/i.test(msg), `no-purchase delete must not mention purchases, got: ${msg}`);
+
+  await dialog.getByRole("button", { name: "Supprimer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 6,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Zzzsupprime" }).count(),
+    0,
+    "client deleted on a single confirm",
+  );
+});
+
+test("impayés: the exported CSV is localized and properly quoted", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 10000 }),
+    page.getByRole("button", { name: /Exporter/ }).click(),
+  ]);
+
+  assert(
+    /^impayes-\d{4}-\d{2}-\d{2}\.csv$/.test(download.suggestedFilename()),
+    `filename should carry the export date, got: ${download.suggestedFilename()}`,
+  );
+
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString("utf8");
+
+  // BOM first, so Excel reads it as UTF-8 (the accented French headers and the
+  // Arabic ones depend on it).
+  assert(text.charCodeAt(0) === 0xfeff, "CSV must start with a UTF-8 BOM");
+
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .trimEnd()
+    .split("\r\n");
+  assertEqual(
+    lines[0],
+    '"Client","Téléphone","N° Achat","Tranche","Échéance","Montant","En retard depuis"',
+    "header row must use the localized column labels, not hard-coded strings",
+  );
+
+  // One row per overdue installment, and every row must have exactly seven
+  // fields — the property that broke when an unescaped quote split a field.
+  assert(lines.length > 1, "seeded data should produce at least one overdue row");
+  for (const line of lines.slice(1)) {
+    const fields = line.match(/("([^"]|"")*"|[^,]*)/g).filter((f) => f !== "");
+    assertEqual(fields.length, 7, `every row needs 7 fields, got ${fields.length} in: ${line}`);
+  }
 });
 
 test("switching to Arabic mirrors the layout to RTL", async (page) => {

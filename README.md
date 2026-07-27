@@ -84,6 +84,14 @@ npm run build            # vue-tsc type-check + production build
 cd src-tauri && cargo test   # Rust backend tests (commands over a temp SQLite DB)
 ```
 
+### Toolchain requirements
+
+- **Node >= 22** (declared in `package.json`'s `engines`; CI pins 22).
+- **Rust >= 1.88** — the real floor of the locked dependency set, declared as
+  `rust-version` in `src-tauri/Cargo.toml` and verified by the `MSRV` CI job so
+  the claim cannot drift. `src-tauri/rust-toolchain.toml` pins the channel and
+  the `rustfmt`/`clippy` components the gates need.
+
 `src/lib/finance.ts` and `src-tauri/src/db.rs` implement the same installment
 math independently. Both test suites assert against the shared fixture
 `tests/fixtures/finance-parity.json`, so changing one without the other fails a
@@ -211,6 +219,14 @@ purchases, installments and payments and cannot be undone.
 
 To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
 development build it is re-seeded; in a release build it comes back empty.
+
+---
+
+## License
+
+Proprietary — all rights reserved. See [LICENSE](LICENSE). Third-party
+dependencies keep their own licences; the Rust tree is restricted to an
+allow-list enforced by `cargo deny check licenses`.
 
 ---
 
