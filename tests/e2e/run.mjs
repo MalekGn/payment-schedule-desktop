@@ -301,45 +301,215 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   );
 });
 
-test("delete-client safeguard warns when the client has purchases", async (page) => {
+test("a client with purchases offers no delete at all", async (page) => {
   await open(page, "/clients");
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
   assertEqual(await page.locator("table.table tbody tr").count(), 6, "precondition: 6 clients");
 
-  // Mohamed Trabelsi has 2 seeded purchases -> the confirm must warn about cascade.
+  // Mohamed Trabelsi has 2 seeded purchases. Under the archive policy the
+  // destructive cascade is gone entirely, so the button is not rendered rather
+  // than rendered-and-refused.
   const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
-  await row.locator(".icon-action--danger").click();
+  assertEqual(
+    await row.locator(".icon-action--danger").count(),
+    0,
+    "a client with history must offer no delete button",
+  );
+  assertEqual(
+    await row.locator('button[title="Archiver"]').count(),
+    1,
+    "archive is the offered alternative",
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), 6, "nothing was removed");
+});
+
+test("archiving a client who owes money is refused before the user can confirm", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Mohamed Trabelsi carries an outstanding balance across his 2 purchases.
+  // The row already knows that, so the dialog must open explaining itself
+  // rather than accepting a confirm it is going to reject.
+  const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
+  await row.locator('button[title="Archiver"]').click();
 
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  const warning = dialog.locator(".confirm-warning");
+  await warning.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await warning.innerText()).trim();
+  assert(/doit encore/.test(text), `expected the outstanding-balance refusal, got: ${text}`);
+  assert(
+    !/ARCHIVE_HAS_OUTSTANDING/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  // The amount must be formatted, not a bare integer.
+  assert(/TND/.test(text), `expected a formatted amount with its currency, got: ${text}`);
+
+  // The action itself is unavailable, and visibly so.
+  const confirmBtn = dialog.getByRole("button", { name: "Archiver" });
+  assertEqual(await confirmBtn.isDisabled(), true, "the archive button must be disabled");
+
+  // The plain confirmation body is replaced by the warning, not shown alongside it.
+  assertEqual(await dialog.locator(".confirm-msg").count(), 0, "no confirm body when blocked");
+
+  await dialog.getByRole("button", { name: "Annuler" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 6, "the client is still active");
+});
+
+test("the blocked archive dialog routes to the client's installments", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
+  await row.locator('button[title="Archiver"]').click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  // A refusal has to leave somewhere to go: the detail page lists what is owed.
+  await dialog.getByRole("button", { name: "Voir ses échéances" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.waitForFunction(() => /^\/clients\/\d+$/.test(window.location.pathname), undefined, {
+    timeout: 5000,
+  });
+  await page.locator(".contact-name").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await page.locator(".contact-name").innerText(),
+    "Mohamed Trabelsi",
+    "landed on the right client",
+  );
+});
+
+test("archiving a settled client hides it behind the Archivés tab, and restore brings it back", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // The Archivés tab starts empty.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  const emptyState = page.locator(".empty");
+  await emptyState.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await emptyState.locator(".empty-title").innerText(),
+    "Aucun client archivé.",
+    "the Archivés tab shows its own empty state",
+  );
+  assertEqual(
+    await page.locator("table.table tbody tr").count(),
+    0,
+    "nothing is archived to begin with",
+  );
+
+  // Salma Jlassi owns exactly one purchase, fully paid -> the only seeded
+  // client with a zero balance, and so the only one that can be archived.
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  const row = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  await row.locator('button[title="Archiver"]').click();
+
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
   assertEqual(
     await dialog.locator(".modal-head h2").innerText(),
-    "Supprimer le client",
-    "confirm dialog title",
+    "Archiver le client",
+    "archive dialog title",
   );
-  const msg = await dialog.locator(".confirm-msg").innerText();
-  assert(/2 achat/.test(msg), `message should warn about the 2 purchases, got: ${msg}`);
+  await dialog.getByRole("button", { name: "Archiver" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
 
-  // Confirming force-deletes the client (cascading its purchases) -> 5 rows remain.
-  await dialog.getByRole("button", { name: "Supprimer" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 5,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Salma Jlassi" }).count(),
+    0,
+    "archived client left the active list",
+  );
+
+  // She is now under Archivés, badged.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 1, "exactly one archived client");
+  const archivedRow = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  assertEqual(await archivedRow.locator(".badge").first().innerText(), "Archivé", "archived badge");
+
+  // Her purchase count survived the archive — the row still reports it, so the
+  // history underneath was not cascaded away. (That the detail page and the
+  // payment log also survive is asserted in the integration suite, which can
+  // check the read models directly; re-navigating here would reload the page
+  // and reset the mock.)
+  assertEqual(
+    await archivedRow.locator("td").nth(3).innerText(),
+    "1",
+    "the archived client keeps her purchase",
+  );
+
+  // Restore puts her back. Stay on this page: `open()` is a full document load,
+  // which re-instantiates the mock and would silently undo the archive.
+  await archivedRow.locator('button[title="Restaurer"]').click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Restaurer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 6,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Salma Jlassi" }).count(),
+    1,
+    "restored client is back in the active list",
+  );
+});
+
+test("archived clients are absent from the new-purchase client picker", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  await row.locator('button[title="Archiver"]').click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Archiver" }).click();
   await dialog.waitFor({ state: "hidden", timeout: 5000 });
   await page.waitForFunction(
     () => document.querySelectorAll("table.table tbody tr").length === 5,
     undefined,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("table.table tbody tr").count(), 5, "client removed from table");
-  assertEqual(
-    await page.locator("table.table", { hasText: "Mohamed Trabelsi" }).count(),
-    0,
-    "deleted client no longer listed",
+
+  // An archived client must not be selectable, or archiving would not stop
+  // them taking on new debt. Navigate in-app rather than via `open()`, which
+  // reloads the document and would reset the mock along with the archive.
+  await page.locator(".nav-item", { hasText: "Achats" }).first().click();
+  await page.waitForFunction(() => window.location.pathname === "/achats", undefined, {
+    timeout: 5000,
+  });
+  // Scope to main: the sidebar carries a permanent "Nouvel achat" button too.
+  await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+  const options = await modal.locator("select option").allInnerTexts();
+  assert(
+    !options.some((o) => /Salma Jlassi/.test(o)),
+    `archived client must not be offered, got: ${options.join(" | ")}`,
+  );
+  assert(
+    options.some((o) => /Mohamed Trabelsi/.test(o)),
+    "active clients must still be offered",
   );
 });
 
 test("deleting a client with no purchases needs a single confirm", async (page) => {
-  // This is the path that now genuinely sends `force: false`, so the backend
-  // gate decides rather than the UI asserting `true` unconditionally. A freshly
-  // created client is guaranteed to have no purchases.
+  // The only hard delete left in the app. A freshly created client is
+  // guaranteed to have no purchases, which is the sole case the backend allows.
   await open(page, "/clients");
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
 
@@ -362,7 +532,7 @@ test("deleting a client with no purchases needs a single confirm", async (page) 
   dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
 
-  // No purchases -> the plain confirmation, not the cascade warning.
+  // No purchases -> the plain confirmation; there is no cascade to warn about.
   const msg = await dialog.locator(".confirm-msg").innerText();
   assert(!/achat/i.test(msg), `no-purchase delete must not mention purchases, got: ${msg}`);
 
@@ -892,7 +1062,7 @@ test("a rejected payment shows a localized message, never a raw backend error", 
 
   assert(text.length > 0, "a rejected payment must show a message");
   assert(
-    !/OVERPAYMENT|INVALID_|SUM_MISMATCH|INTERNAL/.test(text),
+    !/OVERPAYMENT|INVALID_|SUM_MISMATCH|INTERNAL|ARCHIVE_HAS_OUTSTANDING|CLIENT_/.test(text),
     `message must be localized prose, not a machine code; got: ${text}`,
   );
   assert(

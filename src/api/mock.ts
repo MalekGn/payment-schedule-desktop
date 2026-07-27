@@ -15,6 +15,7 @@ import type {
   Client,
   ClientDetail,
   ClientInput,
+  ClientScope,
   ClientSummary,
   Dashboard,
   DueAlert,
@@ -75,6 +76,7 @@ interface ClientRow {
   address: string;
   email: string | null;
   createdAt: string;
+  archivedAt: string | null;
 }
 interface PurchaseRow {
   id: number;
@@ -127,7 +129,9 @@ class MockDb {
   }
 
   private seed() {
-    const clients: Omit<ClientRow, "id" | "createdAt">[] = [
+    // Every seeded client starts active; the archive scenarios archive one
+    // themselves, so row-count assertions elsewhere stay stable at 6.
+    const clients: Omit<ClientRow, "id" | "createdAt" | "archivedAt">[] = [
       {
         firstName: "Mohamed",
         lastName: "Trabelsi",
@@ -173,7 +177,7 @@ class MockDb {
     ];
     const clientIds = clients.map((c) => {
       const id = this.nextId("client");
-      this.clients.push({ ...c, id, createdAt: todayIso() });
+      this.clients.push({ ...c, id, createdAt: todayIso(), archivedAt: null });
       return id;
     });
 
@@ -364,10 +368,10 @@ class MockDb {
 
   // ---- commands -----------------------------------------------------------
 
-  listClients(): ClientSummary[] {
+  listClients(scope: ClientScope = "active"): ClientSummary[] {
     const today = todayIso();
     return this.clients
-      .slice()
+      .filter((c) => (scope === "all" ? true : (scope === "archived") === (c.archivedAt !== null)))
       .sort((a, b) => `${a.lastName}${a.firstName}`.localeCompare(`${b.lastName}${b.firstName}`))
       .map((c) => {
         const purchases = this.purchases.filter((p) => p.clientId === c.id);
@@ -415,6 +419,7 @@ class MockDb {
       address: input.address.trim(),
       email: input.email?.trim() || null,
       createdAt: todayIso(),
+      archivedAt: null,
     };
     this.clients.push(row);
     return this.clientOut(row);
@@ -433,16 +438,35 @@ class MockDb {
     return this.clientOut(row);
   }
 
-  deleteClient(id: number, force: boolean): void {
-    const count = this.purchases.filter((p) => p.clientId === id).length;
-    if (count > 0 && !force) throw new Error(`CLIENT_HAS_PURCHASES:${count}`);
-    const purchaseIds = this.purchases.filter((p) => p.clientId === id).map((p) => p.id);
-    const instIds = this.installments
+  /** Total still owed across every purchase of `clientId`; 0 when they have none. */
+  private clientOutstanding(clientId: number): number {
+    const purchaseIds = this.purchases.filter((p) => p.clientId === clientId).map((p) => p.id);
+    return this.installments
       .filter((i) => purchaseIds.includes(i.purchaseId))
-      .map((i) => i.id);
-    this.payments = this.payments.filter((pay) => !instIds.includes(pay.installmentId));
-    this.installments = this.installments.filter((i) => !purchaseIds.includes(i.purchaseId));
-    this.purchases = this.purchases.filter((p) => p.clientId !== id);
+      .reduce((s, i) => s + (i.amount - i.paidAmount), 0);
+  }
+
+  archiveClient(id: number): void {
+    const row = this.clients.find((c) => c.id === id);
+    if (!row) throw new Error("CLIENT_NOT_FOUND");
+    const outstanding = this.clientOutstanding(id);
+    if (outstanding > 0) throw new Error(`ARCHIVE_HAS_OUTSTANDING:${outstanding}`);
+    // Re-archiving must not move the stamp — see `archive_client_impl`.
+    row.archivedAt ??= todayIso();
+  }
+
+  restoreClient(id: number): void {
+    const row = this.clients.find((c) => c.id === id);
+    if (!row) throw new Error("CLIENT_NOT_FOUND");
+    row.archivedAt = null;
+  }
+
+  deleteClient(id: number): void {
+    const row = this.clients.find((c) => c.id === id);
+    if (!row) throw new Error("CLIENT_NOT_FOUND");
+    const count = this.purchases.filter((p) => p.clientId === id).length;
+    if (count > 0) throw new Error(`CLIENT_HAS_PURCHASES:${count}`);
+    // No cascade to mirror: a client that reaches here has nothing attached.
     this.clients = this.clients.filter((c) => c.id !== id);
   }
 
@@ -465,6 +489,12 @@ class MockDb {
 
   createPurchase(input: PurchaseInput): PurchaseDetail {
     validatePurchaseInput(input);
+
+    // Mirrors `create_purchase_impl`: an archived client must not take on new
+    // debt, which is what keeps "archived implies a zero balance" true.
+    const client = this.clients.find((c) => c.id === input.clientId);
+    if (!client) throw new Error("CLIENT_NOT_FOUND");
+    if (client.archivedAt !== null) throw new Error("CLIENT_ARCHIVED");
 
     // Resolve amounts and due dates before mutating anything, so a rejected
     // request leaves no half-created purchase behind — the mock's stand-in for

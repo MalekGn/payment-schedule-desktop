@@ -6,6 +6,7 @@ import type {
   Client,
   ClientDetail,
   ClientInput,
+  ClientScope,
   ClientSummary,
   Dashboard,
   ImpayeClient,
@@ -36,8 +37,15 @@ async function openWithOs(url: string): Promise<void> {
 
 export const api = {
   // -- clients --
-  listClients: (): Promise<ClientSummary[]> =>
-    isTauri() ? invoke("list_clients") : Promise.resolve(mockDb.listClients()),
+  /**
+   * List clients, active ones only unless a wider `scope` is asked for.
+   *
+   * The default is what makes archived clients disappear from every caller
+   * that does not opt in — notably the new-purchase client picker, so an
+   * archived client cannot take on new debt.
+   */
+  listClients: (scope: ClientScope = "active"): Promise<ClientSummary[]> =>
+    isTauri() ? invoke("list_clients", { scope }) : Promise.resolve(mockDb.listClients(scope)),
   getClientDetail: (id: number): Promise<ClientDetail> =>
     isTauri() ? invoke("get_client_detail", { id }) : Promise.resolve(mockDb.getClientDetail(id)),
   createClient: (input: ClientInput): Promise<Client> =>
@@ -46,10 +54,22 @@ export const api = {
     isTauri()
       ? invoke("update_client", { id, input })
       : Promise.resolve(mockDb.updateClient(id, input)),
-  deleteClient: (id: number, force: boolean): Promise<void> =>
-    isTauri()
-      ? invoke("delete_client", { id, force })
-      : Promise.resolve(mockDb.deleteClient(id, force)),
+  /**
+   * Hide a client from the active list, keeping every purchase, installment
+   * and payment. Rejects with `ARCHIVE_HAS_OUTSTANDING:{remaining}` while they
+   * still owe money.
+   */
+  archiveClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("archive_client", { id }) : Promise.resolve(mockDb.archiveClient(id)),
+  restoreClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("restore_client", { id }) : Promise.resolve(mockDb.restoreClient(id)),
+  /**
+   * Delete a client outright. Only ever succeeds for a client with no
+   * purchases; anyone with history rejects with `CLIENT_HAS_PURCHASES:{n}` and
+   * must be archived instead.
+   */
+  deleteClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("delete_client", { id }) : Promise.resolve(mockDb.deleteClient(id)),
 
   // -- purchases --
   listPurchases: (search?: string): Promise<PurchaseSummary[]> =>
@@ -110,8 +130,9 @@ export const api = {
   /**
    * Write a consistent snapshot of the database to `dest`.
    *
-   * The only recovery path the app has: deleting a client cascades through
-   * their purchases, installments and payments, and cannot be undone.
+   * Still the only recovery path the app has. Deleting a *purchase* cascades
+   * through its installments and payments irreversibly; clients with history
+   * can no longer be deleted at all, only archived.
    */
   backupDatabase: (dest: string): Promise<void> =>
     isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),

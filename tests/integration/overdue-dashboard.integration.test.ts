@@ -91,15 +91,16 @@ describe("settling an overdue installment clears it from every overdue view", ()
   });
 });
 
-describe("deleting a client cascades across purchases, impayés, and the dashboard", () => {
-  it("refuses an unforced delete when the client still has purchases", async () => {
+describe("deleting a client is confined to clients with no history", () => {
+  it("refuses the delete outright when the client has purchases", async () => {
     const clients = await api.listClients();
     const withPurchases = clients.find((c) => c.purchaseCount > 0)!;
     expect(withPurchases).toBeDefined();
+    const purchasesBefore = await api.listPurchases();
 
     let error: unknown;
     try {
-      await api.deleteClient(withPurchases.id, false);
+      await api.deleteClient(withPurchases.id);
     } catch (e) {
       error = e;
     }
@@ -107,33 +108,41 @@ describe("deleting a client cascades across purchases, impayés, and the dashboa
       new RegExp(`CLIENT_HAS_PURCHASES:${withPurchases.purchaseCount}`),
     );
 
-    // The refusal must not have partially deleted anything.
+    // There is no `force` to escalate to any more, so nothing anywhere moved.
     expect((await api.listClients()).length).toBe(clients.length);
+    expect((await api.listPurchases()).length).toBe(purchasesBefore.length);
+    const dash = await api.getDashboard();
+    expect(dash.stats.totalPurchases).toBe(purchasesBefore.length);
   });
 
-  it("force-deletes the client and removes its purchases everywhere", async () => {
-    const clients = await api.listClients();
-    const victim = clients.find((c) => c.purchaseCount > 0)!;
-    const purchasesBefore = await api.listPurchases();
+  it("deletes a client who has no purchases", async () => {
+    const before = await api.listClients();
+    const fresh = await api.createClient({
+      firstName: "Zied",
+      lastName: "Zzzsupprime",
+      phone: "+216 20 000 000",
+      address: "",
+      email: null,
+    });
+    expect((await api.listClients()).length).toBe(before.length + 1);
 
-    await api.deleteClient(victim.id, true);
+    await api.deleteClient(fresh.id);
 
-    // The client is gone and the row count drops by exactly one.
-    const clientsAfter = await api.listClients();
-    expect(clientsAfter.length).toBe(clients.length - 1);
-    expect(clientsAfter.some((c) => c.id === victim.id)).toBe(false);
+    const after = await api.listClients();
+    expect(after.length).toBe(before.length);
+    expect(after.some((c) => c.id === fresh.id)).toBe(false);
+  });
 
-    // Every purchase that belonged to the victim is gone from the purchase list.
-    const purchasesAfter = await api.listPurchases();
-    expect(purchasesAfter.length).toBe(purchasesBefore.length - victim.purchaseCount);
-    expect(purchasesAfter.some((p) => p.clientId === victim.id)).toBe(false);
-
-    // …and the victim can no longer appear among overdue clients.
-    const impayes = await api.listImpayes();
-    expect(impayes.some((c) => c.clientId === victim.id)).toBe(false);
-
-    // Dashboard purchase count reflects the cascade.
-    const dash = await api.getDashboard();
-    expect(dash.stats.totalPurchases).toBe(purchasesAfter.length);
+  it("reports a delete of an id that is already gone", async () => {
+    // Awaited inside a try, not `.rejects`: on the browser/mock path the
+    // gateway runs the mock synchronously, so the failure is thrown out of
+    // `api.deleteClient(...)` rather than carried by a promise.
+    let error: unknown;
+    try {
+      await api.deleteClient(999_999);
+    } catch (e) {
+      error = e;
+    }
+    expect(String(error)).toMatch(/CLIENT_NOT_FOUND/);
   });
 });

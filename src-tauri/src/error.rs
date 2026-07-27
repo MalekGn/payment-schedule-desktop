@@ -39,7 +39,9 @@
 //! | `INVALID_AMOUNT`              | Payment amount was not > 0                     |
 //! | `SUM_MISMATCH:{sum}:{total}`  | Manual installments don't add up               |
 //! | `OVERPAYMENT:{remaining}`     | Payment exceeds what the installment still owes|
-//! | `CLIENT_HAS_PURCHASES:{n}`    | Unforced delete of a client that has purchases |
+//! | `CLIENT_HAS_PURCHASES:{n}`    | Delete of a client that has purchases; archive |
+//! | `ARCHIVE_HAS_OUTSTANDING:{r}` | Archive of a client still owing `r` (whole units)|
+//! | `CLIENT_ARCHIVED`             | New purchase for an archived client            |
 //! | `CLIENT_NOT_FOUND`            | No such client                                 |
 //! | `PURCHASE_NOT_FOUND`          | No such purchase                               |
 //! | `INSTALLMENT_NOT_FOUND`       | No such installment                            |

@@ -168,6 +168,11 @@
     "title": "Clients",
     "new": "New client",
     "searchPlaceholder": "Search a client…",
+    "scope": {
+      "active": "Active",
+      "archived": "Archived",
+      "all": "All"
+    },
     "columns": {
       "name": "Name",
       "phone": "Phone",
@@ -198,9 +203,24 @@
     "delete": {
       "confirmTitle": "Delete client",
       "confirmText": "Do you really want to delete this client?",
-      "hasPurchases": "This client has {n} purchase(s). Deleting will also erase all their purchases, schedules and payments. Continue?"
+      "hasPurchases": "This client has {n} purchase(s) and cannot be deleted. Archive them instead to hide them without losing their history."
     },
-    "empty": "No clients. Add your first client."
+    "archive": {
+      "action": "Archive",
+      "confirmTitle": "Archive client",
+      "confirmText": "This client will be hidden from the active list and can no longer be given a new purchase. Their history is kept and you can restore them at any time.",
+      "hasOutstanding": "This client still owes {amount}. Settle their installments before archiving.",
+      "viewInstallments": "View their installments"
+    },
+    "restore": {
+      "action": "Restore",
+      "confirmTitle": "Restore client",
+      "confirmText": "This client will reappear in the active list and can be given purchases again."
+    },
+    "archivedBadge": "Archived",
+    "archivedOn": "Archived on {date}",
+    "empty": "No clients. Add your first client.",
+    "emptyArchived": "No archived clients."
   },
   "paiements": {
     "title": "Payments",
@@ -326,7 +346,9 @@
     "generic": "Something went wrong.",
     "internal": "Something went wrong. Please try again.",
     "loadFailed": "Failed to load data.",
-    "clientHasPurchases": "This client has {count} purchase(s).",
+    "clientHasPurchases": "This client has {count} purchase(s) and cannot be deleted.",
+    "archiveHasOutstanding": "This client still has an unpaid balance of {remaining}. A client who owes money cannot be archived.",
+    "clientArchived": "This client is archived. Restore them before recording a new purchase.",
     "clientNotFound": "This client no longer exists.",
     "purchaseNotFound": "This purchase no longer exists.",
     "installmentNotFound": "This installment no longer exists.",

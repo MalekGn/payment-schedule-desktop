@@ -93,7 +93,8 @@ fn seeding_decision(debug_build: bool, seed_env: Option<&str>) -> bool {
 ///
 /// The index in this slice *is* the version: after applying `MIGRATIONS[i]`,
 /// `user_version` becomes `i + 1`.
-const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] = &[m0001_initial_schema];
+const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] =
+    &[m0001_initial_schema, m0002_client_archive];
 
 /// Bring the database up to the latest schema version.
 ///
@@ -205,6 +206,31 @@ fn m0001_initial_schema(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
+/// v2 — soft archive for clients. `NULL` means active; an ISO timestamp means
+/// archived, so the UI gets "archived on <date>" without a second column.
+///
+/// Archiving replaced the destructive `force` cascade on `delete_client`: a
+/// client with purchases is now hidden rather than erased, and can be restored.
+///
+/// Written defensively, because the ladder has to survive a replay from zero:
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind `ALTER TABLE` on a
+/// database that already has the column fails with "duplicate column name",
+/// taking `Db::open` — and with it the whole app — down. Every `ALTER` step
+/// added from here on must check first, the same way `m0001` relies on
+/// `CREATE TABLE IF NOT EXISTS`.
+fn m0002_client_archive(conn: &Connection) -> DbResult<()> {
+    let already_present: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('client') WHERE name = 'archived_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if already_present == 0 {
+        conn.execute_batch("ALTER TABLE client ADD COLUMN archived_at TEXT;")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_client_archived ON client(archived_at);")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Date + status helpers (shared by commands and seed)
 // ---------------------------------------------------------------------------
@@ -248,6 +274,8 @@ pub const INVALID_AMOUNT: &str = "INVALID_AMOUNT";
 pub const SUM_MISMATCH: &str = "SUM_MISMATCH";
 pub const OVERPAYMENT: &str = "OVERPAYMENT";
 pub const CLIENT_HAS_PURCHASES: &str = "CLIENT_HAS_PURCHASES";
+pub const ARCHIVE_HAS_OUTSTANDING: &str = "ARCHIVE_HAS_OUTSTANDING";
+pub const CLIENT_ARCHIVED: &str = "CLIENT_ARCHIVED";
 pub const CLIENT_NOT_FOUND: &str = "CLIENT_NOT_FOUND";
 pub const PURCHASE_NOT_FOUND: &str = "PURCHASE_NOT_FOUND";
 pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
@@ -494,6 +522,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "re-running migrations must not drop data");
+
+        // Replaying the ladder must not have added `archived_at` a second time.
+        // `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS`, so an unguarded m0002
+        // fails the whole `Db::open` above with "duplicate column name".
+        let archived_cols: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('client') WHERE name = 'archived_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived_cols, 1, "m0002 must be replay-safe");
+
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A database written before the archive feature must come forward with
+    /// every existing client active, not archived.
+    #[test]
+    fn m0002_defaults_existing_clients_to_active() {
+        let path = temp_db_path("migrate_archive");
+        {
+            let conn = Connection::open(&path).unwrap();
+            m0001_initial_schema(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Pre', 'Archive')",
+                [],
+            )
+            .unwrap();
+            // v1 exactly: tables present, nothing stamped.
+            conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        let conn = db.lock();
+        let archived: Option<String> = conn
+            .query_row(
+                "SELECT archived_at FROM client WHERE last_name = 'Archive'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            archived.is_none(),
+            "existing clients must migrate as active"
+        );
 
         drop(conn);
         drop(db);

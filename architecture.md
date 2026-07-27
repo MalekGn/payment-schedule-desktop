@@ -80,8 +80,11 @@ direct database or filesystem access.
   instead of inline on the IPC/main event-loop thread; none of them `await`, so
   the connection guard never spans a suspension point. Each validates its
   arguments, locks the shared connection, and — for the mutating commands —
-  delegates to a `*_impl` free function taking `&Connection`, which is what
-  makes them testable without a Tauri `State`.
+  delegates to a `*_impl` free function taking `&Connection` — or
+  `&mut Connection` where the command needs `conn.transaction()` — which is what
+  makes them testable without a Tauri `State`. A read gets the same treatment
+  when its query is easy to get subtly wrong (`list_clients_impl` and its scope
+  predicate).
 - **`error.rs`** — `AppError`, the typed error surface. See "Error contract".
 - **`db.rs`** — connection wrapper (`Mutex<Connection>`), the migration ladder,
   the validation bounds, and shared date/status/split helpers. `Db::lock()`
@@ -133,16 +136,43 @@ setting (key/value)
 
 - FK cascades: deleting a client cascades to its purchases → installments →
   payments. Indices on `purchase.client_id`, `installment.purchase_id`,
-  `installment.due_date`, `payment.installment_id`.
+  `installment.due_date`, `payment.installment_id`, `client.archived_at`.
 
-  **`delete_client` gates that cascade, and the frontend must let it.**
-  `ClientsView` sends `force` = whether the user has actually been shown the
-  "this also deletes their purchases" warning — never a hard-coded `true`. When
-  the client list is stale (the client gained a purchase in another window since
-  it loaded) the backend refuses with `CLIENT_HAS_PURCHASES:{n}` and the view
-  re-prompts using the count the database reports _now_. Passing `true`
-  unconditionally makes the guard, and every code path behind it, unreachable —
-  which is exactly what it was before.
+### Retiring a client: archive, never delete
+
+**A client with any purchase can never be deleted.** `delete_client` takes no
+`force` and has no escape hatch: it refuses with `CLIENT_HAS_PURCHASES:{n}`,
+terminally. The FK cascade above is still in the schema (`delete_purchase`
+relies on the chain below it) but is no longer reachable from a client delete.
+Hard delete survives only for a client with zero purchases — a typo or a
+duplicate. `ClientsView` does not even render the button otherwise, so the
+policy is visible rather than something the user discovers by being refused.
+
+The reversible path is `archived_at` on `client`: `NULL` while active, an ISO
+`YYYY-MM-DD` stamp once archived. `list_clients` takes a `ClientScope`
+(`active` | `archived` | `all`, defaulting to `active`) and applies the
+predicate in the `WHERE`. The predicate names `c.` only — putting it on `p.` or
+`i.` would degrade both `LEFT JOIN`s into inner joins and silently drop every
+client with no purchases.
+
+Two guards keep one invariant true: **an archived client always has a zero
+balance.**
+
+- `archive_client` refuses while any installment is unpaid
+  (`ARCHIVE_HAS_OUTSTANDING:{remaining}`).
+- `create_purchase` refuses an archived client (`CLIENT_ARCHIVED`), so an
+  archived client cannot re-acquire a balance over IPC even though the UI's
+  picker already only offers active clients.
+
+That invariant is load-bearing: it is the entire reason impayés, the dashboard
+and the reports need **no** `archived_at` filter. An archived client contributes
+0 outstanding and 0 overdue whether they are filtered out or not, so archiving
+can never make money quietly leave a total. Their history stays fully visible in
+Achats / Paiements / Échéances and on their detail page — archiving hides the
+client from the client list and the new-purchase picker, nothing more.
+
+The deliberate consequence: a client with unpaid installments can be neither
+deleted nor archived. Someone who owes you money cannot be made to disappear.
 
 - **Queries name their columns.** No `SELECT *`: the payment queries join four
   tables and `map_payment` resolves columns by name, so a star would let a new
@@ -173,6 +203,14 @@ v1 tables present. That is safe only because `m0001_initial_schema` is the
 historical `CREATE TABLE IF NOT EXISTS` batch verbatim — re-running it is a
 no-op that stamps the version on. **Never reorder or edit a step that has
 shipped**; append a new one.
+
+**Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` is
+the first appended step, and it has to check `pragma_table_info` before its
+`ALTER TABLE ADD COLUMN` — SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind
+`ALTER` against a database that already has the column fails the whole
+`Db::open`, taking the app down on launch. `migrate_is_versioned_and_idempotent`
+replays the ladder from zero and asserts the column count, which is what catches
+this.
 
 ### Backup
 

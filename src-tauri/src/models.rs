@@ -24,6 +24,21 @@ pub struct Client {
     pub address: String,
     pub email: Option<String>,
     pub created_at: String,
+    /// `None` while the client is active; the ISO timestamp they were archived
+    /// at otherwise. Archiving hides a client from the active list and the
+    /// new-purchase picker without touching any of their history.
+    pub archived_at: Option<String>,
+}
+
+/// Which slice of the client list to return. Serialized as
+/// `"active" | "archived" | "all"`; absent means [`ClientScope::Active`].
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClientScope {
+    #[default]
+    Active,
+    Archived,
+    All,
 }
 
 #[derive(Debug, Clone, Deserialize)]

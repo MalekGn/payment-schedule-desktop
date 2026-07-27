@@ -6,6 +6,303 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-27 (e) — Executing the integration and E2E suites for the archive work
+
+### Summary
+
+Ran the two opt-in suites that passes (c) and (d) had written but never executed.
+Both are now green. Seven failures surfaced on the first run — **all seven were
+faults in the new test code, none in the application**; the feature guards fired
+correctly with the right codes and parameters every time.
+
+Supersedes the "written, NOT run (awaiting confirmation)" sections of the (c)
+and (d) entries below.
+
+### Test cases run
+
+| Suite                                    | Result                  |
+| ---------------------------------------- | ----------------------- |
+| Rust `cargo test`                        | 37 passed               |
+| TS unit (`npm test`)                     | 110 passed, 7 files     |
+| Integration (`npm run test:integration`) | **108 passed, 5 files** |
+| E2E (`npm run test:e2e`)                 | **35/35 passed**        |
+
+**Gates:** eslint · vue-tsc · vite build · prettier — all clean.
+
+### Issues found
+
+1. **`expect(...).rejects` does not work against the browser/mock backend
+   (5 integration failures, fixed in the tests).** The gateway builds the mock
+   path as `Promise.resolve(mockDb.x())`, so the mock executes _before_ the
+   promise is constructed and a failure is thrown synchronously out of
+   `api.x(...)` rather than carried by a rejected promise — whereas under Tauri
+   `invoke` rejects. Awaiting inside a `try` reads both backends identically,
+   which is why the pre-existing suites already did it that way; my new file did
+   not. Added a `failureOf()` helper to `client-archive.integration.test.ts` and
+   converted the one case in `overdue-dashboard`.
+
+   **This is a real api/mock divergence, still open.** All current callers
+   `await` inside `try`, so nothing is broken today, but a caller written as
+   `api.deleteClient(id).catch(handle)` would work on the desktop and throw in
+   the browser. Fixing it properly means routing the mock branch of every
+   `src/api/index.ts` method through an `async` wrapper so a throw becomes a
+   rejection. Not done here — it touches all ~25 gateway methods and is outside
+   the scope of running the tests. Recommended as its own change.
+
+2. **`open()` mid-test silently undoes everything the test just did
+   (2 E2E failures, fixed in the tests).** `tests/e2e/run.mjs` documents that a
+   full document load re-instantiates the in-memory mock — that is what keeps
+   tests independent. Two of the new scenarios called `open()` _after_
+   archiving, which reset the mock and wiped the archive, so the assertions ran
+   against a fresh seed. Replaced with in-app navigation (`.nav-item` clicks)
+   and, in the round-trip test, by dropping a detail-page detour whose coverage
+   the integration suite provides directly.
+
+3. **`getByRole("button", { name: "Nouvel achat" })` is ambiguous.** The sidebar
+   carries a permanent "Nouvel achat" button alongside the one on the Achats
+   page, so the unscoped locator is a strict-mode violation. Scoped to
+   `getByRole("main")`, matching the comment already at `run.mjs:253`. Note
+   `run.mjs:493` still uses the unscoped form in a passing test — latent, and
+   worth tightening next time that file is touched.
+
+### Recommendations
+
+- **Fix the api/mock rejection divergence (issue 1)** as a standalone change; it
+  is the kind of gap the api/mock parity invariant exists to catch, and the
+  integration suite only caught it because a new file happened to use idiomatic
+  Vitest.
+- Prefer in-app navigation over `open()` inside any E2E scenario that has
+  already mutated state; reserve `open()` for the initial navigation.
+- The manual checks from (c) and (d) are still outstanding: the Arabic RTL pass
+  over the scope tabs, the callout and the three-button footer, and one launch
+  against a `user_version = 1` database to exercise `m0002` on disk.
+
+---
+
+## 2026-07-27 (d) — Making the "cannot archive, still owes money" refusal visible
+
+### Summary
+
+Follow-up to (c) on presentation only — **no backend file was touched**. The
+refusal used to arrive as a bottom-right toast that auto-dismissed after 3.5 s,
+by which time the confirm dialog the user had been looking at was already
+closed: spatially disconnected, transient, and a dead end.
+
+Three changes:
+
+1. **The archive dialog now opens already blocked.** `ClientsView` has
+   `totalOutstanding` on every row, so it knows the archive will be refused
+   before the user commits. The dialog shows a danger callout naming the
+   formatted amount and renders "Archiver" disabled, replacing the
+   confirm → reject sequence entirely.
+2. **The blocked dialog offers "Voir ses échéances"**, routing to the client's
+   detail page where the unpaid installments are listed — a refusal now has a
+   way forward.
+3. **Error toasts no longer auto-dismiss** app-wide (success/info keep 3.5 s),
+   with the stack capped at the newest 4 so a repeatedly failing action cannot
+   grow it without bound.
+
+`ConfirmDialog` gained three optional props (`warning`, `confirmDisabled`,
+`secondaryLabel`) and a `secondary` emit, all inert when unset. It has exactly
+one consumer (`ClientsView`), so nothing else changed behaviour.
+
+### Test cases run
+
+| Area                 | Cases                                       |
+| -------------------- | ------------------------------------------- |
+| TS unit (`npm test`) | 110 passed, 7 files (no unit surface added) |
+
+**Gates:** eslint · vue-tsc · vite build · prettier — all clean. Rust gates not
+re-run beyond (c); no `src-tauri/` file is in this diff.
+
+### Test cases — written here, executed in the 2026-07-27 (e) pass above
+
+- **`tests/e2e/run.mjs`**: `a client who still owes money cannot be archived`
+  was replaced by `archiving a client who owes money is refused before the user
+can confirm` — it now asserts the callout text, that the amount is formatted
+  with its currency rather than a bare integer, that it is not a raw machine
+  code, that the confirm button reports `disabled`, and that the plain confirm
+  body is absent. New `the blocked archive dialog routes to the client's
+installments` asserts the `/clients/:id` navigation and the client landed on.
+  The Salma Jlassi archive → badge → restore round trip is deliberately
+  untouched: it is the regression guard that the unblocked path still works.
+- Integration and Rust suites need no change — the backend contract
+  (`ARCHIVE_HAS_OUTSTANDING`) is unchanged and still covered by
+  `client-archive.integration.test.ts` and `error-contract.integration.test.ts`.
+
+### Issues found
+
+1. **The stale-list race had to stop toasting.** `confirmArchive` previously
+   caught `ARCHIVE_HAS_OUTSTANDING`, toasted, and closed. It now records the
+   backend's figure in `serverOutstanding` and leaves the dialog open, which
+   re-renders it blocked with the amount the database reports _now_ rather than
+   the one the list loaded with. `confirmPending` no longer closes the dialog
+   unconditionally. Same reasoning that governed the old `CLIENT_HAS_PURCHASES`
+   re-prompt: the row's `totalOutstanding` is a prediction, the backend is the
+   authority.
+2. **Persisting error toasts are a click-interception risk in E2E.** Checked:
+   the only toast references in `run.mjs` are one negative assertion
+   (`.toast--error` count is 0) and a `.field-error` inside PaymentModal, so no
+   test interacts with the bottom-right corner after raising an error. Low, but
+   worth re-checking when new error-path scenarios are added.
+3. **Disabled confirm button.** Normally an antipattern when the reason is
+   hidden — here the callout sits directly above it with `role="alert"`, so the
+   cause is visible and announced. Noted rather than open.
+
+### Recommendations
+
+- Run the E2E suite before shipping; the two rewritten cases are the only
+  coverage of the blocked-dialog presentation.
+- **Check the Arabic RTL rendering of the three-button footer** (Annuler / Voir
+  ses échéances / Archiver) and the callout's icon-text gap. The callout uses
+  flex + `gap` and `margin-block-start`, so it should mirror cleanly, but the
+  three-button footer is the widest this modal has ever been.
+- Consider applying the same up-front-explanation treatment to the delete path's
+  stale-list `CLIENT_HAS_PURCHASES` case, which still toasts. Left alone here
+  because the delete button is not rendered at all for a client with history, so
+  that toast is genuinely unreachable outside the race.
+- Still open from earlier passes: findings 4 and 5 of (c)
+  (`errors.archiveHasOutstanding` unformatted in the generic fallback;
+  `ClientDetailView` collapsing every load failure into "client missing"), the
+  N+1 → `GROUP BY` rewrite (#7), and `rusqlite` 0.32 → 0.40 (#16).
+
+---
+
+## 2026-07-27 (c) — Client archive, and removal of the force-delete cascade
+
+### Summary
+
+Replaced the destructive client delete with an archive. `delete_client` lost its
+`force` parameter: a client with any purchase is now refused terminally with
+`CLIENT_HAS_PURCHASES:{n}`, and the FK cascade behind it is unreachable from a
+client delete. Hard delete survives only for a client with zero purchases.
+Clients gained a nullable `archived_at` (migration `m0002_client_archive`),
+`archive_client` / `restore_client` commands, and an Actifs / Archivés / Tous
+scope filter on the Clients page.
+
+Two guards keep one invariant true — **an archived client always has a zero
+balance**: archiving is refused while any installment is unpaid
+(`ARCHIVE_HAS_OUTSTANDING:{remaining}`), and `create_purchase` refuses an
+archived client (`CLIENT_ARCHIVED`). That invariant is why impayés, the
+dashboard and the reports need no `archived_at` filter at all, and it is
+asserted directly in the new integration suite.
+
+Unit tests were run; integration and E2E were written but **not executed**, per
+the workflow.
+
+### Test cases run
+
+| Area                 | Cases                                                                 |
+| -------------------- | --------------------------------------------------------------------- |
+| Rust `cargo test`    | 37 passed (was 25; +12 covering archive/restore/delete and migration) |
+| TS unit (`npm test`) | 110 passed, 7 files (unchanged — no unit surface added)               |
+
+New Rust cases: `delete_client_is_refused_for_any_client_with_purchases`
+(replaces `delete_client_is_gated_then_cascades`, whose force/cascade half no
+longer exists), `delete_client_removes_a_client_with_no_purchases`,
+`delete_client_reports_a_missing_id_rather_than_succeeding_silently`,
+`archive_client_is_refused_while_the_client_owes_money`,
+`archive_client_succeeds_once_every_installment_is_paid`,
+`archive_client_succeeds_for_a_client_with_no_purchases` (the empty-aggregate
+case), `archive_stamp_is_an_iso_date_and_does_not_move_on_a_repeat`,
+`restore_client_clears_the_stamp_and_is_idempotent`,
+`archive_and_restore_report_a_missing_client`,
+`an_archived_client_cannot_take_on_a_new_purchase`,
+`list_clients_filters_by_archived_state`,
+`list_clients_keeps_clients_with_no_purchases_under_every_scope`, and
+`m0002_defaults_existing_clients_to_active`.
+
+**Gates:** eslint · vue-tsc · vite build · prettier · cargo fmt · cargo clippy
+(`--all-targets -D warnings`) — all clean.
+
+### Test cases — written here, executed in the 2026-07-27 (e) pass above
+
+- **`tests/integration/client-archive.integration.test.ts`** (new, 16 cases):
+  the outstanding-balance guard; the combined lockout (an indebted client
+  rejects both delete and archive); archive after settling; the empty-purchase
+  client; the scope partition (`active + archived === all`, and the default
+  equals `active`); history reachability after archiving (detail page,
+  purchases, payments); **money aggregates byte-identical across the archive**
+  (`getDashboard`, `listImpayes`, `listSchedule` deep-equal before/after); the
+  ISO-date shape of the stamp; `CLIENT_ARCHIVED` on a new purchase, and success
+  after restore; restore idempotence; re-archive not moving the stamp;
+  `CLIENT_NOT_FOUND` from both.
+- **`tests/integration/overdue-dashboard.integration.test.ts`**: the
+  force-delete case was removed with the feature; replaced by an outright
+  refusal that asserts nothing moved anywhere, a successful zero-purchase
+  delete, and `CLIENT_NOT_FOUND` on a stale id.
+- **`tests/integration/error-contract.integration.test.ts`**:
+  `ARCHIVE_HAS_OUTSTANDING:750` and `CLIENT_ARCHIVED` added to the contract
+  list (which forces the key into all three locales and rejects leftover
+  placeholders), plus an interpolation assertion.
+- **`tests/e2e/run.mjs`**: `delete-client safeguard warns…` rewritten to
+  `a client with purchases offers no delete at all`; new `a client who still
+owes money cannot be archived` (asserts localized prose and a **formatted**
+  amount with its currency, not a bare integer); new archive → Archivés tab →
+  badge → detail-page history → restore round trip; new `archived clients are
+absent from the new-purchase client picker`. The raw-code leak guard was
+  extended with `ARCHIVE_HAS_OUTSTANDING|CLIENT_`.
+
+Run them with `npm run test:integration` and `npm run test:e2e`.
+
+### Issues found
+
+1. **`m0002` would have bricked the app on launch (caught pre-merge, fixed).**
+   The first draft used a bare `ALTER TABLE client ADD COLUMN archived_at`.
+   SQLite has no `ADD COLUMN IF NOT EXISTS`, and `migrate` replays the whole
+   ladder for any database at `user_version = 0`; on a replay the `ALTER` fails
+   with "duplicate column name", which fails `Db::open` and therefore startup.
+   Now guarded by a `pragma_table_info` check, and
+   `migrate_is_versioned_and_idempotent` asserts the column count after a replay.
+   This is the ladder's first appended step, so nothing had exercised the path.
+2. **`datetime('now')` would have rendered raw on screen (caught pre-merge,
+   fixed).** `formatDatePattern` (`src/composables/useFormat.ts:20`) does
+   `iso.split("-").map(Number)`; a `"2026-07-27 12:34:56"` stamp makes the day
+   component `NaN`, so the guard returns the input verbatim and the user sees a
+   timestamp. Changed to `date('now')`, matching the schema's ISO-date
+   convention. Asserted by `archive_stamp_is_an_iso_date_…` and by an
+   integration regex.
+3. **`create_purchase` did not check the archived flag (found in Code Review,
+   fixed).** Without it, "archived implies a zero balance" was true only by UI
+   convention — the picker filters archived clients, but a `clientId` sent
+   straight over IPC would have given an archived client a balance the money
+   read models assume cannot exist. Added the `CLIENT_ARCHIVED` guard inside the
+   existing transaction, mirrored in the mock, covered by a Rust and an
+   integration test.
+4. **`errors.archiveHasOutstanding` interpolates an unformatted integer.** Not a
+   regression — `errors.overpayment` (`{remaining}`) and `errors.sumMismatch`
+   have the same shape today — and not user-visible on the archive path, because
+   `ClientsView.confirmArchive` catches the code explicitly and formats with
+   `fmt.money`. The generic fallback remains unformatted. Open, low.
+5. **`ClientDetailView` still reports every load failure as "client missing".**
+   Pre-existing (`src/views/ClientDetailView.vue:53`): the bare
+   `catch { notFound.value = true }` collapses a transient IPC fault into
+   permanent data loss in the UI, which is exactly the split `missing_row`
+   exists to preserve on the Rust side. Untouched by this change. Open, medium.
+
+### Recommendations
+
+- Run the integration and E2E suites before shipping — the E2E archive round
+  trip is the only end-to-end check that the scope tabs, the badge and the
+  picker exclusion actually work together.
+- **Verify the Arabic RTL layout by hand.** The scope tabs are a third copy of
+  the `.tabs` block from `EcheancesView`/`AlertesView`, kept deliberately
+  direction-agnostic (flex + gap, symmetric padding, no physical margins). Any
+  future asymmetric spacing must use logical properties.
+- **Exercise the real upgrade path once**: launch against a database created by
+  the previous build (`user_version = 1`) and confirm `m0002` applies and every
+  existing client comes back active. The unit test simulates this, but the
+  on-disk path is worth one manual pass.
+- Consider extracting the now-triplicated `.tabs` markup and CSS into a shared
+  `ui/SegmentedTabs.vue`, converting all three call sites in one change rather
+  than mid-feature.
+- Fix finding 5 (`ClientDetailView` error collapsing) as its own change.
+- Still open from earlier passes: the N+1 → `GROUP BY` rewrite (#7),
+  `rusqlite` 0.32 → 0.40 (#16), the `2/6` Excel date-coercion quirk, and the
+  LICENSE placeholder holder.
+
+---
+
 ## 2026-07-27 (b) — Remediation of the Low-severity findings in `AUDIT_REPORT.md`
 
 ### Summary

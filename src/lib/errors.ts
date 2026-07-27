@@ -20,6 +20,7 @@ type Translate = (key: string, named?: Record<string, unknown>) => string;
  */
 const CODE_PARAMS: Record<string, readonly string[]> = {
   CLIENT_HAS_PURCHASES: ["count"],
+  ARCHIVE_HAS_OUTSTANDING: ["remaining"],
   SUM_MISMATCH: ["sum", "total"],
   OVERPAYMENT: ["remaining"],
 };

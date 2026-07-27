@@ -73,6 +73,8 @@ pub fn run() {
             commands::get_client_detail,
             commands::create_client,
             commands::update_client,
+            commands::archive_client,
+            commands::restore_client,
             commands::delete_client,
             // purchases
             commands::list_purchases,

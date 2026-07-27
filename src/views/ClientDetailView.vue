@@ -85,6 +85,16 @@ onMounted(load);
             <span class="contact-name"
               >{{ detail.client.firstName }} {{ detail.client.lastName }}</span
             >
+            <!-- Reachable by deep link or from a purchase, so an archived
+                 client must not read as active here. Archive/restore stay on
+                 the list view; this page has no mutating actions. -->
+            <span
+              v-if="detail.client.archivedAt"
+              class="badge badge--pending archived-badge"
+              :title="t('clients.archivedOn', { date: fmt.date(detail.client.archivedAt) })"
+            >
+              {{ t("clients.archivedBadge") }}
+            </span>
             <span v-if="detail.client.phone" class="contact-line">
               <AppIcon name="phone" :size="15" /> {{ detail.client.phone }}
             </span>
@@ -261,6 +271,12 @@ onMounted(load);
 .contact-name {
   font-size: 16px;
   font-weight: 700;
+}
+.archived-badge {
+  /* The contact info is a column, so keep the badge at its own width. */
+  align-self: flex-start;
+  font-size: 11.5px;
+  padding: 2px 8px;
 }
 .contact-line {
   display: flex;

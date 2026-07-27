@@ -7,8 +7,8 @@
 //!
 //! Commands are thin: they validate their arguments, lock the shared
 //! connection, and delegate. The mutating ones delegate to a `*_impl` free
-//! function taking `&Connection`, which is what makes them testable without a
-//! Tauri `State`.
+//! function taking `&Connection` (or `&mut Connection` where the write needs a
+//! transaction), which is what makes them testable without a Tauri `State`.
 //!
 //! Errors are [`AppError`], serialized as a stable machine code that
 //! `src/lib/errors.ts` maps to a localized message. Internal detail is logged,
@@ -23,9 +23,10 @@ use crate::db::{
     UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
-    BACKUP_FAILED, CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
-    INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LOGO_TYPE,
-    INVALID_TOTAL_PRICE, LOGO_TOO_LARGE, OVERPAYMENT, PURCHASE_NOT_FOUND, SUM_MISMATCH,
+    ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, CLIENT_ARCHIVED, CLIENT_HAS_PURCHASES,
+    CLIENT_NOT_FOUND, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT, INVALID_INSTALLMENT_COUNT,
+    INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LOGO_TYPE, INVALID_TOTAL_PRICE,
+    LOGO_TOO_LARGE, OVERPAYMENT, PURCHASE_NOT_FOUND, SUM_MISMATCH,
 };
 use crate::models::*;
 
@@ -42,16 +43,34 @@ fn map_client(row: &rusqlite::Row) -> rusqlite::Result<Client> {
         address: row.get("address")?,
         email: row.get("email")?,
         created_at: row.get("created_at")?,
+        archived_at: row.get("archived_at")?,
     })
 }
 
 fn fetch_client(conn: &Connection, id: i64) -> DbResult<Client> {
     conn.query_row(
-        "SELECT id, first_name, last_name, phone, address, email, created_at FROM client WHERE id = ?1",
+        "SELECT id, first_name, last_name, phone, address, email, created_at, archived_at
+           FROM client WHERE id = ?1",
         [id],
         map_client,
     )
-        .map_err(missing_row(CLIENT_NOT_FOUND))
+    .map_err(missing_row(CLIENT_NOT_FOUND))
+}
+
+/// Total still owed across every purchase of `client_id`; 0 when they have none.
+///
+/// `COALESCE` is load-bearing: a bare `SUM` over an empty join returns `NULL`,
+/// and the comparison is deliberately done in Rust rather than in SQL, where
+/// `NULL > 0` is `NULL` rather than false.
+fn client_outstanding(conn: &Connection, client_id: i64) -> DbResult<i64> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(i.amount - i.paid_amount), 0)
+           FROM purchase p JOIN installment i ON i.purchase_id = p.id
+          WHERE p.client_id = ?1",
+        [client_id],
+        |r| r.get(0),
+    )
+    .map_err(AppError::from)
 }
 
 /// Map "no such row" to an actionable code, leaving every other database
@@ -167,13 +186,40 @@ fn build_purchase_summary(conn: &Connection, purchase_id: i64) -> DbResult<Purch
 // Clients
 // ===========================================================================
 
+/// List clients with their aggregated purchase and balance figures.
+///
+/// `scope` selects which slice to return; omitting it means active clients
+/// only, which is what every screen except the Clients page's Archived tab
+/// wants.
 #[tauri::command]
-pub async fn list_clients(db: State<'_, Db>) -> DbResult<Vec<ClientSummary>> {
-    let conn = db.lock();
+pub async fn list_clients(
+    db: State<'_, Db>,
+    scope: Option<ClientScope>,
+) -> DbResult<Vec<ClientSummary>> {
+    list_clients_impl(&db.lock(), scope.unwrap_or_default())
+}
+
+/// Split out despite being a read, which the module doc reserves for mutating
+/// commands: the scope predicate below is the kind of thing that silently
+/// returns the wrong set, and this is what makes it reachable from `cargo test`
+/// without a Tauri `State`.
+pub(crate) fn list_clients_impl(
+    conn: &Connection,
+    scope: ClientScope,
+) -> DbResult<Vec<ClientSummary>> {
     let today_str = today().to_string();
-    let mut stmt = conn.prepare(
+    // The predicate filters the *driving* table, so it belongs in WHERE rather
+    // than HAVING: the aggregates below are then computed only over the joined
+    // rows of the clients that survive it. Each arm is a `&'static str` — no
+    // caller input reaches the SQL text.
+    let scope_predicate = match scope {
+        ClientScope::Active => "c.archived_at IS NULL",
+        ClientScope::Archived => "c.archived_at IS NOT NULL",
+        ClientScope::All => "1 = 1",
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT c.id, c.first_name, c.last_name, c.phone, c.address, c.email,
-                c.created_at,
+                c.created_at, c.archived_at,
                 COUNT(DISTINCT p.id) AS purchase_count,
                 COALESCE(SUM(i.amount - i.paid_amount), 0) AS outstanding,
                 COALESCE(SUM(CASE WHEN i.due_date < ?1 AND i.amount > i.paid_amount
@@ -181,9 +227,10 @@ pub async fn list_clients(db: State<'_, Db>) -> DbResult<Vec<ClientSummary>> {
              FROM client c
              LEFT JOIN purchase p ON p.client_id = c.id
              LEFT JOIN installment i ON i.purchase_id = p.id
+             WHERE {scope_predicate}
              GROUP BY c.id
-             ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE",
-    )?;
+             ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE"
+    ))?;
     let rows = stmt.query_map([today_str], |row| {
         Ok(ClientSummary {
             client: map_client(row)?,
@@ -263,24 +310,88 @@ pub async fn update_client(db: State<'_, Db>, id: i64, input: ClientInput) -> Db
     fetch_client(&conn, id)
 }
 
-/// Delete a client. Refuses when the client has purchases unless `force` is set
-/// (cascades to purchases/installments/payments).
+/// Archive a client: hide them from the active list while keeping every
+/// purchase, installment and payment row exactly as it was.
 #[tauri::command]
-pub async fn delete_client(db: State<'_, Db>, id: i64, force: bool) -> DbResult<()> {
-    delete_client_impl(&db.lock(), id, force)
+pub async fn archive_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    archive_client_impl(&mut db.lock(), id)
 }
 
-pub(crate) fn delete_client_impl(conn: &Connection, id: i64, force: bool) -> DbResult<()> {
-    let count: i64 = conn.query_row(
+/// Refused while the client still owes money.
+///
+/// That guard is what lets every money read model — impayés, the dashboard,
+/// the reports — skip an `archived_at` filter entirely: an archived client has
+/// a zero balance by construction, so they contribute nothing to those
+/// aggregates whether they are filtered out or not. The cost is deliberate: a
+/// client with unpaid installments can be neither deleted nor archived.
+pub(crate) fn archive_client_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    fetch_client(&tx, id)?;
+    let outstanding = client_outstanding(&tx, id)?;
+    if outstanding > 0 {
+        return Err(AppError::conflict(ARCHIVE_HAS_OUTSTANDING, outstanding));
+    }
+    // `date('now')`, not `datetime('now')`: this value is rendered, and
+    // `formatDatePattern` splits an ISO date on `-`, so a trailing " HH:MM:SS"
+    // makes the day component `NaN` and the whole timestamp falls through to
+    // the screen raw. Every other date in the schema is `YYYY-MM-DD` too.
+    //
+    // `AND archived_at IS NULL` keeps a repeated archive a no-op instead of
+    // moving the stamp, so "archived on <date>" stays truthful.
+    tx.execute(
+        "UPDATE client SET archived_at = date('now')
+          WHERE id = ?1 AND archived_at IS NULL",
+        [id],
+    )?;
+    tx.commit()?;
+    log::info!("archived client id={id}");
+    Ok(())
+}
+
+/// Restore an archived client to the active list.
+#[tauri::command]
+pub async fn restore_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    restore_client_impl(&mut db.lock(), id)
+}
+
+/// Unconditional beyond the client existing: restoring only ever makes a hidden
+/// row visible again, so there is nothing to guard against. Restoring an
+/// already-active client is a successful no-op.
+pub(crate) fn restore_client_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    fetch_client(&tx, id)?;
+    tx.execute("UPDATE client SET archived_at = NULL WHERE id = ?1", [id])?;
+    tx.commit()?;
+    log::info!("restored client id={id}");
+    Ok(())
+}
+
+/// Delete a client outright.
+///
+/// Only ever permitted for a client with no purchases — a mistyped or duplicate
+/// entry. Anyone with history is archived instead, never destroyed: the app's
+/// only other recovery path is a backup the user had to have taken first.
+#[tauri::command]
+pub async fn delete_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    delete_client_impl(&mut db.lock(), id)
+}
+
+pub(crate) fn delete_client_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    // Deleting an id that is already gone used to succeed silently; the caller
+    // deserves to know its list was stale.
+    fetch_client(&tx, id)?;
+    let count: i64 = tx.query_row(
         "SELECT COUNT(*) FROM purchase WHERE client_id = ?1",
         [id],
         |r| r.get(0),
     )?;
-    if count > 0 && !force {
+    if count > 0 {
         return Err(AppError::conflict(CLIENT_HAS_PURCHASES, count));
     }
-    conn.execute("DELETE FROM client WHERE id = ?1", [id])?;
-    log::info!("deleted client id={id} (cascaded purchases: {count})");
+    tx.execute("DELETE FROM client WHERE id = ?1", [id])?;
+    tx.commit()?;
+    log::info!("deleted client id={id} (no purchases)");
     Ok(())
 }
 
@@ -404,6 +515,14 @@ pub(crate) fn create_purchase_impl(
     };
 
     let tx = conn.transaction()?;
+
+    // An archived client must not take on new debt. Beyond the UI (whose picker
+    // only offers active clients), this keeps "archived implies a zero balance"
+    // true by construction — which is exactly the property that lets impayés,
+    // the dashboard and the reports skip an `archived_at` filter altogether.
+    if fetch_client(&tx, input.client_id)?.archived_at.is_some() {
+        return Err(AppError::conflict(CLIENT_ARCHIVED, ""));
+    }
 
     tx.execute(
         "INSERT INTO purchase
@@ -1336,6 +1455,16 @@ mod tests {
         fn count(&self, sql: &str) -> i64 {
             self.db.lock().query_row(sql, [], |r| r.get(0)).unwrap()
         }
+
+        /// The archive stamp for a client, or `None` while they are active.
+        fn archived_at(&self, id: i64) -> Option<String> {
+            self.db
+                .lock()
+                .query_row("SELECT archived_at FROM client WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        }
     }
 
     impl Drop for Fixture {
@@ -1740,8 +1869,10 @@ mod tests {
 
     // --- deletes / cascades ------------------------------------------------
 
+    /// The whole point of the archive feature: a client with history can never
+    /// be deleted, with no `force` escape hatch to reach the cascade behind it.
     #[test]
-    fn delete_client_is_gated_then_cascades() {
+    fn delete_client_is_refused_for_any_client_with_purchases() {
         let f = Fixture::new("del_client");
         let detail = seeded_purchase(&f);
         {
@@ -1758,23 +1889,201 @@ mod tests {
             .unwrap();
         }
 
-        {
-            let conn = f.db.lock();
-            let err = delete_client_impl(&conn, f.client_id, false).unwrap_err();
-            assert_eq!(code_of(err), "CLIENT_HAS_PURCHASES:1");
-        }
-        assert_eq!(
-            f.count("SELECT COUNT(*) FROM client"),
-            1,
-            "gate must not delete"
-        );
+        let err = delete_client_impl(&mut f.db.lock(), f.client_id).unwrap_err();
+        assert_eq!(code_of(err), "CLIENT_HAS_PURCHASES:1");
 
-        delete_client_impl(&f.db.lock(), f.client_id, true).unwrap();
+        // Nothing was touched — not the client, and not the history below them.
+        assert_eq!(f.count("SELECT COUNT(*) FROM client"), 1);
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 1);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+    }
+
+    #[test]
+    fn delete_client_removes_a_client_with_no_purchases() {
+        let f = Fixture::new("del_client_empty");
+
+        delete_client_impl(&mut f.db.lock(), f.client_id).unwrap();
 
         assert_eq!(f.count("SELECT COUNT(*) FROM client"), 0);
+    }
+
+    #[test]
+    fn delete_client_reports_a_missing_id_rather_than_succeeding_silently() {
+        let f = Fixture::new("del_client_missing");
+        let err = delete_client_impl(&mut f.db.lock(), 99_999).unwrap_err();
+        assert_eq!(code_of(err), "CLIENT_NOT_FOUND");
+    }
+
+    // --- archive / restore -------------------------------------------------
+
+    #[test]
+    fn archive_client_is_refused_while_the_client_owes_money() {
+        let f = Fixture::new("archive_owing");
+        let detail = seeded_purchase(&f);
+        {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: detail.installments[0].id,
+                    amount: 250,
+                    payment_date: "2024-01-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        // 1000 total, 250 paid.
+        let err = archive_client_impl(&mut f.db.lock(), f.client_id).unwrap_err();
+        assert_eq!(code_of(err), "ARCHIVE_HAS_OUTSTANDING:750");
+        assert!(
+            f.archived_at(f.client_id).is_none(),
+            "a refused archive must not have written the stamp"
+        );
+    }
+
+    #[test]
+    fn archive_client_succeeds_once_every_installment_is_paid() {
+        let f = Fixture::new("archive_paid");
+        let detail = seeded_purchase(&f);
+        for inst in &detail.installments {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: inst.id,
+                    amount: inst.amount,
+                    payment_date: "2024-01-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+
+        assert!(f.archived_at(f.client_id).is_some());
+        // Archiving hides the client; it destroys nothing.
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 1);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 4);
+    }
+
+    /// The empty-join case: `SUM` over no rows is `NULL`, which is exactly where
+    /// a missing `COALESCE` in `client_outstanding` would go wrong.
+    #[test]
+    fn archive_client_succeeds_for_a_client_with_no_purchases() {
+        let f = Fixture::new("archive_empty");
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        assert!(f.archived_at(f.client_id).is_some());
+    }
+
+    /// The stamp is what renders as "archived on <date>", so it must be an ISO
+    /// date — `formatDatePattern` on the frontend splits on `-` and would emit a
+    /// raw `datetime('now')` string verbatim.
+    #[test]
+    fn archive_stamp_is_an_iso_date_and_does_not_move_on_a_repeat() {
+        let f = Fixture::new("archive_stamp");
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        let first = f.archived_at(f.client_id).unwrap();
+        assert_eq!(first.len(), 10, "expected YYYY-MM-DD, got {first:?}");
+        assert!(chrono::NaiveDate::parse_from_str(&first, "%Y-%m-%d").is_ok());
+
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        assert_eq!(
+            f.archived_at(f.client_id).unwrap(),
+            first,
+            "re-archiving must not move the stamp"
+        );
+    }
+
+    #[test]
+    fn restore_client_clears_the_stamp_and_is_idempotent() {
+        let f = Fixture::new("restore");
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+
+        restore_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        assert!(f.archived_at(f.client_id).is_none());
+
+        // Restoring an already-active client is the state the caller asked for.
+        restore_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        assert!(f.archived_at(f.client_id).is_none());
+    }
+
+    #[test]
+    fn archive_and_restore_report_a_missing_client() {
+        let f = Fixture::new("archive_missing");
+        assert_eq!(
+            code_of(archive_client_impl(&mut f.db.lock(), 99_999).unwrap_err()),
+            "CLIENT_NOT_FOUND"
+        );
+        assert_eq!(
+            code_of(restore_client_impl(&mut f.db.lock(), 99_999).unwrap_err()),
+            "CLIENT_NOT_FOUND"
+        );
+    }
+
+    /// The guard that keeps "archived implies a zero balance" true by
+    /// construction rather than by UI convention — without it, a purchase
+    /// created straight over IPC would give an archived client a balance that
+    /// the money read models assume cannot exist.
+    #[test]
+    fn an_archived_client_cannot_take_on_a_new_purchase() {
+        let f = Fixture::new("archived_no_purchase");
+        archive_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+
+        let err = create_purchase_impl(&mut f.db.lock(), f.purchase_input()).unwrap_err();
+        assert_eq!(code_of(err), "CLIENT_ARCHIVED");
         assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
-        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
-        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
+
+        // ...and it works again once they are restored.
+        restore_client_impl(&mut f.db.lock(), f.client_id).unwrap();
+        create_purchase_impl(&mut f.db.lock(), f.purchase_input()).unwrap();
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 1);
+    }
+
+    #[test]
+    fn list_clients_filters_by_archived_state() {
+        let f = Fixture::new("list_scope");
+        f.db.lock()
+            .execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Second', 'Client')",
+                [],
+            )
+            .unwrap();
+        let second_id = f.db.lock().last_insert_rowid();
+        archive_client_impl(&mut f.db.lock(), second_id).unwrap();
+
+        let conn = f.db.lock();
+        let active = list_clients_impl(&conn, ClientScope::Active).unwrap();
+        let archived = list_clients_impl(&conn, ClientScope::Archived).unwrap();
+        let all = list_clients_impl(&conn, ClientScope::All).unwrap();
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].client.id, f.client_id);
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].client.id, second_id);
+        assert!(archived[0].client.archived_at.is_some());
+        assert_eq!(all.len(), 2);
+    }
+
+    /// Regression guard for putting the scope predicate in the wrong clause: it
+    /// names `c.` only, so it must not turn either `LEFT JOIN` into an inner one
+    /// and drop clients who have no purchases yet.
+    #[test]
+    fn list_clients_keeps_clients_with_no_purchases_under_every_scope() {
+        let f = Fixture::new("list_no_purchases");
+        let conn = f.db.lock();
+
+        for scope in [ClientScope::Active, ClientScope::All] {
+            let rows = list_clients_impl(&conn, scope).unwrap();
+            assert_eq!(rows.len(), 1, "{scope:?} dropped a purchase-less client");
+            assert_eq!(rows[0].purchase_count, 0);
+            assert_eq!(rows[0].total_outstanding, 0);
+            assert_eq!(rows[0].overdue_count, 0);
+        }
     }
 
     #[test]

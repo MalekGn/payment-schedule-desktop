@@ -214,8 +214,14 @@ Everything is stored locally in the OS **app-data directory**:
 ### Backing up
 
 **Settings → Backup database** writes a consistent snapshot to a location you
-choose. Take one before deleting clients: a client delete cascades to their
-purchases, installments and payments and cannot be undone.
+choose. Take one before deleting purchases: a purchase delete cascades to its
+installments and payments and cannot be undone.
+
+Clients are safer by design. A client who has any purchase cannot be deleted at
+all — you **archive** them instead, which hides them from the client list and
+the new-purchase picker while keeping every record, and can be undone at any
+time from the "Archivés" tab. Archiving is refused while the client still owes
+money, so a client with unpaid installments can be neither deleted nor archived.
 
 To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
 development build it is re-seeded; in a release build it comes back empty.

@@ -5,6 +5,9 @@ export type InstallmentStatus = "pending" | "partial" | "paid" | "late";
 export type PurchaseStatus = "pending" | "in_progress" | "paid" | "late";
 export type IntervalKind = "weekly" | "monthly" | "custom";
 
+/** Which slice of the client list to fetch. Defaults to `"active"`. */
+export type ClientScope = "active" | "archived" | "all";
+
 export interface Client {
   id: number;
   firstName: string;
@@ -13,6 +16,12 @@ export interface Client {
   address: string;
   email: string | null;
   createdAt: string;
+  /**
+   * ISO date the client was archived, or `null` while they are active.
+   * Archiving hides them from the active list and the new-purchase picker
+   * without touching any of their history.
+   */
+  archivedAt: string | null;
 }
 
 export interface ClientInput {

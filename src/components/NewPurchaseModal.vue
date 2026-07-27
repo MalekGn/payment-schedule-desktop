@@ -41,7 +41,9 @@ const manualAmounts = ref(false);
 const errors = reactive<Record<string, string>>({});
 
 onMounted(async () => {
-  clients.value = await api.listClients();
+  // Explicit rather than relying on the gateway default: an archived client
+  // must not be selectable, or archiving them would not stop new debt.
+  clients.value = await api.listClients("active");
   rebuild();
 });
 

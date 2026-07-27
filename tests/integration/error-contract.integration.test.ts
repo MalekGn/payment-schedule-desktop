@@ -192,6 +192,8 @@ describe("every code maps to a localized sentence", () => {
   const CODES = [
     "INTERNAL",
     "CLIENT_HAS_PURCHASES:3",
+    "ARCHIVE_HAS_OUTSTANDING:750",
+    "CLIENT_ARCHIVED",
     "CLIENT_NOT_FOUND",
     "PURCHASE_NOT_FOUND",
     "INSTALLMENT_NOT_FOUND",
@@ -239,6 +241,7 @@ describe("every code maps to a localized sentence", () => {
     expect(toUserMessage("SUM_MISMATCH:900:1000", t)).toContain("1000");
     expect(toUserMessage("OVERPAYMENT:200", t)).toContain("200");
     expect(toUserMessage("CLIENT_HAS_PURCHASES:3", t)).toContain("3");
+    expect(toUserMessage("ARCHIVE_HAS_OUTSTANDING:750", t)).toContain("750");
   });
 
   it("falls back to the generic message for anything unrecognised", () => {

@@ -168,6 +168,11 @@
     "title": "Clients",
     "new": "Nouveau client",
     "searchPlaceholder": "Rechercher un client…",
+    "scope": {
+      "active": "Actifs",
+      "archived": "Archivés",
+      "all": "Tous"
+    },
     "columns": {
       "name": "Nom",
       "phone": "Téléphone",
@@ -198,9 +203,24 @@
     "delete": {
       "confirmTitle": "Supprimer le client",
       "confirmText": "Voulez-vous vraiment supprimer ce client ?",
-      "hasPurchases": "Ce client possède {n} achat(s). La suppression effacera aussi tous ses achats, échéances et paiements. Continuer ?"
+      "hasPurchases": "Ce client possède {n} achat(s) et ne peut pas être supprimé. Archivez-le pour le masquer sans perdre son historique."
     },
-    "empty": "Aucun client. Ajoutez votre premier client."
+    "archive": {
+      "action": "Archiver",
+      "confirmTitle": "Archiver le client",
+      "confirmText": "Ce client sera masqué de la liste active et ne pourra plus recevoir de nouvel achat. Son historique est conservé et vous pourrez le restaurer à tout moment.",
+      "hasOutstanding": "Ce client doit encore {amount}. Soldez ses échéances avant de l'archiver.",
+      "viewInstallments": "Voir ses échéances"
+    },
+    "restore": {
+      "action": "Restaurer",
+      "confirmTitle": "Restaurer le client",
+      "confirmText": "Ce client réapparaîtra dans la liste active et pourra de nouveau recevoir des achats."
+    },
+    "archivedBadge": "Archivé",
+    "archivedOn": "Archivé le {date}",
+    "empty": "Aucun client. Ajoutez votre premier client.",
+    "emptyArchived": "Aucun client archivé."
   },
   "paiements": {
     "title": "Paiements",
@@ -326,7 +346,9 @@
     "generic": "Une erreur s'est produite.",
     "internal": "Une erreur s'est produite. Veuillez réessayer.",
     "loadFailed": "Échec du chargement des données.",
-    "clientHasPurchases": "Ce client possède {count} achat(s).",
+    "clientHasPurchases": "Ce client possède {count} achat(s) et ne peut pas être supprimé.",
+    "archiveHasOutstanding": "Ce client a encore un solde impayé de {remaining}. Un client qui doit de l'argent ne peut pas être archivé.",
+    "clientArchived": "Ce client est archivé. Restaurez-le avant de lui enregistrer un nouvel achat.",
     "clientNotFound": "Ce client n'existe plus.",
     "purchaseNotFound": "Cet achat n'existe plus.",
     "installmentNotFound": "Cette tranche n'existe plus.",
