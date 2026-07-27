@@ -54,7 +54,8 @@
     "note": "Note",
     "all": "Tous",
     "currency": "{amount} {code}",
-    "none": "—"
+    "none": "—",
+    "retry": "Réessayer"
   },
   "dashboard": {
     "title": "Tableau de bord",
@@ -306,7 +307,11 @@
     "noLogo": "Aucun logo",
     "shopName": "Nom de la boutique",
     "shopInfo": "Coordonnées / informations",
-    "shopInfoPlaceholder": "Adresse, téléphone, matricule fiscal…"
+    "shopInfoPlaceholder": "Adresse, téléphone, matricule fiscal…",
+    "backup": "Sauvegarde",
+    "backupHint": "Enregistrez une copie de votre base de données. Supprimer un client supprime aussi ses achats et paiements, sans retour possible.",
+    "backupAction": "Sauvegarder la base",
+    "backupDone": "Sauvegarde enregistrée."
   },
   "validation": {
     "required": "Ce champ est requis.",
@@ -319,8 +324,23 @@
   },
   "errors": {
     "generic": "Une erreur s'est produite.",
-    "clientHasPurchases": "Ce client possède des achats.",
-    "loadFailed": "Échec du chargement des données."
+    "internal": "Une erreur s'est produite. Veuillez réessayer.",
+    "loadFailed": "Échec du chargement des données.",
+    "clientHasPurchases": "Ce client possède {count} achat(s).",
+    "clientNotFound": "Ce client n'existe plus.",
+    "purchaseNotFound": "Cet achat n'existe plus.",
+    "installmentNotFound": "Cette tranche n'existe plus.",
+    "invalidDate": "Veuillez saisir une date valide.",
+    "invalidTotalPrice": "Le prix total doit être supérieur à zéro.",
+    "invalidInstallmentCount": "Le nombre de tranches doit être compris entre 1 et 120.",
+    "invalidIntervalKind": "Intervalle de paiement inconnu.",
+    "invalidIntervalDays": "L'intervalle personnalisé doit être compris entre 1 et 365 jours.",
+    "invalidAmount": "Le montant doit être supérieur à zéro.",
+    "sumMismatch": "Le total des tranches est {sum}, mais le montant total est {total}.",
+    "overpayment": "Ce montant dépasse le solde restant de cette tranche ({remaining}).",
+    "invalidLogoType": "Choisissez une image PNG, JPG, WEBP ou GIF.",
+    "logoTooLarge": "L'image est trop volumineuse (5 Mo maximum).",
+    "backupFailed": "La sauvegarde n'a pas pu être enregistrée."
   },
   "filters": {
     "date": "Filtrer par date",

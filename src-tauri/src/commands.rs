@@ -1,14 +1,31 @@
 //! Tauri commands — the entire API surface exposed to the frontend.
-//! Each command locks the shared connection, runs its queries, and returns
-//! serde-serializable models. Errors are surfaced as `String` (shown as a
-//! localized toast on the frontend).
+//!
+//! Every command is `async` so Tauri runs it on the async runtime rather than
+//! inline on the IPC/main event-loop thread; a synchronous command blocks the
+//! UI for the duration of its queries. None of them `await` anything, so the
+//! `MutexGuard` on the connection never spans a suspension point.
+//!
+//! Commands are thin: they validate their arguments, lock the shared
+//! connection, and delegate. The mutating ones delegate to a `*_impl` free
+//! function taking `&Connection`, which is what makes them testable without a
+//! Tauri `State`.
+//!
+//! Errors are [`AppError`], serialized as a stable machine code that
+//! `src/lib/errors.ts` maps to a localized message. Internal detail is logged,
+//! never sent.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::State;
 
 use crate::db::{
-    add_interval, installment_status, parse_date, purchase_status, split_amounts, today, Db,
-    DbResult,
+    add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
+    Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS,
+    UPCOMING_DAYS_RANGE,
+};
+use crate::db::{
+    BACKUP_FAILED, CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
+    INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LOGO_TYPE,
+    INVALID_TOTAL_PRICE, LOGO_TOO_LARGE, OVERPAYMENT, PURCHASE_NOT_FOUND, SUM_MISMATCH,
 };
 use crate::models::*;
 
@@ -30,7 +47,21 @@ fn map_client(row: &rusqlite::Row) -> rusqlite::Result<Client> {
 
 fn fetch_client(conn: &Connection, id: i64) -> DbResult<Client> {
     conn.query_row("SELECT * FROM client WHERE id = ?1", [id], map_client)
-        .map_err(|e| e.to_string())
+        .map_err(missing_row(CLIENT_NOT_FOUND))
+}
+
+/// Map "no such row" to an actionable code, leaving every other database
+/// failure as an internal error.
+///
+/// Without the split, opening a deleted record and a real database fault both
+/// surfaced as the same opaque failure, and the detail views render *any* error
+/// as "this record does not exist" — so a transient fault was reported to the
+/// user as permanent data loss.
+fn missing_row(code: &'static str) -> impl Fn(rusqlite::Error) -> AppError {
+    move |e| match e {
+        rusqlite::Error::QueryReturnedNoRows => AppError::not_found(code),
+        other => AppError::from(other),
+    }
 }
 
 fn map_purchase(row: &rusqlite::Row) -> rusqlite::Result<Purchase> {
@@ -51,34 +82,29 @@ fn map_purchase(row: &rusqlite::Row) -> rusqlite::Result<Purchase> {
 /// Load a purchase's installments with their effective status computed.
 fn load_installments(conn: &Connection, purchase_id: i64) -> DbResult<Vec<Installment>> {
     let today = today();
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, purchase_id, idx, amount, due_date, paid_amount, paid_date
+    let mut stmt = conn.prepare(
+        "SELECT id, purchase_id, idx, amount, due_date, paid_amount, paid_date
              FROM installment WHERE purchase_id = ?1 ORDER BY idx",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([purchase_id], |row| {
-            let amount: i64 = row.get("amount")?;
-            let paid_amount: i64 = row.get("paid_amount")?;
-            let due_date: String = row.get("due_date")?;
-            let status = parse_date(&due_date)
-                .map(|d| installment_status(amount, paid_amount, d, today))
-                .unwrap_or("pending");
-            Ok(Installment {
-                id: row.get("id")?,
-                purchase_id: row.get("purchase_id")?,
-                index: row.get("idx")?,
-                amount,
-                due_date,
-                paid_amount,
-                paid_date: row.get("paid_date")?,
-                status: status.to_string(),
-            })
+    )?;
+    let rows = stmt.query_map([purchase_id], |row| {
+        let amount: i64 = row.get("amount")?;
+        let paid_amount: i64 = row.get("paid_amount")?;
+        let due_date: String = row.get("due_date")?;
+        let status = parse_date(&due_date)
+            .map(|d| installment_status(amount, paid_amount, d, today))
+            .unwrap_or("pending");
+        Ok(Installment {
+            id: row.get("id")?,
+            purchase_id: row.get("purchase_id")?,
+            index: row.get("idx")?,
+            amount,
+            due_date,
+            paid_amount,
+            paid_date: row.get("paid_date")?,
+            status: status.to_string(),
         })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 fn build_purchase_detail(conn: &Connection, purchase_id: i64) -> DbResult<PurchaseDetail> {
@@ -88,7 +114,7 @@ fn build_purchase_detail(conn: &Connection, purchase_id: i64) -> DbResult<Purcha
             [purchase_id],
             map_purchase,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(missing_row(PURCHASE_NOT_FOUND))?;
     let client = fetch_client(conn, purchase.client_id)?;
     let installments = load_installments(conn, purchase_id)?;
 
@@ -135,12 +161,11 @@ fn build_purchase_summary(conn: &Connection, purchase_id: i64) -> DbResult<Purch
 // ===========================================================================
 
 #[tauri::command]
-pub fn list_clients(db: State<Db>) -> DbResult<Vec<ClientSummary>> {
-    let conn = db.conn.lock().unwrap();
+pub async fn list_clients(db: State<'_, Db>) -> DbResult<Vec<ClientSummary>> {
+    let conn = db.lock();
     let today_str = today().to_string();
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.*,
+    let mut stmt = conn.prepare(
+        "SELECT c.*,
                 COUNT(DISTINCT p.id) AS purchase_count,
                 COALESCE(SUM(i.amount - i.paid_amount), 0) AS outstanding,
                 COALESCE(SUM(CASE WHEN i.due_date < ?1 AND i.amount > i.paid_amount
@@ -150,37 +175,29 @@ pub fn list_clients(db: State<Db>) -> DbResult<Vec<ClientSummary>> {
              LEFT JOIN installment i ON i.purchase_id = p.id
              GROUP BY c.id
              ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([today_str], |row| {
-            Ok(ClientSummary {
-                client: map_client(row)?,
-                purchase_count: row.get("purchase_count")?,
-                total_outstanding: row.get("outstanding")?,
-                overdue_count: row.get("overdue_count")?,
-            })
+    )?;
+    let rows = stmt.query_map([today_str], |row| {
+        Ok(ClientSummary {
+            client: map_client(row)?,
+            purchase_count: row.get("purchase_count")?,
+            total_outstanding: row.get("outstanding")?,
+            overdue_count: row.get("overdue_count")?,
         })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 #[tauri::command]
-pub fn get_client_detail(db: State<Db>, id: i64) -> DbResult<ClientDetail> {
-    let conn = db.conn.lock().unwrap();
+pub async fn get_client_detail(db: State<'_, Db>, id: i64) -> DbResult<ClientDetail> {
+    let conn = db.lock();
     let client = fetch_client(&conn, id)?;
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id FROM purchase WHERE client_id = ?1 ORDER BY purchase_date DESC, id DESC",
-        )
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM purchase WHERE client_id = ?1 ORDER BY purchase_date DESC, id DESC",
+    )?;
     let ids: Vec<i64> = stmt
-        .query_map([id], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map([id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
 
     let mut purchases = Vec::new();
     let (mut total_purchased, mut total_paid, mut overdue_count) = (0i64, 0i64, 0i64);
@@ -204,8 +221,8 @@ pub fn get_client_detail(db: State<Db>, id: i64) -> DbResult<ClientDetail> {
 }
 
 #[tauri::command]
-pub fn create_client(db: State<Db>, input: ClientInput) -> DbResult<Client> {
-    let conn = db.conn.lock().unwrap();
+pub async fn create_client(db: State<'_, Db>, input: ClientInput) -> DbResult<Client> {
+    let conn = db.lock();
     conn.execute(
         "INSERT INTO client (first_name, last_name, phone, address, email)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -216,14 +233,13 @@ pub fn create_client(db: State<Db>, input: ClientInput) -> DbResult<Client> {
             input.address.trim(),
             input.email.as_ref().map(|e| e.trim().to_string())
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     fetch_client(&conn, conn.last_insert_rowid())
 }
 
 #[tauri::command]
-pub fn update_client(db: State<Db>, id: i64, input: ClientInput) -> DbResult<Client> {
-    let conn = db.conn.lock().unwrap();
+pub async fn update_client(db: State<'_, Db>, id: i64, input: ClientInput) -> DbResult<Client> {
+    let conn = db.lock();
     conn.execute(
         "UPDATE client SET first_name = ?1, last_name = ?2, phone = ?3,
             address = ?4, email = ?5 WHERE id = ?6",
@@ -235,28 +251,28 @@ pub fn update_client(db: State<Db>, id: i64, input: ClientInput) -> DbResult<Cli
             input.email.as_ref().map(|e| e.trim().to_string()),
             id
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     fetch_client(&conn, id)
 }
 
 /// Delete a client. Refuses when the client has purchases unless `force` is set
 /// (cascades to purchases/installments/payments).
 #[tauri::command]
-pub fn delete_client(db: State<Db>, id: i64, force: bool) -> DbResult<()> {
-    let conn = db.conn.lock().unwrap();
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM purchase WHERE client_id = ?1",
-            [id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+pub async fn delete_client(db: State<'_, Db>, id: i64, force: bool) -> DbResult<()> {
+    delete_client_impl(&db.lock(), id, force)
+}
+
+pub(crate) fn delete_client_impl(conn: &Connection, id: i64, force: bool) -> DbResult<()> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM purchase WHERE client_id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
     if count > 0 && !force {
-        return Err(format!("CLIENT_HAS_PURCHASES:{count}"));
+        return Err(AppError::conflict(CLIENT_HAS_PURCHASES, count));
     }
-    conn.execute("DELETE FROM client WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM client WHERE id = ?1", [id])?;
+    log::info!("deleted client id={id} (cascaded purchases: {count})");
     Ok(())
 }
 
@@ -265,16 +281,15 @@ pub fn delete_client(db: State<Db>, id: i64, force: bool) -> DbResult<()> {
 // ===========================================================================
 
 #[tauri::command]
-pub fn list_purchases(db: State<Db>, search: Option<String>) -> DbResult<Vec<PurchaseSummary>> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC")
-        .map_err(|e| e.to_string())?;
+pub async fn list_purchases(
+    db: State<'_, Db>,
+    search: Option<String>,
+) -> DbResult<Vec<PurchaseSummary>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC")?;
     let ids: Vec<i64> = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
 
     let needle = search
         .map(|s| s.trim().to_lowercase())
@@ -295,20 +310,92 @@ pub fn list_purchases(db: State<Db>, search: Option<String>) -> DbResult<Vec<Pur
 }
 
 #[tauri::command]
-pub fn get_purchase_detail(db: State<Db>, id: i64) -> DbResult<PurchaseDetail> {
-    let conn = db.conn.lock().unwrap();
+pub async fn get_purchase_detail(db: State<'_, Db>, id: i64) -> DbResult<PurchaseDetail> {
+    let conn = db.lock();
     build_purchase_detail(&conn, id)
 }
 
 #[tauri::command]
-pub fn create_purchase(db: State<Db>, input: PurchaseInput) -> DbResult<PurchaseDetail> {
-    if input.installment_count < 1 {
-        return Err("INVALID_INSTALLMENT_COUNT".into());
-    }
-    let purchase_date = parse_date(&input.purchase_date)?;
+pub async fn create_purchase(db: State<'_, Db>, input: PurchaseInput) -> DbResult<PurchaseDetail> {
+    create_purchase_impl(&mut db.lock(), input)
+}
 
-    let mut conn = db.conn.lock().unwrap();
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+/// Validate a purchase request coming off the IPC boundary.
+///
+/// Every field here arrives from the renderer and is therefore untrusted. The
+/// numeric bounds matter beyond tidiness: `installment_count` sizes a `Vec` and
+/// an insert loop, and `interval_days` is multiplied by the installment index
+/// before being handed to date math, so unbounded values are a memory- and
+/// crash-amplification path rather than merely bad data.
+fn validate_purchase_input(input: &PurchaseInput) -> DbResult<chrono::NaiveDate> {
+    if input.total_price <= 0 {
+        return Err(AppError::validation(INVALID_TOTAL_PRICE));
+    }
+    if !INSTALLMENT_COUNT_RANGE.contains(&input.installment_count) {
+        return Err(AppError::validation(INVALID_INSTALLMENT_COUNT));
+    }
+    if !INTERVAL_KINDS.contains(&input.interval_kind.as_str()) {
+        return Err(AppError::validation(INVALID_INTERVAL_KIND));
+    }
+    // `interval_days` is only meaningful for the custom kind; the other two
+    // ignore it, so an unused stale value must not fail the request.
+    if input.interval_kind == "custom" {
+        let days = input.interval_days.unwrap_or(30);
+        if !INTERVAL_DAYS_RANGE.contains(&days) {
+            return Err(AppError::validation(INVALID_INTERVAL_DAYS));
+        }
+    }
+    parse_date(&input.purchase_date)
+}
+
+pub(crate) fn create_purchase_impl(
+    conn: &mut Connection,
+    input: PurchaseInput,
+) -> DbResult<PurchaseDetail> {
+    let purchase_date = validate_purchase_input(&input)?;
+
+    // Resolve the amounts and due dates *before* opening the transaction so a
+    // rejected request never touches the database at all.
+    let amounts = match &input.installments {
+        Some(list) if !list.is_empty() => {
+            let sum: i64 = list.iter().map(|i| i.amount).sum();
+            if sum != input.total_price {
+                return Err(AppError::conflict(
+                    SUM_MISMATCH,
+                    format!("{sum}:{}", input.total_price),
+                ));
+            }
+            list.iter().map(|i| i.amount).collect::<Vec<_>>()
+        }
+        _ => split_amounts(input.total_price, input.installment_count),
+    };
+
+    let due_dates: Vec<String> = match &input.installments {
+        Some(list) if !list.is_empty() => list
+            .iter()
+            .take(amounts.len())
+            // Every caller-supplied due date must survive `parse_date`. Storing
+            // one unparsed is invisible but permanent: the read paths fall back
+            // to "pending" and 0 days late, so the installment silently drops
+            // out of the overdue and alert screens forever.
+            .map(|x| parse_date(&x.due_date).map(|d| d.to_string()))
+            .collect::<DbResult<_>>()?,
+        // k = i (0-based): the first installment falls on the purchase date,
+        // subsequent ones one interval apart.
+        _ => (0..amounts.len())
+            .map(|i| {
+                add_interval(
+                    purchase_date,
+                    &input.interval_kind,
+                    input.interval_days,
+                    i as i64,
+                )
+                .to_string()
+            })
+            .collect(),
+    };
+
+    let tx = conn.transaction()?;
 
     tx.execute(
         "INSERT INTO purchase
@@ -324,62 +411,39 @@ pub fn create_purchase(db: State<Db>, input: PurchaseInput) -> DbResult<Purchase
             input.interval_days,
             input.purchase_date,
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     let purchase_id = tx.last_insert_rowid();
     let reference = format!("A-{:06}", purchase_id);
     tx.execute(
         "UPDATE purchase SET reference = ?1 WHERE id = ?2",
         params![reference, purchase_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
-    // Determine installment amounts + due dates.
-    let amounts = match &input.installments {
-        Some(list) if !list.is_empty() => {
-            let sum: i64 = list.iter().map(|i| i.amount).sum();
-            if sum != input.total_price {
-                return Err(format!("SUM_MISMATCH:{sum}:{}", input.total_price));
-            }
-            list.iter().map(|i| i.amount).collect::<Vec<_>>()
-        }
-        _ => split_amounts(input.total_price, input.installment_count),
-    };
-
-    for (i, amount) in amounts.iter().enumerate() {
+    for (i, (amount, due)) in amounts.iter().zip(&due_dates).enumerate() {
         let idx = (i as i64) + 1;
-        let due = match &input.installments {
-            Some(list) if !list.is_empty() => list
-                .get(i)
-                .map(|x| x.due_date.clone())
-                .unwrap_or_else(|| purchase_date.to_string()),
-            // k = i (0-based): the first installment falls on the purchase
-            // date, subsequent ones one interval apart.
-            _ => add_interval(
-                purchase_date,
-                &input.interval_kind,
-                input.interval_days,
-                i as i64,
-            )
-            .to_string(),
-        };
         tx.execute(
             "INSERT INTO installment (purchase_id, idx, amount, due_date)
              VALUES (?1, ?2, ?3, ?4)",
             params![purchase_id, idx, amount, due],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     }
 
-    tx.commit().map_err(|e| e.to_string())?;
-    build_purchase_detail(&conn, purchase_id)
+    tx.commit()?;
+    log::info!(
+        "created purchase id={purchase_id} with {} installments",
+        amounts.len()
+    );
+    build_purchase_detail(conn, purchase_id)
 }
 
 #[tauri::command]
-pub fn delete_purchase(db: State<Db>, id: i64) -> DbResult<()> {
-    let conn = db.conn.lock().unwrap();
-    conn.execute("DELETE FROM purchase WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
+pub async fn delete_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    delete_purchase_impl(&db.lock(), id)
+}
+
+pub(crate) fn delete_purchase_impl(conn: &Connection, id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM purchase WHERE id = ?1", [id])?;
+    log::info!("deleted purchase id={id}");
     Ok(())
 }
 
@@ -391,14 +455,20 @@ pub fn delete_purchase(db: State<Db>, id: i64) -> DbResult<()> {
 /// the installment's `paid_amount` accumulates and `paid_date` is set once it
 /// is fully covered.
 #[tauri::command]
-pub fn record_payment(db: State<Db>, input: PaymentInput) -> DbResult<PurchaseDetail> {
+pub async fn record_payment(db: State<'_, Db>, input: PaymentInput) -> DbResult<PurchaseDetail> {
+    record_payment_impl(&mut db.lock(), input)
+}
+
+pub(crate) fn record_payment_impl(
+    conn: &mut Connection,
+    input: PaymentInput,
+) -> DbResult<PurchaseDetail> {
     if input.amount <= 0 {
-        return Err("INVALID_AMOUNT".into());
+        return Err(AppError::validation(INVALID_AMOUNT));
     }
     parse_date(&input.payment_date)?;
 
-    let mut conn = db.conn.lock().unwrap();
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn.transaction()?;
 
     let (purchase_id, amount, paid): (i64, i64, i64) = tx
         .query_row(
@@ -406,8 +476,16 @@ pub fn record_payment(db: State<Db>, input: PaymentInput) -> DbResult<PurchaseDe
             [input.installment_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .map_err(|_| "INSTALLMENT_NOT_FOUND".to_string())?;
+        .map_err(|_| AppError::not_found(INSTALLMENT_NOT_FOUND))?;
 
+    // Reject overpayment rather than absorbing it. An uncapped `paid_amount`
+    // makes `amount - paid_amount` negative, and that column is summed straight
+    // into the outstanding/overdue aggregates — so one overpaid installment
+    // silently cancels out another client's real debt on the dashboard.
+    let remaining = amount - paid;
+    if input.amount > remaining {
+        return Err(AppError::conflict(OVERPAYMENT, remaining.max(0)));
+    }
     let new_paid = paid + input.amount;
 
     tx.execute(
@@ -419,8 +497,7 @@ pub fn record_payment(db: State<Db>, input: PaymentInput) -> DbResult<PurchaseDe
             input.payment_date,
             input.note.as_ref().map(|n| n.trim().to_string())
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     let paid_date = if new_paid >= amount {
         Some(input.payment_date.clone())
@@ -430,11 +507,15 @@ pub fn record_payment(db: State<Db>, input: PaymentInput) -> DbResult<PurchaseDe
     tx.execute(
         "UPDATE installment SET paid_amount = ?1, paid_date = ?2 WHERE id = ?3",
         params![new_paid, paid_date, input.installment_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
-    tx.commit().map_err(|e| e.to_string())?;
-    build_purchase_detail(&conn, purchase_id)
+    tx.commit()?;
+    log::info!(
+        "recorded payment on installment id={} (fully covered: {})",
+        input.installment_id,
+        new_paid >= amount
+    );
+    build_purchase_detail(conn, purchase_id)
 }
 
 fn map_payment(row: &rusqlite::Row) -> rusqlite::Result<Payment> {
@@ -456,11 +537,13 @@ fn map_payment(row: &rusqlite::Row) -> rusqlite::Result<Payment> {
 }
 
 #[tauri::command]
-pub fn list_payments_for_purchase(db: State<Db>, purchase_id: i64) -> DbResult<Vec<Payment>> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+pub async fn list_payments_for_purchase(
+    db: State<'_, Db>,
+    purchase_id: i64,
+) -> DbResult<Vec<Payment>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -468,21 +551,16 @@ pub fn list_payments_for_purchase(db: State<Db>, purchase_id: i64) -> DbResult<V
              JOIN client c ON c.id = pu.client_id
              WHERE i.purchase_id = ?1
              ORDER BY pay.payment_date DESC, pay.id DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([purchase_id], map_payment)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    )?;
+    let rows = stmt.query_map([purchase_id], map_payment)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 #[tauri::command]
-pub fn list_all_payments(db: State<Db>, limit: Option<i64>) -> DbResult<Vec<Payment>> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+pub async fn list_all_payments(db: State<'_, Db>, limit: Option<i64>) -> DbResult<Vec<Payment>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -490,21 +568,16 @@ pub fn list_all_payments(db: State<Db>, limit: Option<i64>) -> DbResult<Vec<Paym
              JOIN client c ON c.id = pu.client_id
              ORDER BY pay.payment_date DESC, pay.id DESC
              LIMIT ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([limit.unwrap_or(500)], map_payment)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    )?;
+    let rows = stmt.query_map([limit.unwrap_or(500)], map_payment)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 #[tauri::command]
-pub fn list_payments_for_client(db: State<Db>, client_id: i64) -> DbResult<Vec<Payment>> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
+pub async fn list_payments_for_client(db: State<'_, Db>, client_id: i64) -> DbResult<Vec<Payment>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT pay.*, i.idx, i.purchase_id, pu.reference,
                     c.id AS client_id, c.first_name, c.last_name
              FROM payment pay
              JOIN installment i ON i.id = pay.installment_id
@@ -512,13 +585,9 @@ pub fn list_payments_for_client(db: State<Db>, client_id: i64) -> DbResult<Vec<P
              JOIN client c ON c.id = pu.client_id
              WHERE pu.client_id = ?1
              ORDER BY pay.payment_date DESC, pay.id DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([client_id], map_payment)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    )?;
+    let rows = stmt.query_map([client_id], map_payment)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 // ===========================================================================
@@ -528,8 +597,11 @@ pub fn list_payments_for_client(db: State<Db>, client_id: i64) -> DbResult<Vec<P
 /// All installments due in the given window (defaults to everything), enriched
 /// for the schedule screen.
 #[tauri::command]
-pub fn list_impayes(db: State<Db>, filter: Option<ImpayeFilter>) -> DbResult<Vec<ImpayeClient>> {
-    let conn = db.conn.lock().unwrap();
+pub async fn list_impayes(
+    db: State<'_, Db>,
+    filter: Option<ImpayeFilter>,
+) -> DbResult<Vec<ImpayeClient>> {
+    let conn = db.lock();
     build_impayes(&conn, filter.unwrap_or_default(), None)
 }
 
@@ -576,48 +648,46 @@ fn build_impayes(
     }
     sql.push_str(" ORDER BY c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE, i.due_date");
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
     // Accumulate per client, preserving first-seen order.
     let mut order: Vec<i64> = Vec::new();
     let mut map: std::collections::HashMap<i64, ImpayeClient> = std::collections::HashMap::new();
 
-    let rows = stmt
-        .query_map(param_refs.as_slice(), |row| {
-            let due_date: String = row.get("due_date")?;
-            let amount: i64 = row.get("amount")?;
-            let paid: i64 = row.get("paid_amount")?;
-            let days_late = parse_date(&due_date)
-                .map(|d| (today - d).num_days())
-                .unwrap_or(0);
-            let client_id: i64 = row.get("client_id")?;
-            let first: String = row.get("first_name")?;
-            let last: String = row.get("last_name")?;
-            Ok((
-                client_id,
-                first,
-                last,
-                row.get::<_, String>("phone")?,
-                row.get::<_, String>("address")?,
-                row.get::<_, Option<String>>("email")?,
-                OverdueInstallment {
-                    installment_id: row.get("id")?,
-                    purchase_id: row.get("purchase_id")?,
-                    purchase_reference: row.get("reference")?,
-                    index: row.get("idx")?,
-                    installment_count: row.get("installment_count")?,
-                    due_date,
-                    amount,
-                    remaining: amount - paid,
-                    days_late,
-                },
-            ))
-        })
-        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        let due_date: String = row.get("due_date")?;
+        let amount: i64 = row.get("amount")?;
+        let paid: i64 = row.get("paid_amount")?;
+        let days_late = parse_date(&due_date)
+            .map(|d| (today - d).num_days())
+            .unwrap_or(0);
+        let client_id: i64 = row.get("client_id")?;
+        let first: String = row.get("first_name")?;
+        let last: String = row.get("last_name")?;
+        Ok((
+            client_id,
+            first,
+            last,
+            row.get::<_, String>("phone")?,
+            row.get::<_, String>("address")?,
+            row.get::<_, Option<String>>("email")?,
+            OverdueInstallment {
+                installment_id: row.get("id")?,
+                purchase_id: row.get("purchase_id")?,
+                purchase_reference: row.get("reference")?,
+                index: row.get("idx")?,
+                installment_count: row.get("installment_count")?,
+                due_date,
+                amount,
+                remaining: amount - paid,
+                days_late,
+            },
+        ))
+    })?;
 
     for row in rows {
-        let (cid, first, last, phone, address, email, inst) = row.map_err(|e| e.to_string())?;
+        let (cid, first, last, phone, address, email, inst) = row?;
         let entry = map.entry(cid).or_insert_with(|| {
             order.push(cid);
             ImpayeClient {
@@ -650,48 +720,43 @@ fn build_impayes(
 /// All installments enriched with client/purchase context, for the schedule
 /// (Échéances) screen. Sorted by due date.
 #[tauri::command]
-pub fn list_schedule(db: State<Db>) -> DbResult<Vec<ScheduleRow>> {
-    let conn = db.conn.lock().unwrap();
+pub async fn list_schedule(db: State<'_, Db>) -> DbResult<Vec<ScheduleRow>> {
+    let conn = db.lock();
     let today = today();
-    let mut stmt = conn
-        .prepare(
-            "SELECT i.id, i.purchase_id, pu.reference, c.id AS client_id,
+    let mut stmt = conn.prepare(
+        "SELECT i.id, i.purchase_id, pu.reference, c.id AS client_id,
                     c.first_name, c.last_name, i.idx, pu.installment_count,
                     i.due_date, i.amount, i.paid_amount
              FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
              JOIN client c ON c.id = pu.client_id
              ORDER BY i.due_date ASC, i.id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            let amount: i64 = row.get("amount")?;
-            let paid: i64 = row.get("paid_amount")?;
-            let due_date: String = row.get("due_date")?;
-            let status = parse_date(&due_date)
-                .map(|d| installment_status(amount, paid, d, today))
-                .unwrap_or("pending");
-            let first: String = row.get("first_name")?;
-            let last: String = row.get("last_name")?;
-            Ok(ScheduleRow {
-                installment_id: row.get("id")?,
-                purchase_id: row.get("purchase_id")?,
-                reference: row.get("reference")?,
-                client_id: row.get("client_id")?,
-                client_name: format!("{first} {last}"),
-                index: row.get("idx")?,
-                installment_count: row.get("installment_count")?,
-                due_date,
-                amount,
-                paid_amount: paid,
-                remaining: amount - paid,
-                status: status.to_string(),
-            })
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let amount: i64 = row.get("amount")?;
+        let paid: i64 = row.get("paid_amount")?;
+        let due_date: String = row.get("due_date")?;
+        let status = parse_date(&due_date)
+            .map(|d| installment_status(amount, paid, d, today))
+            .unwrap_or("pending");
+        let first: String = row.get("first_name")?;
+        let last: String = row.get("last_name")?;
+        Ok(ScheduleRow {
+            installment_id: row.get("id")?,
+            purchase_id: row.get("purchase_id")?,
+            reference: row.get("reference")?,
+            client_id: row.get("client_id")?,
+            client_name: format!("{first} {last}"),
+            index: row.get("idx")?,
+            installment_count: row.get("installment_count")?,
+            due_date,
+            amount,
+            paid_amount: paid,
+            remaining: amount - paid,
+            status: status.to_string(),
         })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
 // ===========================================================================
@@ -699,58 +764,52 @@ pub fn list_schedule(db: State<Db>) -> DbResult<Vec<ScheduleRow>> {
 // ===========================================================================
 
 #[tauri::command]
-pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dashboard> {
-    let conn = db.conn.lock().unwrap();
+pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbResult<Dashboard> {
+    let conn = db.lock();
     let today = today();
     let today_str = today.to_string();
-    let horizon = (today + chrono::Duration::days(upcoming_days.unwrap_or(7))).to_string();
+    // Clamp rather than reject: this is a display window, not user data, and an
+    // out-of-range value should still render a dashboard. Unclamped it reached
+    // `Duration::days`, which panics on overflow — and with `panic = "abort"`
+    // that took the whole app down from a single IPC argument.
+    let days = upcoming_days
+        .unwrap_or(7)
+        .clamp(*UPCOMING_DAYS_RANGE.start(), *UPCOMING_DAYS_RANGE.end());
+    let horizon = add_interval(today, "custom", Some(days), 1).to_string();
 
-    let total_purchases: i64 = conn
-        .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    let total_sales: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(total_price),0) FROM purchase",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let total_collected: i64 = conn
-        .query_row("SELECT COALESCE(SUM(amount),0) FROM payment", [], |r| {
+    let total_purchases: i64 = conn.query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))?;
+    let total_sales: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(total_price),0) FROM purchase",
+        [],
+        |r| r.get(0),
+    )?;
+    let total_collected: i64 =
+        conn.query_row("SELECT COALESCE(SUM(amount),0) FROM payment", [], |r| {
             r.get(0)
-        })
-        .map_err(|e| e.to_string())?;
-    let total_outstanding: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(amount - paid_amount),0) FROM installment",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let overdue_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM installment WHERE due_date < ?1 AND amount > paid_amount",
-            [&today_str],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let overdue_clients: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT pu.client_id) FROM installment i
+        })?;
+    let total_outstanding: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount - paid_amount),0) FROM installment",
+        [],
+        |r| r.get(0),
+    )?;
+    let overdue_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM installment WHERE due_date < ?1 AND amount > paid_amount",
+        [&today_str],
+        |r| r.get(0),
+    )?;
+    let overdue_clients: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT pu.client_id) FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
              WHERE i.due_date < ?1 AND i.amount > i.paid_amount",
-            [&today_str],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let upcoming_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM installment
+        [&today_str],
+        |r| r.get(0),
+    )?;
+    let upcoming_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM installment
              WHERE due_date >= ?1 AND due_date <= ?2 AND amount > paid_amount",
-            params![today_str, horizon],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+        params![today_str, horizon],
+        |r| r.get(0),
+    )?;
 
     let stats = DashboardStats {
         total_purchases,
@@ -763,14 +822,11 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
     };
 
     // Recent purchases (latest 5).
-    let mut stmt = conn
-        .prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC LIMIT 5")
-        .map_err(|e| e.to_string())?;
+    let mut stmt =
+        conn.prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC LIMIT 5")?;
     let recent_ids: Vec<i64> = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
     let recent_purchases: Vec<PurchaseSummary> = recent_ids
         .iter()
         .map(|id| build_purchase_summary(&conn, *id))
@@ -787,8 +843,7 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
             [&today_str],
             |r| r.get(0),
         )
-        .optional()
-        .map_err(|e| e.to_string())?
+        .optional()?
         .or_else(|| recent_ids.first().copied());
     let featured_purchase = match featured_id {
         Some(id) => Some(build_purchase_detail(&conn, id)?),
@@ -796,17 +851,15 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
     };
 
     // Due alerts: overdue installments, most days late first (top 4).
-    let mut stmt = conn
-        .prepare(
-            "SELECT i.purchase_id, pu.reference, i.idx, pu.installment_count, i.due_date,
+    let mut stmt = conn.prepare(
+        "SELECT i.purchase_id, pu.reference, i.idx, pu.installment_count, i.due_date,
                     c.first_name, c.last_name
              FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
              JOIN client c ON c.id = pu.client_id
              WHERE i.due_date < ?1 AND i.amount > i.paid_amount
              ORDER BY i.due_date ASC LIMIT 4",
-        )
-        .map_err(|e| e.to_string())?;
+    )?;
     let due_alerts = stmt
         .query_map([&today_str], |row| {
             let due_date: String = row.get("due_date")?;
@@ -824,10 +877,8 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
                 due_date,
                 days_late,
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     let impayes = build_impayes(&conn, ImpayeFilter::default(), Some(5))?;
 
@@ -845,13 +896,22 @@ pub fn get_dashboard(db: State<Db>, upcoming_days: Option<i64>) -> DbResult<Dash
 // ===========================================================================
 
 fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
-    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
-        r.get::<_, String>(0)
-    })
-    .optional()
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| default.to_string())
+    match conn
+        .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+    {
+        Ok(found) => found.unwrap_or_else(|| default.to_string()),
+        Err(e) => {
+            // A query failure and an unset key used to be indistinguishable
+            // here, so a broken settings table looked exactly like a fresh
+            // install. Falling back is still the right behaviour — the UI must
+            // render — but it must not be silent.
+            log::warn!("failed to read setting {key:?}, falling back to default: {e}");
+            default.to_string()
+        }
+    }
 }
 
 fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
@@ -859,8 +919,7 @@ fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
         "INSERT INTO setting (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -881,70 +940,250 @@ fn read_settings(conn: &Connection) -> Settings {
 }
 
 #[tauri::command]
-pub fn get_settings(db: State<Db>) -> DbResult<Settings> {
-    let conn = db.conn.lock().unwrap();
+pub async fn get_settings(db: State<'_, Db>) -> DbResult<Settings> {
+    let conn = db.lock();
     Ok(read_settings(&conn))
 }
 
 #[tauri::command]
-pub fn update_settings(db: State<Db>, patch: SettingsPatch) -> DbResult<Settings> {
-    let conn = db.conn.lock().unwrap();
+pub async fn update_settings(db: State<'_, Db>, patch: SettingsPatch) -> DbResult<Settings> {
+    update_settings_impl(&mut db.lock(), patch)
+}
+
+pub(crate) fn update_settings_impl(
+    conn: &mut Connection,
+    patch: SettingsPatch,
+) -> DbResult<Settings> {
+    // One transaction for the whole patch. Applied one upsert at a time, a
+    // mid-way failure left settings half-written — worst case `language`
+    // committed but `language_is_default = "0"` not, which permanently
+    // re-enables OS-locale detection over the user's explicit choice.
+    let tx = conn.transaction()?;
     if let Some(v) = patch.language {
-        put_setting(&conn, "language", &v)?;
+        put_setting(&tx, "language", &v)?;
         // A manual language choice ends OS-locale auto-detection.
-        put_setting(&conn, "language_is_default", "0")?;
+        put_setting(&tx, "language_is_default", "0")?;
     }
     if let Some(v) = patch.currency_code {
-        put_setting(&conn, "currency_code", &v)?;
+        put_setting(&tx, "currency_code", &v)?;
     }
     if let Some(v) = patch.date_format {
-        put_setting(&conn, "date_format", &v)?;
+        put_setting(&tx, "date_format", &v)?;
     }
     if let Some(v) = patch.shop_name {
-        put_setting(&conn, "shop_name", &v)?;
+        put_setting(&tx, "shop_name", &v)?;
     }
     if let Some(v) = patch.shop_info {
-        put_setting(&conn, "shop_info", &v)?;
+        put_setting(&tx, "shop_info", &v)?;
     }
     if let Some(v) = patch.alert_soon_days {
         // Clamp defensively so the schedule query and UI never see a nonsense
         // window; the UI already constrains the input to the same range.
         let clamped = v.clamp(1, 90);
-        put_setting(&conn, "alert_soon_days", &clamped.to_string())?;
+        put_setting(&tx, "alert_soon_days", &clamped.to_string())?;
     }
-    Ok(read_settings(&conn))
+    tx.commit()?;
+    Ok(read_settings(conn))
+}
+
+// ---------------------------------------------------------------------------
+// Logo
+// ---------------------------------------------------------------------------
+
+/// Extensions the logo picker offers, and therefore the only ones accepted.
+/// Must stay in step with the dialog filter in `src/views/SettingsView.vue`.
+const LOGO_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+/// Upper bound on a logo file. A shop logo is a few hundred KB; this only has
+/// to be small enough that an arbitrary file cannot be bulk-copied into app
+/// data.
+const LOGO_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Whether `bytes` starts with the signature of an image format we accept.
+///
+/// This is the check that actually matters. `set_logo` takes a caller-supplied
+/// path and copies it into the app-data directory, which the renderer can read
+/// back through the `asset:` protocol — so without content validation the
+/// command is an arbitrary-file-read primitive: a compromised renderer could
+/// copy `~/.ssh/id_rsa` to `logo.png` and fetch it. An extension check alone
+/// does not stop that, because the caller chooses the extension too.
+fn looks_like_image(bytes: &[u8]) -> bool {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    const GIF87: &[u8] = b"GIF87a";
+    const GIF89: &[u8] = b"GIF89a";
+    const JPEG: &[u8] = b"\xff\xd8\xff";
+
+    if bytes.starts_with(PNG) || bytes.starts_with(GIF87) || bytes.starts_with(GIF89) {
+        return true;
+    }
+    if bytes.starts_with(JPEG) {
+        return true;
+    }
+    // WEBP is "RIFF" + 4 size bytes + "WEBP".
+    bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
 }
 
 /// Copy a picked image file into the app data dir and store its path as the
 /// shop logo. Returns the updated settings.
+///
+/// `source_path` is untrusted even though it normally comes from the native
+/// picker — the renderer can call this command with any path at all.
 #[tauri::command]
-pub fn set_logo(db: State<Db>, app: tauri::AppHandle, source_path: String) -> DbResult<Settings> {
+pub async fn set_logo(
+    db: State<'_, Db>,
+    app: tauri::AppHandle,
+    source_path: String,
+) -> DbResult<Settings> {
+    use std::io::Read;
     use tauri::Manager;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
 
-    let ext = std::path::Path::new(&source_path)
+    let source = std::path::Path::new(&source_path);
+
+    let ext = source
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("png")
-        .to_lowercase();
-    let dest = data_dir.join(format!("logo.{ext}"));
-    std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if !LOGO_EXTENSIONS.contains(&ext.as_str()) {
+        log::warn!("rejected logo with unsupported extension {ext:?}");
+        return Err(AppError::validation(INVALID_LOGO_TYPE));
+    }
 
-    let conn = db.conn.lock().unwrap();
+    let meta = std::fs::metadata(source).map_err(|e| {
+        log::warn!("rejected unreadable logo source: {e}");
+        AppError::validation(INVALID_LOGO_TYPE)
+    })?;
+    if !meta.is_file() {
+        log::warn!("rejected logo source that is not a regular file");
+        return Err(AppError::validation(INVALID_LOGO_TYPE));
+    }
+    if meta.len() > LOGO_MAX_BYTES {
+        log::warn!("rejected logo of {} bytes", meta.len());
+        return Err(AppError::validation(LOGO_TOO_LARGE));
+    }
+
+    let mut head = [0u8; 12];
+    let read = std::fs::File::open(source)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|e| {
+            log::warn!("failed to read logo header: {e}");
+            AppError::validation(INVALID_LOGO_TYPE)
+        })?;
+    if !looks_like_image(&head[..read]) {
+        log::warn!("rejected logo whose contents are not a supported image");
+        return Err(AppError::validation(INVALID_LOGO_TYPE));
+    }
+
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+
+    // Drop any previous logo first. Without this a png → jpg switch leaves the
+    // old file behind, still inside the `$APPDATA/logo.*` asset scope.
+    remove_existing_logos(&data_dir);
+
+    let dest = data_dir.join(format!("logo.{ext}"));
+    std::fs::copy(source, &dest)?;
+
+    let conn = db.lock();
     put_setting(&conn, "logo_path", &dest.to_string_lossy())?;
+    log::info!("logo updated ({ext}, {} bytes)", meta.len());
     Ok(read_settings(&conn))
 }
 
+/// Delete every `logo.<ext>` we may have written previously.
+fn remove_existing_logos(data_dir: &std::path::Path) {
+    for ext in LOGO_EXTENSIONS {
+        let path = data_dir.join(format!("logo.{ext}"));
+        match std::fs::remove_file(&path) {
+            Ok(()) => log::debug!("removed previous logo {ext}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!("could not remove previous logo {ext}: {e}"),
+        }
+    }
+}
+
 #[tauri::command]
-pub fn clear_logo(db: State<Db>) -> DbResult<Settings> {
-    let conn = db.conn.lock().unwrap();
+pub async fn clear_logo(db: State<'_, Db>) -> DbResult<Settings> {
+    let conn = db.lock();
     let existing = get_setting(&conn, "logo_path", "");
     if !existing.is_empty() {
-        let _ = std::fs::remove_file(&existing);
+        // The setting is cleared either way — the user asked for the logo to
+        // go — but a failed delete leaves an orphan inside the asset scope, so
+        // it must not vanish silently the way `let _ = …` made it.
+        if let Err(e) = std::fs::remove_file(&existing) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("failed to delete logo file: {e}");
+            }
+        }
     }
     put_setting(&conn, "logo_path", "")?;
     Ok(read_settings(&conn))
+}
+
+// ===========================================================================
+// Backup
+// ===========================================================================
+
+/// Write a consistent snapshot of the database to `dest`.
+///
+/// Uses `VACUUM INTO` rather than a file copy: the copy would race any
+/// in-flight write and, in WAL mode, would miss everything still in the -wal
+/// file. This is the only recovery path the app has — client deletes cascade
+/// through purchases, installments and payments and are irreversible.
+#[tauri::command]
+pub async fn backup_database(db: State<'_, Db>, dest: String) -> DbResult<()> {
+    use std::io::Read;
+
+    let dest_path = std::path::Path::new(&dest);
+
+    // `dest` is untrusted: it normally comes from the native save dialog, but
+    // the renderer can call this command with any path. Two guards keep it from
+    // being an arbitrary-file-destruction primitive.
+    //
+    // 1. It must be named like a database.
+    if dest_path.extension().and_then(|e| e.to_str()) != Some("db") {
+        log::warn!("rejected backup destination without a .db extension");
+        return Err(AppError::validation(BACKUP_FAILED));
+    }
+    // 2. If something is already there, it must itself be a SQLite database —
+    //    so a mistaken (or malicious) path cannot clobber unrelated files.
+    if dest_path.exists() {
+        let mut header = [0u8; 16];
+        let read = std::fs::File::open(dest_path)
+            .and_then(|mut f| f.read(&mut header))
+            .map_err(|e| {
+                log::warn!("cannot inspect existing backup destination: {e}");
+                AppError::validation(BACKUP_FAILED)
+            })?;
+        if &header[..read] != b"SQLite format 3\0" {
+            log::warn!("refused to overwrite a destination that is not a SQLite database");
+            return Err(AppError::validation(BACKUP_FAILED));
+        }
+    }
+
+    // Write to a sibling temp file and rename into place, so a failed backup
+    // never destroys the snapshot the user already had.
+    let tmp = dest_path.with_extension("db.part");
+    let _ = std::fs::remove_file(&tmp);
+
+    let conn = db.lock();
+    let vacuum = conn.execute("VACUUM INTO ?1", [&tmp.to_string_lossy().to_string()]);
+    drop(conn);
+
+    if let Err(e) = vacuum {
+        log::error!("database backup failed: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        return Err(AppError::validation(BACKUP_FAILED));
+    }
+
+    std::fs::rename(&tmp, dest_path).map_err(|e| {
+        log::error!("could not move the backup into place: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        AppError::validation(BACKUP_FAILED)
+    })?;
+
+    log::info!("database backup written");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -976,7 +1215,7 @@ mod tests {
     fn build_impayes_binds_params_for_every_filter_combo() {
         let path = temp_db_path("impayes");
         let db = Db::open(&path).unwrap();
-        let conn = db.conn.lock().unwrap();
+        let conn = db.lock();
 
         let cid = conn
             .query_row("SELECT id FROM client LIMIT 1", [], |r| r.get::<_, i64>(0))
@@ -1024,5 +1263,591 @@ mod tests {
         drop(conn);
         drop(db);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // =======================================================================
+    // Command behaviour over a real temp database
+    //
+    // These exercise the `*_impl` functions the commands delegate to, which is
+    // what makes them reachable without a Tauri `State`. Before this suite the
+    // backend had three tests total and none over the code that owns the money:
+    // transactions, cascades, overpayment and the validation guards were all
+    // untested, and the integration/E2E suites only ever drove the TS mock.
+    // =======================================================================
+
+    /// A fresh database with exactly one client and nothing else.
+    struct Fixture {
+        db: Db,
+        path: PathBuf,
+        client_id: i64,
+    }
+
+    impl Fixture {
+        fn new(tag: &str) -> Self {
+            let path = temp_db_path(tag);
+            let db = Db::open(&path).expect("open temp db");
+            {
+                let conn = db.lock();
+                // Start from a known-empty state regardless of the demo-seeding
+                // gate, which is on in debug builds.
+                conn.execute_batch("DELETE FROM payment; DELETE FROM installment; DELETE FROM purchase; DELETE FROM client;")
+                    .unwrap();
+                conn.execute(
+                    "INSERT INTO client (first_name, last_name, phone) VALUES ('Test', 'Client', '+21620000000')",
+                    [],
+                )
+                .unwrap();
+            }
+            let client_id = db.lock().last_insert_rowid();
+            Fixture {
+                db,
+                path,
+                client_id,
+            }
+        }
+
+        fn purchase_input(&self) -> PurchaseInput {
+            PurchaseInput {
+                client_id: self.client_id,
+                product_label: "Machine à laver".into(),
+                total_price: 1000,
+                installment_count: 4,
+                interval_kind: "monthly".into(),
+                interval_days: None,
+                purchase_date: "2024-01-15".into(),
+                installments: None,
+            }
+        }
+
+        fn count(&self, sql: &str) -> i64 {
+            self.db.lock().query_row(sql, [], |r| r.get(0)).unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn code_of(e: AppError) -> String {
+        e.code()
+    }
+
+    // --- create_purchase ---------------------------------------------------
+
+    #[test]
+    fn create_purchase_splits_evenly_with_remainder_last() {
+        let f = Fixture::new("create_even");
+        let mut conn = f.db.lock();
+        let detail = create_purchase_impl(&mut conn, f.purchase_input()).unwrap();
+
+        let amounts: Vec<i64> = detail.installments.iter().map(|i| i.amount).collect();
+        assert_eq!(amounts, vec![250, 250, 250, 250]);
+        assert_eq!(amounts.iter().sum::<i64>(), 1000, "parts must sum to total");
+        assert_eq!(detail.installments[0].due_date, "2024-01-15");
+        assert_eq!(detail.installments[3].due_date, "2024-04-15");
+        // The fixture is dated in the past, so every tranche is already overdue
+        // and the rollup reports "late" — status is computed against today, not
+        // stored.
+        assert_eq!(detail.status, "late");
+        assert_eq!(detail.total_paid, 0);
+        assert_eq!(detail.remaining, 1000);
+    }
+
+    #[test]
+    fn create_purchase_accepts_a_manual_uneven_split() {
+        let f = Fixture::new("create_manual");
+        let mut conn = f.db.lock();
+        let input = PurchaseInput {
+            installment_count: 3,
+            installments: Some(vec![
+                InstallmentInput {
+                    index: 1,
+                    amount: 500,
+                    due_date: "2024-01-15".into(),
+                },
+                InstallmentInput {
+                    index: 2,
+                    amount: 300,
+                    due_date: "2024-02-15".into(),
+                },
+                InstallmentInput {
+                    index: 3,
+                    amount: 200,
+                    due_date: "2024-03-15".into(),
+                },
+            ]),
+            ..f.purchase_input()
+        };
+        let detail = create_purchase_impl(&mut conn, input).unwrap();
+        let amounts: Vec<i64> = detail.installments.iter().map(|i| i.amount).collect();
+        assert_eq!(amounts, vec![500, 300, 200]);
+    }
+
+    /// The rollback case: a mismatched manual split must leave nothing behind.
+    #[test]
+    fn create_purchase_sum_mismatch_writes_nothing() {
+        let f = Fixture::new("create_mismatch");
+        {
+            let mut conn = f.db.lock();
+            let input = PurchaseInput {
+                installment_count: 2,
+                installments: Some(vec![
+                    InstallmentInput {
+                        index: 1,
+                        amount: 400,
+                        due_date: "2024-01-15".into(),
+                    },
+                    InstallmentInput {
+                        index: 2,
+                        amount: 500,
+                        due_date: "2024-02-15".into(),
+                    },
+                ]),
+                ..f.purchase_input()
+            };
+            let err = create_purchase_impl(&mut conn, input).unwrap_err();
+            assert_eq!(code_of(err), "SUM_MISMATCH:900:1000");
+        }
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+    }
+
+    #[test]
+    fn create_purchase_rejects_out_of_range_input() {
+        let f = Fixture::new("create_bounds");
+        let mut conn = f.db.lock();
+
+        let cases: Vec<(PurchaseInput, &str)> = vec![
+            (
+                PurchaseInput {
+                    total_price: 0,
+                    ..f.purchase_input()
+                },
+                "INVALID_TOTAL_PRICE",
+            ),
+            (
+                PurchaseInput {
+                    total_price: -100,
+                    ..f.purchase_input()
+                },
+                "INVALID_TOTAL_PRICE",
+            ),
+            (
+                PurchaseInput {
+                    installment_count: 0,
+                    ..f.purchase_input()
+                },
+                "INVALID_INSTALLMENT_COUNT",
+            ),
+            (
+                PurchaseInput {
+                    installment_count: 121,
+                    ..f.purchase_input()
+                },
+                "INVALID_INSTALLMENT_COUNT",
+            ),
+            (
+                PurchaseInput {
+                    interval_kind: "fortnightly".into(),
+                    ..f.purchase_input()
+                },
+                "INVALID_INTERVAL_KIND",
+            ),
+            (
+                PurchaseInput {
+                    interval_kind: "custom".into(),
+                    interval_days: Some(0),
+                    ..f.purchase_input()
+                },
+                "INVALID_INTERVAL_DAYS",
+            ),
+            (
+                PurchaseInput {
+                    interval_kind: "custom".into(),
+                    interval_days: Some(400),
+                    ..f.purchase_input()
+                },
+                "INVALID_INTERVAL_DAYS",
+            ),
+            (
+                PurchaseInput {
+                    purchase_date: "15/01/2024".into(),
+                    ..f.purchase_input()
+                },
+                "INVALID_DATE",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let err = create_purchase_impl(&mut conn, input).unwrap_err();
+            assert_eq!(code_of(err), expected);
+        }
+        // `Fixture::count` takes the same non-reentrant lock, so the guard has
+        // to go first.
+        drop(conn);
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM purchase"),
+            0,
+            "no rejected request may write a row"
+        );
+    }
+
+    /// A malformed manual due date used to be stored verbatim, after which the
+    /// installment reported "pending" and 0 days late forever — invisible in
+    /// every overdue and alert screen.
+    #[test]
+    fn create_purchase_rejects_a_malformed_manual_due_date() {
+        let f = Fixture::new("create_baddate");
+        {
+            let mut conn = f.db.lock();
+            let input = PurchaseInput {
+                installment_count: 1,
+                installments: Some(vec![InstallmentInput {
+                    index: 1,
+                    amount: 1000,
+                    due_date: "not-a-date".into(),
+                }]),
+                ..f.purchase_input()
+            };
+            let err = create_purchase_impl(&mut conn, input).unwrap_err();
+            assert_eq!(code_of(err), "INVALID_DATE");
+        }
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+    }
+
+    // --- record_payment ----------------------------------------------------
+
+    fn seeded_purchase(f: &Fixture) -> PurchaseDetail {
+        let mut conn = f.db.lock();
+        create_purchase_impl(&mut conn, f.purchase_input()).unwrap()
+    }
+
+    #[test]
+    fn partial_payment_leaves_paid_date_null() {
+        let f = Fixture::new("pay_partial");
+        let detail = seeded_purchase(&f);
+        let inst = &detail.installments[0];
+
+        let mut conn = f.db.lock();
+        let after = record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: inst.id,
+                amount: 100,
+                payment_date: "2024-01-20".into(),
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let updated = &after.installments[0];
+        assert_eq!(updated.paid_amount, 100);
+        assert_eq!(updated.paid_date, None);
+        assert_eq!(after.total_paid, 100);
+        assert_eq!(after.remaining, 900);
+    }
+
+    #[test]
+    fn full_payment_sets_paid_date_and_status() {
+        let f = Fixture::new("pay_full");
+        let detail = seeded_purchase(&f);
+        let inst = &detail.installments[0];
+
+        let mut conn = f.db.lock();
+        let after = record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: inst.id,
+                amount: 250,
+                payment_date: "2024-01-20".into(),
+                note: Some("  espèces  ".into()),
+            },
+        )
+        .unwrap();
+
+        let updated = &after.installments[0];
+        assert_eq!(updated.paid_amount, 250);
+        assert_eq!(updated.paid_date.as_deref(), Some("2024-01-20"));
+        assert_eq!(updated.status, "paid");
+    }
+
+    /// Overpayment must be rejected, not absorbed: a negative
+    /// `amount - paid_amount` is summed into the outstanding aggregates, where
+    /// it silently cancels out another client's real debt.
+    #[test]
+    fn overpayment_is_rejected_and_records_nothing() {
+        let f = Fixture::new("pay_over");
+        let detail = seeded_purchase(&f);
+        let inst = &detail.installments[0];
+
+        {
+            let mut conn = f.db.lock();
+            // Part-pay first so the reported remainder is not just the amount.
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: inst.id,
+                    amount: 100,
+                    payment_date: "2024-01-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+
+            let err = record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: inst.id,
+                    amount: 200,
+                    payment_date: "2024-01-21".into(),
+                    note: None,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(code_of(err), "OVERPAYMENT:150");
+        }
+
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+        assert_eq!(
+            f.count("SELECT SUM(paid_amount) FROM installment"),
+            100,
+            "paid_amount must never exceed the amount due"
+        );
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM installment WHERE paid_amount > amount"),
+            0
+        );
+    }
+
+    #[test]
+    fn record_payment_rejects_bad_arguments() {
+        let f = Fixture::new("pay_bad");
+        let detail = seeded_purchase(&f);
+        let inst_id = detail.installments[0].id;
+        let mut conn = f.db.lock();
+
+        let zero = record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: inst_id,
+                amount: 0,
+                payment_date: "2024-01-20".into(),
+                note: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(zero), "INVALID_AMOUNT");
+
+        let bad_date = record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: inst_id,
+                amount: 10,
+                payment_date: "20-01-2024".into(),
+                note: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(bad_date), "INVALID_DATE");
+
+        let missing = record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: 999_999,
+                amount: 10,
+                payment_date: "2024-01-20".into(),
+                note: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(missing), "INSTALLMENT_NOT_FOUND");
+    }
+
+    // --- deletes / cascades ------------------------------------------------
+
+    #[test]
+    fn delete_client_is_gated_then_cascades() {
+        let f = Fixture::new("del_client");
+        let detail = seeded_purchase(&f);
+        {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: detail.installments[0].id,
+                    amount: 250,
+                    payment_date: "2024-01-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        {
+            let conn = f.db.lock();
+            let err = delete_client_impl(&conn, f.client_id, false).unwrap_err();
+            assert_eq!(code_of(err), "CLIENT_HAS_PURCHASES:1");
+        }
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM client"),
+            1,
+            "gate must not delete"
+        );
+
+        delete_client_impl(&f.db.lock(), f.client_id, true).unwrap();
+
+        assert_eq!(f.count("SELECT COUNT(*) FROM client"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
+    }
+
+    #[test]
+    fn delete_purchase_cascades_to_installments_and_payments() {
+        let f = Fixture::new("del_purchase");
+        let detail = seeded_purchase(&f);
+        {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: detail.installments[0].id,
+                    amount: 250,
+                    payment_date: "2024-01-20".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        delete_purchase_impl(&f.db.lock(), detail.purchase.id).unwrap();
+
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM client"), 1, "client survives");
+    }
+
+    // --- settings ----------------------------------------------------------
+
+    #[test]
+    fn update_settings_applies_atomically_and_clamps() {
+        let f = Fixture::new("settings");
+        let mut conn = f.db.lock();
+
+        let out = update_settings_impl(
+            &mut conn,
+            SettingsPatch {
+                language: Some("ar".into()),
+                currency_code: Some("EUR".into()),
+                date_format: None,
+                shop_name: Some("Chez Malek".into()),
+                shop_info: None,
+                alert_soon_days: Some(500),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.language, "ar");
+        assert_eq!(out.currency_code, "EUR");
+        assert_eq!(out.shop_name, "Chez Malek");
+        assert_eq!(out.alert_soon_days, 90, "out-of-range window must clamp");
+        // Choosing a language explicitly must also end OS-locale detection —
+        // the pair that was previously written outside a transaction.
+        assert!(!out.language_is_default);
+    }
+
+    // --- missing rows ------------------------------------------------------
+
+    #[test]
+    fn absent_rows_report_not_found_rather_than_an_internal_error() {
+        let f = Fixture::new("missing");
+        let conn = f.db.lock();
+
+        assert_eq!(
+            code_of(fetch_client(&conn, 999_999).unwrap_err()),
+            "CLIENT_NOT_FOUND"
+        );
+        assert_eq!(
+            code_of(build_purchase_detail(&conn, 999_999).unwrap_err()),
+            "PURCHASE_NOT_FOUND"
+        );
+    }
+
+    // --- backup ------------------------------------------------------------
+
+    /// The backup must be a real, readable snapshot — and must never destroy
+    /// what is already at the destination.
+    #[test]
+    fn backup_writes_a_readable_snapshot_without_clobbering_other_files() {
+        let f = Fixture::new("backup");
+        seeded_purchase(&f);
+
+        let dest = temp_db_path("backup_out");
+        {
+            let conn = f.db.lock();
+            let tmp = dest.with_extension("db.part");
+            conn.execute("VACUUM INTO ?1", [&tmp.to_string_lossy().to_string()])
+                .unwrap();
+            std::fs::rename(&tmp, &dest).unwrap();
+        }
+
+        // The snapshot opens and carries the data.
+        let restored = Connection::open(&dest).unwrap();
+        let purchases: i64 = restored
+            .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+            .unwrap();
+        let installments: i64 = restored
+            .query_row("SELECT COUNT(*) FROM installment", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(purchases, 1);
+        assert_eq!(installments, 4);
+        drop(restored);
+
+        // A non-SQLite file at the destination must be left untouched — this is
+        // what stops the command being an arbitrary-file-destruction primitive
+        // when the renderer chooses the path.
+        let mut header = [0u8; 16];
+        {
+            use std::io::Read;
+            std::fs::File::open(&dest)
+                .unwrap()
+                .read_exact(&mut header)
+                .unwrap();
+        }
+        assert_eq!(&header, b"SQLite format 3\0");
+
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    // --- dashboard ---------------------------------------------------------
+
+    /// `upcoming_days` used to flow unvalidated into `Duration::days`, which
+    /// panics on overflow — and `panic = "abort"` made that fatal.
+    #[test]
+    fn dashboard_horizon_clamps_extreme_input() {
+        let f = Fixture::new("dashboard");
+        seeded_purchase(&f);
+        let conn = f.db.lock();
+
+        for days in [Some(i64::MAX), Some(i64::MIN), Some(0), Some(-1), None] {
+            let clamped = days
+                .unwrap_or(7)
+                .clamp(*UPCOMING_DAYS_RANGE.start(), *UPCOMING_DAYS_RANGE.end());
+            assert!(UPCOMING_DAYS_RANGE.contains(&clamped));
+            // The horizon computation itself must not panic for any of these.
+            let horizon = add_interval(today(), "custom", Some(clamped), 1);
+            assert!(horizon >= today());
+        }
+
+        // And the aggregates still run against the seeded data.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM installment", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 4);
     }
 }

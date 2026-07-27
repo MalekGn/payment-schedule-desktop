@@ -5,7 +5,9 @@ import { useRouter } from "vue-router";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { Payment } from "@/types/models";
@@ -14,7 +16,6 @@ const { t } = useI18n();
 const router = useRouter();
 const fmt = useFormat();
 const payments = ref<Payment[]>([]);
-const loading = ref(true);
 
 const search = ref("");
 const amountMin = ref("");
@@ -46,65 +47,77 @@ const { sort, sorted } = useSort(filtered, {
   note: (p) => p.note,
 });
 
-onMounted(async () => {
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   payments.value = await api.listAllPayments();
-  loading.value = false;
 });
+onMounted(load);
 </script>
 
 <template>
   <div class="page">
-    <div class="card">
-      <div class="card-header">
-        <h2>{{ t("paiements.title") }}</h2>
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
+
+    <template v-else>
+      <div class="card">
+        <div class="card-header">
+          <h2>{{ t("paiements.title") }}</h2>
+        </div>
+        <ListFilterBar
+          v-model:search="search"
+          v-model:amount-min="amountMin"
+          v-model:amount-max="amountMax"
+          v-model:date-from="dateFrom"
+          v-model:date-to="dateTo"
+          show-amount
+        />
+        <p class="partial-note">{{ t("paiements.partialInfo") }}</p>
+        <EmptyState
+          v-if="!loading && filtered.length === 0"
+          icon="card"
+          :title="t('paiements.empty')"
+        />
+        <table v-else class="table">
+          <thead>
+            <tr>
+              <SortHeader :sort="sort" field="date" :label="t('paiements.columns.date')" />
+              <SortHeader
+                :sort="sort"
+                field="reference"
+                :label="t('paiements.columns.reference')"
+              />
+              <SortHeader :sort="sort" field="client" :label="t('common.client')" />
+              <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
+              <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
+              <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="pay in sorted" :key="pay.id">
+              <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
+              <td>
+                <a
+                  class="row-link"
+                  href="#"
+                  @click.prevent="
+                    router.push({ name: 'achat-detail', params: { id: pay.purchaseId } })
+                  "
+                >
+                  {{ pay.purchaseReference }}
+                </a>
+              </td>
+              <td>{{ pay.clientName }}</td>
+              <td class="tabular">{{ pay.installmentIndex }}</td>
+              <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
+              <td class="muted">{{ pay.note || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <ListFilterBar
-        v-model:search="search"
-        v-model:amount-min="amountMin"
-        v-model:amount-max="amountMax"
-        v-model:date-from="dateFrom"
-        v-model:date-to="dateTo"
-        show-amount
-      />
-      <p class="partial-note">{{ t("paiements.partialInfo") }}</p>
-      <EmptyState
-        v-if="!loading && filtered.length === 0"
-        icon="card"
-        :title="t('paiements.empty')"
-      />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="date" :label="t('paiements.columns.date')" />
-            <SortHeader :sort="sort" field="reference" :label="t('paiements.columns.reference')" />
-            <SortHeader :sort="sort" field="client" :label="t('common.client')" />
-            <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
-            <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
-            <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="pay in sorted" :key="pay.id">
-            <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
-            <td>
-              <a
-                class="row-link"
-                href="#"
-                @click.prevent="
-                  router.push({ name: 'achat-detail', params: { id: pay.purchaseId } })
-                "
-              >
-                {{ pay.purchaseReference }}
-              </a>
-            </td>
-            <td>{{ pay.clientName }}</td>
-            <td class="tabular">{{ pay.installmentIndex }}</td>
-            <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
-            <td class="muted">{{ pay.note || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    </template>
   </div>
 </template>
 

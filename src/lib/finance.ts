@@ -24,7 +24,15 @@ export function dayDiff(a: string, b: string): number {
   return Math.round(ms / 86_400_000);
 }
 
-/** Add `k` intervals to an ISO date. Monthly clamps to end-of-month. */
+/**
+ * Add `k` intervals to an ISO date. Monthly clamps to end-of-month.
+ *
+ * Saturates to `date` when the result would fall outside the representable
+ * range, matching the checked arithmetic in `add_interval` in `db.rs`. Without
+ * the guard an extreme `intervalDays` produced an `Invalid Date` here and a
+ * *panic* on the Rust side — and with `panic = "abort"` in the release profile
+ * that aborted the whole app.
+ */
 export function addInterval(
   date: string,
   kind: IntervalKind,
@@ -32,22 +40,24 @@ export function addInterval(
   k: number,
 ): string {
   const d = parseIso(date);
-  if (kind === "weekly") {
-    d.setUTCDate(d.getUTCDate() + 7 * k);
-    return isoDate(d);
-  }
-  if (kind === "custom") {
-    d.setUTCDate(d.getUTCDate() + (intervalDays ?? 30) * k);
-    return isoDate(d);
-  }
+  const shifted = (days: number): string => {
+    const out = new Date(d.getTime());
+    out.setUTCDate(out.getUTCDate() + days);
+    return Number.isNaN(out.getTime()) ? date : isoDate(out);
+  };
+
+  if (kind === "weekly") return shifted(7 * k);
+  if (kind === "custom") return shifted((intervalDays ?? 30) * k);
+
   // monthly, with end-of-month clamping
   const day = d.getUTCDate();
   const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + k, 1));
+  if (Number.isNaN(target.getTime())) return date;
   const lastDay = new Date(
     Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
   ).getUTCDate();
   target.setUTCDate(Math.min(day, lastDay));
-  return isoDate(target);
+  return Number.isNaN(target.getTime()) ? date : isoDate(target);
 }
 
 /**

@@ -54,7 +54,8 @@
     "note": "Note",
     "all": "All",
     "currency": "{amount} {code}",
-    "none": "—"
+    "none": "—",
+    "retry": "Retry"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -306,7 +307,11 @@
     "noLogo": "No logo",
     "shopName": "Shop name",
     "shopInfo": "Contact / information",
-    "shopInfoPlaceholder": "Address, phone, tax ID…"
+    "shopInfoPlaceholder": "Address, phone, tax ID…",
+    "backup": "Backup",
+    "backupHint": "Save a copy of your database. Deleting a client also deletes their purchases and payments, and that cannot be undone.",
+    "backupAction": "Backup database",
+    "backupDone": "Backup saved."
   },
   "validation": {
     "required": "This field is required.",
@@ -319,8 +324,23 @@
   },
   "errors": {
     "generic": "Something went wrong.",
-    "clientHasPurchases": "This client has purchases.",
-    "loadFailed": "Failed to load data."
+    "internal": "Something went wrong. Please try again.",
+    "loadFailed": "Failed to load data.",
+    "clientHasPurchases": "This client has {count} purchase(s).",
+    "clientNotFound": "This client no longer exists.",
+    "purchaseNotFound": "This purchase no longer exists.",
+    "installmentNotFound": "This installment no longer exists.",
+    "invalidDate": "Please enter a valid date.",
+    "invalidTotalPrice": "The total price must be greater than zero.",
+    "invalidInstallmentCount": "The number of installments must be between 1 and 120.",
+    "invalidIntervalKind": "Unknown payment interval.",
+    "invalidIntervalDays": "The custom interval must be between 1 and 365 days.",
+    "invalidAmount": "The amount must be greater than zero.",
+    "sumMismatch": "The installments add up to {sum}, but the total is {total}.",
+    "overpayment": "That is more than this installment still owes ({remaining}).",
+    "invalidLogoType": "Choose a PNG, JPG, WEBP or GIF image.",
+    "logoTooLarge": "The image is too large (5 MB maximum).",
+    "backupFailed": "The backup could not be saved."
   },
   "filters": {
     "date": "Filter by date",

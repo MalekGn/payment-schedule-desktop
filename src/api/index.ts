@@ -107,6 +107,15 @@ export const api = {
   clearLogo: (): Promise<Settings> =>
     isTauri() ? invoke("clear_logo") : Promise.resolve(mockDb.clearLogo()),
 
+  /**
+   * Write a consistent snapshot of the database to `dest`.
+   *
+   * The only recovery path the app has: deleting a client cascades through
+   * their purchases, installments and payments, and cannot be undone.
+   */
+  backupDatabase: (dest: string): Promise<void> =>
+    isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),
+
   // -- system --
   /**
    * Hand a URI to the OS default handler (`tel:`, `sms:` — the capability scope

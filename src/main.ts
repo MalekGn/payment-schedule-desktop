@@ -15,5 +15,15 @@ app.use(router);
 
 // Load persisted settings (language, currency, date format, logo) and apply the
 // locale/direction before the first paint, then mount.
+//
+// Mounting is unconditional: a settings failure means the app falls back to its
+// defaults, which is far better than a blank window. `.finally()` alone left the
+// rejection unhandled, so the reason never surfaced anywhere — hence the
+// explicit catch.
 const settings = useSettingsStore(pinia);
-settings.load().finally(() => app.mount("#app"));
+settings
+  .load()
+  .catch((e: unknown) => {
+    console.error("failed to load settings; starting with defaults:", e);
+  })
+  .finally(() => app.mount("#app"));

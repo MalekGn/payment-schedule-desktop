@@ -31,6 +31,42 @@ import type {
   SettingsPatch,
 } from "@/types/models";
 
+// --- validation, mirroring src-tauri/src/commands.rs -----------------------
+//
+// These bounds are not cosmetic on the Rust side: `installmentCount` sizes an
+// allocation and an insert loop, and `intervalDays` is multiplied by the
+// installment index before reaching date math. The mock has to reject the same
+// inputs with the same codes, otherwise the integration and E2E suites would
+// pass against behaviour the real backend does not have.
+
+const INTERVAL_KINDS = ["weekly", "monthly", "custom"];
+const INSTALLMENT_COUNT_MAX = 120;
+const INTERVAL_DAYS_MIN = 1;
+const INTERVAL_DAYS_MAX = 365;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Throw `INVALID_DATE` unless `value` is a real `YYYY-MM-DD` calendar date. */
+function assertIsoDate(value: string): void {
+  if (!ISO_DATE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+    throw new Error("INVALID_DATE");
+  }
+}
+
+function validatePurchaseInput(input: PurchaseInput): void {
+  if (input.totalPrice <= 0) throw new Error("INVALID_TOTAL_PRICE");
+  if (input.installmentCount < 1 || input.installmentCount > INSTALLMENT_COUNT_MAX) {
+    throw new Error("INVALID_INSTALLMENT_COUNT");
+  }
+  if (!INTERVAL_KINDS.includes(input.intervalKind)) throw new Error("INVALID_INTERVAL_KIND");
+  if (input.intervalKind === "custom") {
+    const days = input.intervalDays ?? 30;
+    if (days < INTERVAL_DAYS_MIN || days > INTERVAL_DAYS_MAX) {
+      throw new Error("INVALID_INTERVAL_DAYS");
+    }
+  }
+  assertIsoDate(input.purchaseDate);
+}
+
 interface ClientRow {
   id: number;
   firstName: string;
@@ -78,6 +114,7 @@ class MockDb {
   settings: Record<string, string> = {};
   /** Last URI passed to `openExternal`, for assertions in tests. */
   lastExternalUrl: string | null = null;
+  lastBackupPath: string | null = null;
   private seq = { client: 0, purchase: 0, installment: 0, payment: 0 };
 
   constructor() {
@@ -427,7 +464,28 @@ class MockDb {
   }
 
   createPurchase(input: PurchaseInput): PurchaseDetail {
-    if (input.installmentCount < 1) throw new Error("INVALID_INSTALLMENT_COUNT");
+    validatePurchaseInput(input);
+
+    // Resolve amounts and due dates before mutating anything, so a rejected
+    // request leaves no half-created purchase behind — the mock's stand-in for
+    // the Rust side's transaction.
+    let amounts: number[];
+    let dueDates: string[];
+    if (input.installments && input.installments.length > 0) {
+      const sum = input.installments.reduce((s, i) => s + i.amount, 0);
+      if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
+      amounts = input.installments.map((i) => i.amount);
+      dueDates = input.installments.map((i) => {
+        assertIsoDate(i.dueDate);
+        return i.dueDate;
+      });
+    } else {
+      amounts = splitAmounts(input.totalPrice, input.installmentCount);
+      dueDates = amounts.map((_, i) =>
+        addInterval(input.purchaseDate, input.intervalKind, input.intervalDays, i),
+      );
+    }
+
     const id = this.nextId("purchase");
     this.purchases.push({
       id,
@@ -442,19 +500,6 @@ class MockDb {
       createdAt: todayIso(),
     });
 
-    let amounts: number[];
-    let dueDates: string[];
-    if (input.installments && input.installments.length > 0) {
-      const sum = input.installments.reduce((s, i) => s + i.amount, 0);
-      if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
-      amounts = input.installments.map((i) => i.amount);
-      dueDates = input.installments.map((i) => i.dueDate);
-    } else {
-      amounts = splitAmounts(input.totalPrice, input.installmentCount);
-      dueDates = amounts.map((_, i) =>
-        addInterval(input.purchaseDate, input.intervalKind, input.intervalDays, i),
-      );
-    }
     amounts.forEach((amount, i) => {
       this.installments.push({
         id: this.nextId("installment"),
@@ -478,8 +523,13 @@ class MockDb {
 
   recordPayment(input: PaymentInput): PurchaseDetail {
     if (input.amount <= 0) throw new Error("INVALID_AMOUNT");
+    assertIsoDate(input.paymentDate);
     const inst = this.installments.find((i) => i.id === input.installmentId);
     if (!inst) throw new Error("INSTALLMENT_NOT_FOUND");
+    // Mirrors the Rust guard: an uncapped paidAmount makes `amount - paidAmount`
+    // negative, which then cancels out other clients' debt in the aggregates.
+    const remaining = inst.amount - inst.paidAmount;
+    if (input.amount > remaining) throw new Error(`OVERPAYMENT:${Math.max(remaining, 0)}`);
     this.payments.push({
       id: this.nextId("payment"),
       installmentId: inst.id,
@@ -674,6 +724,14 @@ class MockDb {
   clearLogo(): Settings {
     this.settings.logo_path = "";
     return this.getSettings();
+  }
+
+  /**
+   * Browser stand-in for the `VACUUM INTO` snapshot. There is no file to write
+   * here, so this only records the destination for tests to assert on.
+   */
+  backupDatabase(dest: string): void {
+    this.lastBackupPath = dest;
   }
 
   // -- system --

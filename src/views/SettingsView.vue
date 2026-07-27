@@ -13,7 +13,8 @@ import { useUiStore } from "@/stores/ui";
 import { SUPPORTED_LOCALES, type AppLocale } from "@/i18n";
 import { resolveLogoSrc } from "@/lib/assets";
 import { formatDatePattern } from "@/composables/useFormat";
-import { isTauri } from "@/api";
+import { api, isTauri } from "@/api";
+import { toUserMessage } from "@/lib/errors";
 import { todayIso } from "@/lib/finance";
 
 const { t } = useI18n();
@@ -25,6 +26,22 @@ const shopInfo = ref(settings.settings.shopInfo);
 const alertSoonDays = ref(settings.settings.alertSoonDays);
 const fileInput = ref<HTMLInputElement | null>(null);
 
+/**
+ * Run a settings mutation and report the outcome honestly.
+ *
+ * Every handler on this page used to call `ui.notify(t("settings.saved"))`
+ * unconditionally, so a rejected write still told the user their change had
+ * been persisted.
+ */
+async function save(mutate: () => Promise<void>, successKey = "settings.saved") {
+  try {
+    await mutate();
+    ui.notify(t(successKey));
+  } catch (e) {
+    ui.notify(toUserMessage(e, t), "error");
+  }
+}
+
 const LANGUAGE_LABELS: Record<AppLocale, string> = {
   fr: "Français",
   en: "English",
@@ -33,18 +50,17 @@ const LANGUAGE_LABELS: Record<AppLocale, string> = {
 
 async function onLanguage(e: Event) {
   const lang = (e.target as HTMLSelectElement).value as AppLocale;
-  await settings.setLanguage(lang);
-  ui.notify(t("settings.saved"));
+  await save(() => settings.setLanguage(lang));
 }
 
 async function onCurrency(e: Event) {
-  await settings.update({ currencyCode: (e.target as HTMLSelectElement).value });
-  ui.notify(t("settings.saved"));
+  const currencyCode = (e.target as HTMLSelectElement).value;
+  await save(() => settings.update({ currencyCode }));
 }
 
 async function onDateFormat(e: Event) {
-  await settings.update({ dateFormat: (e.target as HTMLSelectElement).value });
-  ui.notify(t("settings.saved"));
+  const dateFormat = (e.target as HTMLSelectElement).value;
+  await save(() => settings.update({ dateFormat }));
 }
 
 async function onAlertSoonDays() {
@@ -54,13 +70,11 @@ async function onAlertSoonDays() {
     ? Math.min(ALERT_SOON_DAYS_MAX, Math.max(ALERT_SOON_DAYS_MIN, raw))
     : settings.alertSoonDays;
   alertSoonDays.value = value;
-  await settings.update({ alertSoonDays: value });
-  ui.notify(t("settings.saved"));
+  await save(() => settings.update({ alertSoonDays: value }));
 }
 
 async function saveShop() {
-  await settings.update({ shopName: shopName.value, shopInfo: shopInfo.value });
-  ui.notify(t("settings.saved"));
+  await save(() => settings.update({ shopName: shopName.value, shopInfo: shopInfo.value }));
 }
 
 async function pickLogo() {
@@ -71,8 +85,7 @@ async function pickLogo() {
       filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
     });
     if (typeof selected === "string") {
-      await settings.setLogoFromPath(selected);
-      ui.notify(t("settings.saved"));
+      await save(() => settings.setLogoFromPath(selected));
     }
   } else {
     fileInput.value?.click();
@@ -84,15 +97,30 @@ function onFileChosen(e: Event) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = async () => {
-    await settings.setLogoFromPath(String(reader.result));
-    ui.notify(t("settings.saved"));
+    await save(() => settings.setLogoFromPath(String(reader.result)));
   };
   reader.readAsDataURL(file);
 }
 
 async function removeLogo() {
-  await settings.clearLogo();
-  ui.notify(t("settings.saved"));
+  await save(() => settings.clearLogo());
+}
+
+/**
+ * Write a snapshot of the database to a location the user picks.
+ *
+ * The only recovery path in the app: deleting a client cascades through their
+ * purchases, installments and payments and cannot be undone.
+ */
+async function backupDatabase() {
+  if (!isTauri()) return;
+  const { save: saveDialog } = await import("@tauri-apps/plugin-dialog");
+  const dest = await saveDialog({
+    defaultPath: `payment-schedule-${todayIso()}.db`,
+    filters: [{ name: "SQLite", extensions: ["db"] }],
+  });
+  if (typeof dest !== "string") return;
+  await save(() => api.backupDatabase(dest), "settings.backupDone");
 }
 
 function dateSample(pattern: string): string {
@@ -205,6 +233,22 @@ function dateSample(pattern: string): string {
         <button class="btn btn--primary" type="button" @click="saveShop">
           {{ t("common.saveChanges") }}
         </button>
+      </div>
+    </section>
+
+    <!-- Desktop only: there is no database file to snapshot in the browser
+         preview, which runs against the in-memory mock. -->
+    <section v-if="isTauri()" class="card set-card">
+      <div class="card-header">
+        <h2>{{ t("settings.backup") }}</h2>
+      </div>
+      <div class="set-body">
+        <div class="field">
+          <button class="btn btn--ghost" type="button" @click="backupDatabase">
+            <AppIcon name="download" :size="16" /> {{ t("settings.backupAction") }}
+          </button>
+          <span class="hint">{{ t("settings.backupHint") }}</span>
+        </div>
       </div>
     </section>
   </div>

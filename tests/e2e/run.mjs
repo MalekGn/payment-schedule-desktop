@@ -781,6 +781,60 @@ test("a deleted record's detail page offers a mirrored way back", async (page) =
   );
 });
 
+test("a rejected payment shows a localized message, never a raw backend error", async (page) => {
+  // The regression this pins: the modal used to render `String(e)` verbatim, so
+  // a backend rejection put an unlocalized machine string (and, against the real
+  // Rust backend, raw SQL text) in front of the user.
+  //
+  // Seed purchase A-000001: 2400 over 6 monthly tranches of 400, tranche 1 paid.
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 2 has 400 outstanding — try to pay more than that.
+  await page.locator(".inst-table .btn--primary").first().click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  await page.locator("#pay-amount").fill("1000");
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+
+  // The modal stays open and reports the problem inline.
+  const error = dialog.locator(".field-error").first();
+  await error.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await error.innerText()).trim();
+
+  assert(text.length > 0, "a rejected payment must show a message");
+  assert(
+    !/OVERPAYMENT|INVALID_|SUM_MISMATCH|INTERNAL/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  assert(
+    !/constraint failed|SELECT |INSERT |sqlite/i.test(text),
+    `message must not leak backend internals; got: ${text}`,
+  );
+  assert(/400/.test(text), `message should name the remaining balance (400); got: ${text}`);
+
+  // And nothing was recorded.
+  await dialog
+    .getByRole("button", { name: "Annuler" })
+    .click()
+    .catch(() => {});
+});
+
+test("settings exposes a database backup action", async (page) => {
+  await open(page, "/parametres");
+  await page.locator(".set-card").first().waitFor({ timeout: 10000 });
+
+  // The backup card is desktop-only — it needs a real database file, so it is
+  // hidden in the browser build this suite drives. Assert the guard holds
+  // rather than asserting a control that must not be here.
+  assertEqual(
+    await page.locator(".set-card", { hasText: "Sauvegarde" }).count(),
+    0,
+    "backup card must be hidden outside the Tauri runtime",
+  );
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {

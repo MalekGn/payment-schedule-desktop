@@ -6,6 +6,7 @@ import DatePicker from "@/components/ui/DatePicker.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
+import { toUserMessage } from "@/lib/errors";
 import { api } from "@/api";
 import { addInterval, splitAmounts, todayIso } from "@/lib/finance";
 import type { ClientSummary, IntervalKind, PurchaseDetail } from "@/types/models";
@@ -133,7 +134,7 @@ async function submit() {
     ui.notify(t("common.save"));
     emit("saved", detail);
   } catch (e) {
-    ui.notify(String(e), "error");
+    ui.notify(toUserMessage(e, t), "error");
   } finally {
     saving.value = false;
   }

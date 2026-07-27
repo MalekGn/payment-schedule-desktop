@@ -8,7 +8,9 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
 import NewPurchaseModal from "@/components/NewPurchaseModal.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { PurchaseDetail, PurchaseSummary } from "@/types/models";
@@ -22,7 +24,6 @@ const purchases = ref<PurchaseSummary[]>([]);
 const search = ref("");
 const dateFrom = ref("");
 const dateTo = ref("");
-const loading = ref(true);
 const showModal = ref(false);
 
 const filtered = computed(() => {
@@ -47,11 +48,13 @@ const { sort, sorted } = useSort(filtered, {
   status: (p) => p.status,
 });
 
-async function load() {
-  loading.value = true;
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   purchases.value = await api.listPurchases();
-  loading.value = false;
-}
+});
 
 onMounted(() => {
   load();
@@ -69,60 +72,64 @@ function onSaved(detail: PurchaseDetail) {
 
 <template>
   <div class="page">
-    <div class="card">
-      <div class="card-header">
-        <h2>{{ t("achats.title") }}</h2>
-        <button class="btn btn--primary" type="button" @click="showModal = true">
-          <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
-        </button>
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
+
+    <template v-else>
+      <div class="card">
+        <div class="card-header">
+          <h2>{{ t("achats.title") }}</h2>
+          <button class="btn btn--primary" type="button" @click="showModal = true">
+            <AppIcon name="plus" :size="18" /> {{ t("achats.new") }}
+          </button>
+        </div>
+
+        <ListFilterBar
+          v-model:search="search"
+          v-model:date-from="dateFrom"
+          v-model:date-to="dateTo"
+          :search-placeholder="t('achats.searchPlaceholder')"
+        />
+
+        <EmptyState
+          v-if="!loading && purchases.length === 0"
+          icon="cart"
+          :title="t('achats.empty')"
+        />
+        <table v-else class="table">
+          <thead>
+            <tr>
+              <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
+              <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
+              <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
+              <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
+              <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
+              <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
+              <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in sorted"
+              :key="p.id"
+              class="clickable"
+              @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
+            >
+              <td>
+                <span class="row-link">{{ p.reference }}</span>
+              </td>
+              <td>{{ p.clientName }}</td>
+              <td class="ellipsis">{{ p.productLabel }}</td>
+              <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
+              <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
+              <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
+              <td><StatusBadge :status="p.status" /></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
-      <ListFilterBar
-        v-model:search="search"
-        v-model:date-from="dateFrom"
-        v-model:date-to="dateTo"
-        :search-placeholder="t('achats.searchPlaceholder')"
-      />
-
-      <EmptyState
-        v-if="!loading && purchases.length === 0"
-        icon="cart"
-        :title="t('achats.empty')"
-      />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
-            <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
-            <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
-            <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
-            <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
-            <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
-            <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="p in sorted"
-            :key="p.id"
-            class="clickable"
-            @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
-          >
-            <td>
-              <span class="row-link">{{ p.reference }}</span>
-            </td>
-            <td>{{ p.clientName }}</td>
-            <td class="ellipsis">{{ p.productLabel }}</td>
-            <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
-            <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
-            <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
-            <td><StatusBadge :status="p.status" /></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <NewPurchaseModal v-if="showModal" @close="showModal = false" @saved="onSaved" />
+      <NewPurchaseModal v-if="showModal" @close="showModal = false" @saved="onSaved" />
+    </template>
   </div>
 </template>
 

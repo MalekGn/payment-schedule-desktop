@@ -12,17 +12,9 @@
     "core:event:default",
     "dialog:default",
     "dialog:allow-open",
+    "dialog:allow-save",
     "os:default",
     "os:allow-locale",
-    "fs:default",
-    {
-      "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "$APPDATA/**" }, { "path": "$APPLOCALDATA/**" }]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "$APPDATA/**" }, { "path": "$APPLOCALDATA/**" }]
-    },
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "tel:*" }, { "url": "sms:*" }]

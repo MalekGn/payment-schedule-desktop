@@ -27,7 +27,7 @@
       "capabilities": ["main-capability"],
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**", "$APPLOCALDATA/**"]
+        "scope": ["$APPDATA/logo.*"]
       }
     }
   },

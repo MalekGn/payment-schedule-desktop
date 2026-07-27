@@ -54,7 +54,8 @@
     "note": "ملاحظة",
     "all": "الكل",
     "currency": "{amount} {code}",
-    "none": "—"
+    "none": "—",
+    "retry": "إعادة المحاولة"
   },
   "dashboard": {
     "title": "لوحة التحكم",
@@ -306,7 +307,11 @@
     "noLogo": "لا يوجد شعار",
     "shopName": "اسم المتجر",
     "shopInfo": "التواصل / معلومات",
-    "shopInfoPlaceholder": "العنوان، الهاتف، المعرّف الجبائي…"
+    "shopInfoPlaceholder": "العنوان، الهاتف، المعرّف الجبائي…",
+    "backup": "نسخة احتياطية",
+    "backupHint": "احفظ نسخة من قاعدة بياناتك. حذف عميل يحذف أيضًا مشترياته ومدفوعاته دون إمكانية التراجع.",
+    "backupAction": "حفظ نسخة احتياطية",
+    "backupDone": "تم حفظ النسخة الاحتياطية."
   },
   "validation": {
     "required": "هذا الحقل مطلوب.",
@@ -319,8 +324,23 @@
   },
   "errors": {
     "generic": "حدث خطأ ما.",
-    "clientHasPurchases": "لدى هذا العميل مشتريات.",
-    "loadFailed": "فشل تحميل البيانات."
+    "internal": "حدث خطأ ما. يرجى المحاولة مرة أخرى.",
+    "loadFailed": "فشل تحميل البيانات.",
+    "clientHasPurchases": "لدى هذا العميل {count} من المشتريات.",
+    "clientNotFound": "لم يعد هذا العميل موجودًا.",
+    "purchaseNotFound": "لم يعد هذا الشراء موجودًا.",
+    "installmentNotFound": "لم يعد هذا القسط موجودًا.",
+    "invalidDate": "يرجى إدخال تاريخ صالح.",
+    "invalidTotalPrice": "يجب أن يكون السعر الإجمالي أكبر من صفر.",
+    "invalidInstallmentCount": "يجب أن يكون عدد الأقساط بين 1 و 120.",
+    "invalidIntervalKind": "فترة سداد غير معروفة.",
+    "invalidIntervalDays": "يجب أن تكون الفترة المخصصة بين 1 و 365 يومًا.",
+    "invalidAmount": "يجب أن يكون المبلغ أكبر من صفر.",
+    "sumMismatch": "مجموع الأقساط {sum}، بينما المبلغ الإجمالي {total}.",
+    "overpayment": "هذا المبلغ يتجاوز المتبقي على هذا القسط ({remaining}).",
+    "invalidLogoType": "اختر صورة بصيغة PNG أو JPG أو WEBP أو GIF.",
+    "logoTooLarge": "حجم الصورة كبير جدًا (5 ميغابايت كحد أقصى).",
+    "backupFailed": "تعذّر حفظ النسخة الاحتياطية."
   },
   "filters": {
     "date": "تصفية حسب التاريخ",

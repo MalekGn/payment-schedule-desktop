@@ -3,6 +3,7 @@ import { reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import { useUiStore } from "@/stores/ui";
+import { toUserMessage } from "@/lib/errors";
 import { api } from "@/api";
 import type { Client } from "@/types/models";
 
@@ -49,7 +50,7 @@ async function submit() {
     ui.notify(t("common.save"));
     emit("saved", saved);
   } catch (e) {
-    ui.notify(String(e), "error");
+    ui.notify(toUserMessage(e, t), "error");
   } finally {
     saving.value = false;
   }

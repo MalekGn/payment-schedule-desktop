@@ -7,7 +7,9 @@ import PurchaseDetailCard from "@/components/dashboard/PurchaseDetailCard.vue";
 import DueAlertsCard from "@/components/dashboard/DueAlertsCard.vue";
 import ImpayesPanelCard from "@/components/dashboard/ImpayesPanelCard.vue";
 import PaymentModal from "@/components/PaymentModal.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { api } from "@/api";
 import type { Dashboard, Installment } from "@/types/models";
 
@@ -15,14 +17,11 @@ const { t } = useI18n();
 const fmt = useFormat();
 
 const data = ref<Dashboard | null>(null);
-const loading = ref(true);
 const payTarget = ref<Installment | null>(null);
 
-async function load() {
-  loading.value = true;
+const { error: loadError, run: load } = useLoader(async () => {
   data.value = await api.getDashboard();
-  loading.value = false;
-}
+});
 onMounted(load);
 
 const kpis = computed(() => {
@@ -75,7 +74,8 @@ function onSaved(detail: Dashboard["featuredPurchase"]) {
 </script>
 
 <template>
-  <div v-if="data" class="dashboard">
+  <LoadError v-if="loadError" :message="loadError" @retry="load" />
+  <div v-else-if="data" class="dashboard">
     <div class="kpi-row">
       <KpiCard
         v-for="(k, i) in kpis"

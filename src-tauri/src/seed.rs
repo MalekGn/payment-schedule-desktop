@@ -79,8 +79,7 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
             "INSERT INTO client (first_name, last_name, phone, address, email)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![c.first, c.last, c.phone, c.address, c.email],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         client_ids.push(conn.last_insert_rowid());
     }
 
@@ -171,14 +170,12 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
                 p.count,
                 purchase_date_str
             ],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         let purchase_id = conn.last_insert_rowid();
         conn.execute(
             "UPDATE purchase SET reference = ?1 WHERE id = ?2",
             params![format!("A-{:06}", purchase_id), purchase_id],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
 
         let amounts = split_amounts(p.total, p.count);
         for (i, amount) in amounts.iter().enumerate() {
@@ -198,7 +195,7 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![purchase_id, idx, amount, due_str, paid_amount, paid_date],
             )
-            .map_err(|e| e.to_string())?;
+            ?;
             let installment_id = conn.last_insert_rowid();
 
             if fully_paid {
@@ -206,8 +203,7 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
                     "INSERT INTO payment (installment_id, amount, payment_date, note)
                      VALUES (?1, ?2, ?3, ?4)",
                     params![installment_id, amount, due_str, Option::<String>::None],
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
             }
         }
     }
@@ -228,8 +224,7 @@ pub fn seed(conn: &Connection) -> DbResult<()> {
         conn.execute(
             "INSERT OR IGNORE INTO setting (key, value) VALUES (?1, ?2)",
             params![k, v],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     }
 
     Ok(())

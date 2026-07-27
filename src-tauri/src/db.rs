@@ -3,31 +3,54 @@
 //! frontend never touches the file directly.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::{Months, NaiveDate};
 use rusqlite::Connection;
+
+pub use crate::error::AppError;
 
 /// Managed Tauri state wrapping a single SQLite connection behind a mutex.
 pub struct Db {
     pub conn: Mutex<Connection>,
 }
 
-pub type DbResult<T> = Result<T, String>;
+pub type DbResult<T> = Result<T, AppError>;
 
 impl Db {
     /// Open (creating if needed) the database at `path`, apply the schema, and
     /// seed demo data on a fresh database — development builds only.
     pub fn open(path: &PathBuf) -> DbResult<Self> {
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|e| e.to_string())?;
+        let conn = Connection::open(path)?;
+        // WAL lets readers proceed during a write and is the standard choice
+        // for a desktop app; `busy_timeout` makes contention retry for 5s
+        // instead of failing instantly with SQLITE_BUSY; `synchronous=NORMAL`
+        // is the documented safe pairing with WAL.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;",
+        )?;
         migrate(&conn)?;
         let db = Db {
             conn: Mutex::new(conn),
         };
         db.seed_if_empty()?;
         Ok(db)
+    }
+
+    /// Lock the shared connection, tolerating a poisoned mutex.
+    ///
+    /// Poisoning only happens when another thread panicked while holding the
+    /// lock. In release that cannot be observed (`panic = "abort"` has already
+    /// killed the process), but under `tauri dev` a plain `.unwrap()` here
+    /// meant one panicking command bricked *every* later command — the app kept
+    /// rendering while nothing worked. The data behind the guard is a SQLite
+    /// connection whose own consistency is protected by transactions, so
+    /// recovering the guard is sound.
+    pub fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Seed first-run demo data, but only in development builds. Production
@@ -38,10 +61,8 @@ impl Db {
         if !seeding_enabled() {
             return Ok(());
         }
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
+        let conn = self.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))?;
         if count == 0 {
             crate::seed::seed(&conn)?;
         }
@@ -66,8 +87,66 @@ fn seeding_decision(debug_build: bool, seed_env: Option<&str>) -> bool {
     debug_build || matches!(seed_env, Some("1") | Some("true"))
 }
 
-/// Apply the schema. Idempotent — safe to call on every startup.
+/// Ordered schema migrations. **Append only — never reorder or edit a step
+/// that has shipped**, because `PRAGMA user_version` records how many of these
+/// a given database has already seen.
+///
+/// The index in this slice *is* the version: after applying `MIGRATIONS[i]`,
+/// `user_version` becomes `i + 1`.
+const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] = &[m0001_initial_schema];
+
+/// Bring the database up to the latest schema version.
+///
+/// Databases created before versioning existed sit at `user_version = 0` with
+/// the v1 tables already present. That is safe here precisely because
+/// `m0001_initial_schema` is the historical `CREATE TABLE IF NOT EXISTS` batch
+/// verbatim: re-running it on such a database is a no-op that simply stamps the
+/// version on. This is why the ladder has to land *before* the next schema
+/// change rather than alongside it.
+///
+/// Each step runs inside its own transaction together with the version bump, so
+/// a failure can never leave a half-applied schema recorded as complete.
 fn migrate(conn: &Connection) -> DbResult<()> {
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let current = current.max(0) as usize;
+
+    if current > MIGRATIONS.len() {
+        // The file was written by a newer build. Refusing beats silently
+        // operating against a schema this binary does not understand.
+        log::error!(
+            "database schema version {current} is newer than this build supports ({})",
+            MIGRATIONS.len()
+        );
+        return Err(AppError::internal(format!(
+            "database schema version {current} is newer than supported {}",
+            MIGRATIONS.len()
+        )));
+    }
+
+    for (i, step) in MIGRATIONS.iter().enumerate().skip(current) {
+        let version = i + 1;
+        log::info!("applying schema migration {version}");
+        conn.execute_batch("BEGIN")?;
+        let applied = step(conn).and_then(|()| {
+            // `PRAGMA user_version` does not accept a bound parameter, and
+            // `version` is a usize derived from a compile-time slice index —
+            // never from user input.
+            conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+            Ok(())
+        });
+        match applied {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// v1 — the original schema. Frozen: see [`MIGRATIONS`].
+fn m0001_initial_schema(conn: &Connection) -> DbResult<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS client (
@@ -122,8 +201,8 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         CREATE INDEX IF NOT EXISTS idx_inst_due          ON installment(due_date);
         CREATE INDEX IF NOT EXISTS idx_payment_inst      ON payment(installment_id);
         "#,
-    )
-    .map_err(|e| e.to_string())
+    )?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -136,17 +215,71 @@ pub fn today() -> NaiveDate {
 }
 
 pub fn parse_date(s: &str) -> DbResult<NaiveDate> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("Invalid date: {s}"))
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+        // The offending value goes to the log, not to the renderer.
+        log::warn!("rejected malformed date: {s:?}");
+        AppError::validation(INVALID_DATE)
+    })
 }
 
+/// The three interval kinds a purchase schedule may use.
+pub const INTERVAL_KINDS: [&str; 3] = ["weekly", "monthly", "custom"];
+
+/// Inclusive bounds on a custom interval, in days.
+pub const INTERVAL_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
+
+/// Inclusive bounds on how many installments one purchase may be split into.
+/// The upper bound exists so a hostile `installmentCount` cannot drive an
+/// unbounded `Vec` allocation and insert loop; 120 is ten years of monthly
+/// payments, far beyond anything a shop writes.
+pub const INSTALLMENT_COUNT_RANGE: std::ops::RangeInclusive<i64> = 1..=120;
+
+/// Inclusive bounds on the dashboard's "due soon" horizon, in days.
+pub const UPCOMING_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
+
+// Error codes. Kept as constants so the Rust guard and the doc table in
+// `error.rs` cannot drift apart, and so a typo is a compile error.
+pub const INVALID_DATE: &str = "INVALID_DATE";
+pub const INVALID_TOTAL_PRICE: &str = "INVALID_TOTAL_PRICE";
+pub const INVALID_INSTALLMENT_COUNT: &str = "INVALID_INSTALLMENT_COUNT";
+pub const INVALID_INTERVAL_KIND: &str = "INVALID_INTERVAL_KIND";
+pub const INVALID_INTERVAL_DAYS: &str = "INVALID_INTERVAL_DAYS";
+pub const INVALID_AMOUNT: &str = "INVALID_AMOUNT";
+pub const SUM_MISMATCH: &str = "SUM_MISMATCH";
+pub const OVERPAYMENT: &str = "OVERPAYMENT";
+pub const CLIENT_HAS_PURCHASES: &str = "CLIENT_HAS_PURCHASES";
+pub const CLIENT_NOT_FOUND: &str = "CLIENT_NOT_FOUND";
+pub const PURCHASE_NOT_FOUND: &str = "PURCHASE_NOT_FOUND";
+pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
+pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
+pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
+pub const BACKUP_FAILED: &str = "BACKUP_FAILED";
+
 /// Advance `date` by `k` intervals of the given kind.
+///
+/// Every arm is overflow-safe and saturates to `date`. The naive forms
+/// (`date + Duration::days(n)`, `Duration::days` itself) *panic* on overflow,
+/// and with `panic = "abort"` in the release profile a panic here would abort
+/// the whole app — so an out-of-range `interval_days` reaching this function
+/// from IPC used to be a remote kill switch. Callers still validate their
+/// inputs; this is the second line of defence.
 pub fn add_interval(date: NaiveDate, kind: &str, interval_days: Option<i64>, k: i64) -> NaiveDate {
+    let offset_days = |days: i64| -> NaiveDate {
+        chrono::TimeDelta::try_days(days)
+            .and_then(|d| date.checked_add_signed(d))
+            .unwrap_or(date)
+    };
     match kind {
-        "weekly" => date + chrono::Duration::weeks(k),
-        "custom" => date + chrono::Duration::days(interval_days.unwrap_or(30) * k),
+        "weekly" => k.checked_mul(7).map(offset_days).unwrap_or(date),
+        "custom" => interval_days
+            .unwrap_or(30)
+            .checked_mul(k)
+            .map(offset_days)
+            .unwrap_or(date),
         // default monthly
-        _ => date
-            .checked_add_months(Months::new(k as u32))
+        _ => u32::try_from(k)
+            .ok()
+            .and_then(|months| date.checked_add_months(Months::new(months)))
             .unwrap_or(date),
     }
 }
@@ -218,11 +351,183 @@ mod tests {
     }
 
     fn client_count(db: &Db) -> i64 {
-        db.conn
-            .lock()
-            .unwrap()
+        db.lock()
             .query_row("SELECT COUNT(*) FROM client", [], |r| r.get(0))
             .unwrap()
+    }
+
+    /// `add_interval` must saturate, never panic, on inputs that overflow.
+    ///
+    /// This is not hypothetical: `interval_days` arrives from the renderer, and
+    /// the naive `date + Duration::days(n)` these arms used to use panics on
+    /// overflow. With `panic = "abort"` in the release profile that turned a
+    /// single bad IPC argument into a process kill.
+    #[test]
+    fn add_interval_saturates_instead_of_panicking() {
+        let d = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+
+        for kind in ["weekly", "monthly", "custom"] {
+            for k in [i64::MAX, i64::MIN, 1_000_000_000] {
+                let out = add_interval(d, kind, Some(i64::MAX), k);
+                assert!(
+                    out >= NaiveDate::MIN && out <= NaiveDate::MAX,
+                    "{kind}/{k} produced an out-of-range date"
+                );
+            }
+        }
+
+        // The overflowing cases specifically fall back to the input date.
+        assert_eq!(add_interval(d, "custom", Some(i64::MAX), i64::MAX), d);
+        assert_eq!(add_interval(d, "weekly", None, i64::MAX), d);
+        // A negative k on the monthly arm used to wrap through `k as u32`.
+        assert_eq!(add_interval(d, "monthly", None, -1), d);
+    }
+
+    /// Parity with `src/lib/finance.ts`, over the shared fixture.
+    ///
+    /// CLAUDE.md treats a divergence between the two implementations as a
+    /// blocker: it would mean the schedule previewed in the UI is not the one
+    /// written to the database. The TS half is
+    /// `src/lib/finance-parity.test.ts`, reading this same file.
+    #[test]
+    fn finance_parity_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/fixtures/finance-parity.json"
+        );
+        let raw = std::fs::read_to_string(path).expect("parity fixture must exist");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        let cases = fixture["splitAmounts"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let total = case["total"].as_i64().unwrap();
+            let n = case["n"].as_i64().unwrap();
+            let expected: Vec<i64> = case["expected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            assert_eq!(
+                split_amounts(total, n),
+                expected,
+                "split_amounts({total}, {n}) diverges from finance.ts"
+            );
+        }
+
+        let cases = fixture["addInterval"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let date = parse_date(case["date"].as_str().unwrap()).unwrap();
+            let kind = case["kind"].as_str().unwrap();
+            let interval_days = case["intervalDays"].as_i64();
+            let k = case["k"].as_i64().unwrap();
+            let expected = case["expected"].as_str().unwrap();
+            assert_eq!(
+                add_interval(date, kind, interval_days, k).to_string(),
+                expected,
+                "add_interval({date}, {kind}, {interval_days:?}, {k}) diverges from finance.ts"
+            );
+        }
+
+        let cases = fixture["installmentStatus"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let amount = case["amount"].as_i64().unwrap();
+            let paid = case["paid"].as_i64().unwrap();
+            let due = parse_date(case["dueDate"].as_str().unwrap()).unwrap();
+            let today = parse_date(case["today"].as_str().unwrap()).unwrap();
+            let expected = case["expected"].as_str().unwrap();
+            assert_eq!(
+                installment_status(amount, paid, due, today),
+                expected,
+                "installment_status({amount}, {paid}, {due}) diverges from finance.ts"
+            );
+        }
+    }
+
+    /// `migrate` is version-tracked and idempotent.
+    ///
+    /// The case that matters is the second one: databases already in the field
+    /// sit at `user_version = 0` with the v1 tables present, and must migrate
+    /// forward without losing their rows.
+    #[test]
+    fn migrate_is_versioned_and_idempotent() {
+        let path = temp_db_path("migrate");
+        {
+            let db = Db::open(&path).unwrap();
+            let conn = db.lock();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version as usize, MIGRATIONS.len());
+
+            conn.execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Parity', 'MigrationSentinel')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Simulate a pre-versioning database: tables present, version reset.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0").unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        let conn = db.lock();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            version as usize,
+            MIGRATIONS.len(),
+            "version must be stamped"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM client WHERE last_name = 'MigrationSentinel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "re-running migrations must not drop data");
+
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The durability PRAGMAs actually took effect on the live connection.
+    #[test]
+    fn open_applies_durability_pragmas() {
+        let path = temp_db_path("pragmas");
+        let db = Db::open(&path).unwrap();
+        let conn = db.lock();
+
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal.to_lowercase(), "wal");
+
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
+
+        // Cascade deletes depend on this being on, and it is per-connection.
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+
+        drop(conn);
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
     }
 
     fn temp_db_path(tag: &str) -> PathBuf {

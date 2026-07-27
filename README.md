@@ -80,7 +80,14 @@ npm test                 # Vitest unit tests (installment/payment math, overdue 
 npm run test:integration # Vitest integration tests (api facade + backend flows)
 npm run test:e2e         # Playwright end-to-end suite (tests/e2e/run.mjs)
 npm run build            # vue-tsc type-check + production build
+
+cd src-tauri && cargo test   # Rust backend tests (commands over a temp SQLite DB)
 ```
+
+`src/lib/finance.ts` and `src-tauri/src/db.rs` implement the same installment
+math independently. Both test suites assert against the shared fixture
+`tests/fixtures/finance-parity.json`, so changing one without the other fails a
+test rather than drifting silently.
 
 ### Code quality & security
 
@@ -189,7 +196,18 @@ Everything is stored locally in the OS **app-data directory**:
   `PAYMENT_SCHEDULE_SEED=1` to force seeding a fresh DB in a release build.
 - **`logo.<ext>`** — the shop logo uploaded in Settings, copied into the app-data
   dir and referenced from the `setting` table. Displayed in the sidebar/header
-  via Tauri's asset protocol.
+  via Tauri's asset protocol. Only PNG/JPG/WEBP/GIF are accepted, up to 5 MB,
+  and the file contents are checked — not just the extension.
+- **`logs/`** — backend log files (also echoed to stdout). Written by
+  `tauri-plugin-log` at `Info` level in release builds, `Debug` in dev. They
+  record command failures with ids and error codes only, never client names,
+  phone numbers or payment notes.
+
+### Backing up
+
+**Settings → Backup database** writes a consistent snapshot to a location you
+choose. Take one before deleting clients: a client delete cascades to their
+purchases, installments and payments and cannot be undone.
 
 To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
 development build it is re-seeded; in a release build it comes back empty.

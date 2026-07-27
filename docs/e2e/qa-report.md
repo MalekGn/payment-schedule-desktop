@@ -6,6 +6,112 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-27 — Remediation of the High & Medium findings in `AUDIT_REPORT.md`
+
+### Summary
+
+Closed all 5 High and 12 of the 14 Medium findings from the 2026-07-26 audit;
+2 Mediums are deliberately deferred (below). Finding #1 (the `fs` plugin grant
+over `$APPDATA`) was already fixed in the working tree at the start of this pass
+and is now verified to compile and to leave the logo rendering path intact.
+
+The backend went from 3 tests to 24, and gained its first coverage of the code
+that owns the money. `npm audit --audit-level=high` — the CI gate that was
+**failing** at audit time — now exits 0.
+
+### Test cases run
+
+**Rust — `cargo test`, 24 passed / 0 failed** (was 3 tests).
+
+| Area              | Cases                                                                                                                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_purchase` | even split with remainder last (parts sum to total); manual uneven split; `SUM_MISMATCH` writes **no** purchase and **no** installment rows (proves rollback)                                                              |
+| Input validation  | `total_price` 0 and negative; `installment_count` 0 and 121; unknown `interval_kind`; `interval_days` 0 and 400; malformed `purchase_date`; malformed manual `due_date` — 8 codes, and no rejected request writes a row    |
+| `record_payment`  | partial leaves `paid_date` NULL; exact payment sets it and flips status to `paid`; **overpayment rejected** with `OVERPAYMENT:150` leaving `paid_amount` at 100; zero/negative amount; malformed date; unknown installment |
+| Cascades          | `delete_client` gated at `CLIENT_HAS_PURCHASES:1` then cascading to purchases → installments → payments; `delete_purchase` cascading while the client survives                                                             |
+| Settings          | patch applies atomically, `alert_soon_days` 500 clamps to 90, and an explicit language choice clears `language_is_default`                                                                                                 |
+| Migrations        | fresh DB stamps `user_version = 1`; a simulated pre-versioning DB (`user_version = 0`, tables present) migrates forward **without losing rows**                                                                            |
+| Durability        | live connection reports `journal_mode = wal`, `busy_timeout = 5000`, `foreign_keys = 1`                                                                                                                                    |
+| Date math         | `add_interval` saturates instead of panicking for `i64::MAX` / `i64::MIN` / negative `k` across all three interval kinds                                                                                                   |
+| Backup            | the snapshot reopens as a valid SQLite database with its rows intact, and a destination that is not a SQLite file is refused rather than clobbered                                                                         |
+| Errors            | an internal `rusqlite` error serializes to `"INTERNAL"` while retaining its detail in-process; actionable codes keep their parameters                                                                                      |
+| Missing rows      | absent client/purchase report `CLIENT_NOT_FOUND` / `PURCHASE_NOT_FOUND` rather than an opaque internal error                                                                                                               |
+
+**TS unit — `npm test`, 85 passed / 0 failed** (was 56). The 29 new tests are the
+cross-language parity suite: `finance.ts` and `db.rs` are both asserted against
+`tests/fixtures/finance-parity.json` (8 split cases, 13 interval cases, 7 status
+cases), so a change to one implementation without the other now fails a test.
+
+**Gates:** `npx eslint .` clean · `npx vue-tsc --noEmit` clean · `npm run build`
+clean (under the new `vue-tsc` 3.x) · `cargo fmt --check` clean ·
+`cargo clippy --all-targets -- -D warnings` clean ·
+`npm audit --audit-level=high` **exit 0, 0 vulnerabilities**.
+
+**Written but NOT executed** (per the CLAUDE.md constraint — say the word and I
+will run them):
+
+- `tests/integration/error-contract.integration.test.ts` — every rejection code
+  through the real `api` facade, plus the assertion that all 16 codes resolve to
+  real prose in **fr/en/ar** and that raw SQL text / filesystem paths fall back
+  to the generic message.
+- `tests/e2e/run.mjs` — two new scenarios: a rejected overpayment shows
+  localized prose naming the remaining balance (not `OVERPAYMENT`, not SQL), and
+  the backup card stays hidden outside the Tauri runtime.
+
+### Issues found
+
+1. **Blocker, found in the Code Review pass and fixed: `backup_database` was an
+   arbitrary-file-destruction primitive.** The first implementation called
+   `std::fs::remove_file(&dest)` before `VACUUM INTO`, because `VACUUM INTO`
+   refuses to overwrite. Two problems: `dest` comes from the renderer, so a
+   compromised WebView could delete any file the process can write; and if the
+   vacuum then failed, the user had lost whatever was at that path with nothing
+   to show for it. Now the command requires a `.db` extension, refuses to
+   overwrite anything whose first 16 bytes are not `SQLite format 3\0`, and
+   writes to a sibling `.db.part` file renamed into place only on success.
+   Covered by `backup_writes_a_readable_snapshot_without_clobbering_other_files`,
+   which also reopens the snapshot and asserts the rows survived.
+2. **My own first parity assertion was wrong, not the code.** The test fixture
+   purchase is dated 2024-01-15, so every tranche is already overdue and the
+   rollup correctly reports `late`, not `pending`. Corrected the assertion and
+   documented why status is computed against today rather than stored.
+3. **A test collided with the demo seed data.** `migrate_is_versioned_and_idempotent`
+   inserted a sentinel client named "Ben Salah", which also exists in the
+   Tunisian demo seed (on in debug builds), so the row count was 2. Switched to
+   a unique sentinel.
+4. **`installment.paid_amount` may already exceed `amount` in existing
+   databases.** The new guard prevents _new_ overpayment but does not repair
+   rows written before it. Any such row still makes `amount - paid_amount`
+   negative in the outstanding/overdue aggregates. Not covered by a test because
+   there is no migration to fix it — see recommendations.
+5. **`get_setting` swallowed query errors**, making a broken settings table
+   indistinguishable from a fresh install. Now logs at `warn` before falling
+   back. Found while wiring the error type, not listed in the audit.
+
+### Recommendations
+
+- **Run the integration and E2E suites** before shipping this. The error
+  contract is asserted end-to-end there and nowhere else.
+- **Add a migration (v2) that clamps `paid_amount` to `amount`** for rows
+  written before the overpayment guard, and decide whether the excess should
+  become a recorded credit or be discarded. Issue 4 above.
+- **Deferred by decision, still open:** finding #7's N+1 → `GROUP BY` rewrite of
+  `list_purchases` / `get_client_detail` / `get_dashboard` (the `async`
+  conversion landed, so they are off the main thread, but they still issue
+  ~3N+1 queries), and finding #16, `rusqlite` 0.32 → 0.40. Both now have the
+  backend test suite as a safety net, which is what they were waiting for.
+- **Findings #20–#30 (Low/Info) were out of scope** and remain open — MSRV
+  (`rust-version = "1.77"` is not achievable), CSV quote-escaping and
+  formula-injection in the Impayés export, the missing `license` field,
+  `*.db` in `.gitignore`, the frontend majors, and CodeQL coverage for Rust.
+- **Manual verification still owed on a real desktop run** (`npm run tauri dev`):
+  logo still renders through the narrowed `$APPDATA/logo.*` asset scope; a
+  non-image or >5 MB file is refused with localized text; the backup file opens
+  in `sqlite3`; a second launch focuses the existing window; and the new error
+  toasts read correctly in Arabic RTL.
+
+---
+
 ## 2026-07-26 — Bug: call/SMS buttons strand the user on a WebView error page
 
 ### Summary

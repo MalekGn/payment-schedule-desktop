@@ -4,10 +4,13 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ClientForm from "@/components/ClientForm.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import { toUserMessage } from "@/lib/errors";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
@@ -22,7 +25,6 @@ const stats = useStatsStore();
 
 const clients = ref<ClientSummary[]>([]);
 const search = ref("");
-const loading = ref(true);
 const showForm = ref(false);
 const editing = ref<Client | null>(null);
 const deleteTarget = ref<ClientSummary | null>(null);
@@ -44,11 +46,13 @@ const { sort, sorted } = useSort(filtered, {
   outstanding: (c) => c.totalOutstanding,
 });
 
-async function load() {
-  loading.value = true;
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   clients.value = await api.listClients();
-  loading.value = false;
-}
+});
 onMounted(load);
 
 function openNew() {
@@ -81,7 +85,7 @@ async function confirmDelete() {
     await load();
     await stats.refresh();
   } catch (e) {
-    ui.notify(String(e), "error");
+    ui.notify(toUserMessage(e, t), "error");
   }
 }
 
@@ -92,88 +96,92 @@ function openDetail(id: number) {
 
 <template>
   <div class="page">
-    <div class="toolbar">
-      <div class="search-box">
-        <AppIcon name="search" :size="18" class="muted" />
-        <input
-          v-model="search"
-          class="search-input"
-          :placeholder="t('clients.searchPlaceholder')"
-        />
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
+
+    <template v-else>
+      <div class="toolbar">
+        <div class="search-box">
+          <AppIcon name="search" :size="18" class="muted" />
+          <input
+            v-model="search"
+            class="search-input"
+            :placeholder="t('clients.searchPlaceholder')"
+          />
+        </div>
+        <button class="btn btn--primary" type="button" @click="openNew">
+          <AppIcon name="plus" :size="18" /> {{ t("clients.new") }}
+        </button>
       </div>
-      <button class="btn btn--primary" type="button" @click="openNew">
-        <AppIcon name="plus" :size="18" /> {{ t("clients.new") }}
-      </button>
-    </div>
 
-    <div class="card">
-      <EmptyState
-        v-if="!loading && clients.length === 0"
-        icon="users"
-        :title="t('clients.empty')"
+      <div class="card">
+        <EmptyState
+          v-if="!loading && clients.length === 0"
+          icon="users"
+          :title="t('clients.empty')"
+        />
+        <table v-else class="table">
+          <thead>
+            <tr>
+              <SortHeader :sort="sort" field="name" :label="t('clients.columns.name')" />
+              <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
+              <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
+              <SortHeader :sort="sort" field="purchases" :label="t('clients.columns.purchases')" />
+              <SortHeader
+                :sort="sort"
+                field="outstanding"
+                :label="t('clients.columns.outstanding')"
+              />
+              <th class="col-action">{{ t("common.actions") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in sorted" :key="c.id" class="clickable" @click="openDetail(c.id)">
+              <td>
+                <div class="client-name">
+                  <span class="strong">{{ c.firstName }} {{ c.lastName }}</span>
+                  <span v-if="c.overdueCount > 0" class="badge badge--late overdue-pill">
+                    {{ t("impaye.trancheLate", c.overdueCount) }}
+                  </span>
+                </div>
+              </td>
+              <td class="tabular">{{ c.phone || "—" }}</td>
+              <td class="ellipsis">{{ c.address || "—" }}</td>
+              <td class="tabular">{{ c.purchaseCount }}</td>
+              <td class="tabular strong">{{ fmt.money(c.totalOutstanding) }}</td>
+              <td class="col-action" @click.stop>
+                <button
+                  class="icon-action"
+                  type="button"
+                  :title="t('common.edit')"
+                  @click="openEdit(c)"
+                >
+                  <AppIcon name="edit" :size="17" />
+                </button>
+                <button
+                  class="icon-action icon-action--danger"
+                  type="button"
+                  :title="t('common.delete')"
+                  @click="askDelete(c)"
+                >
+                  <AppIcon name="trash" :size="17" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <ClientForm v-if="showForm" :client="editing" @close="showForm = false" @saved="onSaved" />
+      <ConfirmDialog
+        v-if="deleteTarget"
+        :title="t('clients.delete.confirmTitle')"
+        :message="deleteMessage"
+        :confirm-label="t('common.delete')"
+        danger
+        @close="deleteTarget = null"
+        @confirm="confirmDelete"
       />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="name" :label="t('clients.columns.name')" />
-            <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
-            <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
-            <SortHeader :sort="sort" field="purchases" :label="t('clients.columns.purchases')" />
-            <SortHeader
-              :sort="sort"
-              field="outstanding"
-              :label="t('clients.columns.outstanding')"
-            />
-            <th class="col-action">{{ t("common.actions") }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="c in sorted" :key="c.id" class="clickable" @click="openDetail(c.id)">
-            <td>
-              <div class="client-name">
-                <span class="strong">{{ c.firstName }} {{ c.lastName }}</span>
-                <span v-if="c.overdueCount > 0" class="badge badge--late overdue-pill">
-                  {{ t("impaye.trancheLate", c.overdueCount) }}
-                </span>
-              </div>
-            </td>
-            <td class="tabular">{{ c.phone || "—" }}</td>
-            <td class="ellipsis">{{ c.address || "—" }}</td>
-            <td class="tabular">{{ c.purchaseCount }}</td>
-            <td class="tabular strong">{{ fmt.money(c.totalOutstanding) }}</td>
-            <td class="col-action" @click.stop>
-              <button
-                class="icon-action"
-                type="button"
-                :title="t('common.edit')"
-                @click="openEdit(c)"
-              >
-                <AppIcon name="edit" :size="17" />
-              </button>
-              <button
-                class="icon-action icon-action--danger"
-                type="button"
-                :title="t('common.delete')"
-                @click="askDelete(c)"
-              >
-                <AppIcon name="trash" :size="17" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <ClientForm v-if="showForm" :client="editing" @close="showForm = false" @saved="onSaved" />
-    <ConfirmDialog
-      v-if="deleteTarget"
-      :title="t('clients.delete.confirmTitle')"
-      :message="deleteMessage"
-      :confirm-label="t('common.delete')"
-      danger
-      @close="deleteTarget = null"
-      @confirm="confirmDelete"
-    />
+    </template>
   </div>
 </template>
 
