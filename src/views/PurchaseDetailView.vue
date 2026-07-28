@@ -65,6 +65,12 @@ async function onSaved(updated: PurchaseDetail) {
       <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
 
+    <!-- Reachable by URL or from the archive tab, so an archived purchase
+         must not read as live. Actions stay on the Achats list. -->
+    <div v-if="detail.purchase.archivedAt" class="archived-banner" role="status">
+      <AppIcon name="archive" :size="18" />
+      <span>{{ t("achats.archivedOn", { date: fmt.date(detail.purchase.archivedAt) }) }}</span>
+    </div>
     <PurchaseDetailCard :detail="detail" full-actions @pay="payTarget = $event" />
 
     <section class="card">
@@ -106,6 +112,16 @@ async function onSaved(updated: PurchaseDetail) {
 </template>
 
 <style scoped>
+.archived-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--neutral-bg);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
 .page {
   display: flex;
   flex-direction: column;

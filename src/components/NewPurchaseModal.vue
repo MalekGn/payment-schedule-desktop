@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import AppIcon from "@/components/ui/AppIcon.vue";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import { useFormat } from "@/composables/useFormat";
@@ -11,7 +12,20 @@ import { api } from "@/api";
 import { addInterval, splitAmounts, todayIso } from "@/lib/finance";
 import type { ClientSummary, IntervalKind, PurchaseDetail } from "@/types/models";
 
+/** Editing when a purchase is supplied, creating otherwise (cf. `ClientForm`). */
+const props = defineProps<{ purchase?: PurchaseDetail | null }>();
 const emit = defineEmits<{ close: []; saved: [detail: PurchaseDetail] }>();
+
+const editing = computed(() => props.purchase != null);
+/**
+ * Everything the schedule is derived from locks once a payment is recorded:
+ * applying a change would regenerate the installment rows, and those rows own
+ * the payments. Only the product label stays editable.
+ */
+const paidCount = computed(
+  () => props.purchase?.installments.filter((i) => i.paidAmount > 0).length ?? 0,
+);
+const scheduleLocked = computed(() => (props.purchase?.totalPaid ?? 0) > 0);
 
 const { t } = useI18n();
 const fmt = useFormat();
@@ -22,13 +36,13 @@ const clients = ref<ClientSummary[]>([]);
 const saving = ref(false);
 
 const form = reactive({
-  clientId: "" as string, // "" = none, "new" = inline
-  productLabel: "",
-  totalPrice: null as number | null,
-  installmentCount: 3,
-  intervalKind: "monthly" as IntervalKind,
-  intervalDays: 30,
-  purchaseDate: todayIso(),
+  clientId: (props.purchase ? String(props.purchase.purchase.clientId) : "") as string,
+  productLabel: props.purchase?.purchase.productLabel ?? "",
+  totalPrice: (props.purchase?.purchase.totalPrice ?? null) as number | null,
+  installmentCount: props.purchase?.purchase.installmentCount ?? 3,
+  intervalKind: (props.purchase?.purchase.intervalKind ?? "monthly") as IntervalKind,
+  intervalDays: props.purchase?.purchase.intervalDays ?? 30,
+  purchaseDate: props.purchase?.purchase.purchaseDate ?? todayIso(),
 });
 const inlineClient = reactive({ firstName: "", lastName: "", phone: "", address: "", email: "" });
 
@@ -44,6 +58,17 @@ onMounted(async () => {
   // Explicit rather than relying on the gateway default: an archived client
   // must not be selectable, or archiving them would not stop new debt.
   clients.value = await api.listClients("active");
+  if (props.purchase) {
+    // Seed the rows from the stored schedule rather than recomputing: an edit
+    // that leaves them untouched must send back exactly what is on record, or
+    // the backend reads it as a reschedule.
+    rows.value = props.purchase.installments.map((i) => ({
+      amount: i.amount,
+      dueDate: i.dueDate,
+    }));
+    manualAmounts.value = true;
+    return;
+  }
   rebuild();
 });
 
@@ -84,7 +109,9 @@ const sumMatches = computed(() => sum.value === Math.round(form.totalPrice ?? 0)
 
 function validate(): boolean {
   for (const k of Object.keys(errors)) delete errors[k];
-  if (form.clientId === "new") {
+  if (editing.value) {
+    // The client is fixed on an edit; only the fields below can be wrong.
+  } else if (form.clientId === "new") {
     if (!inlineClient.firstName.trim()) errors.firstName = t("validation.required");
     if (!inlineClient.lastName.trim()) errors.lastName = t("validation.required");
   } else if (!form.clientId) {
@@ -104,6 +131,33 @@ async function submit() {
   if (!validate()) return;
   saving.value = true;
   try {
+    const payload = {
+      productLabel: form.productLabel,
+      totalPrice: Math.round(form.totalPrice ?? 0),
+      installmentCount: rows.value.length,
+      intervalKind: form.intervalKind,
+      intervalDays: form.intervalKind === "custom" ? form.intervalDays : null,
+      purchaseDate: form.purchaseDate,
+      installments: rows.value.map((r, i) => ({
+        index: i + 1,
+        amount: Math.round(r.amount),
+        dueDate: r.dueDate,
+      })),
+    };
+
+    if (props.purchase) {
+      // `clientId` is ignored by the backend on update — a purchase cannot
+      // change hands — but the type wants it, so send the one on record.
+      const detail = await api.updatePurchase(props.purchase.purchase.id, {
+        ...payload,
+        clientId: props.purchase.purchase.clientId,
+      });
+      await stats.refresh();
+      ui.notify(t("common.save"));
+      emit("saved", detail);
+      return;
+    }
+
     let clientId: number;
     if (form.clientId === "new") {
       const created = await api.createClient({
@@ -118,20 +172,7 @@ async function submit() {
       clientId = Number(form.clientId);
     }
 
-    const detail = await api.createPurchase({
-      clientId,
-      productLabel: form.productLabel,
-      totalPrice: Math.round(form.totalPrice ?? 0),
-      installmentCount: rows.value.length,
-      intervalKind: form.intervalKind,
-      intervalDays: form.intervalKind === "custom" ? form.intervalDays : null,
-      purchaseDate: form.purchaseDate,
-      installments: rows.value.map((r, i) => ({
-        index: i + 1,
-        amount: Math.round(r.amount),
-        dueDate: r.dueDate,
-      })),
-    });
+    const detail = await api.createPurchase({ ...payload, clientId });
     await stats.refresh();
     ui.notify(t("common.save"));
     emit("saved", detail);
@@ -144,7 +185,11 @@ async function submit() {
 </script>
 
 <template>
-  <BaseModal :title="t('achats.form.title')" wide @close="emit('close')">
+  <BaseModal
+    :title="editing ? t('achats.form.editTitle') : t('achats.form.title')"
+    wide
+    @close="emit('close')"
+  >
     <form class="purchase-form" @submit.prevent="submit">
       <div class="grid-2">
         <div class="field">
@@ -154,9 +199,10 @@ async function submit() {
             v-model="form.clientId"
             class="select"
             :class="{ 'input--error': errors.client }"
+            :disabled="editing"
           >
             <option value="" disabled>{{ t("achats.form.selectClient") }}</option>
-            <option value="new">➕ {{ t("achats.form.newClient") }}</option>
+            <option v-if="!editing" value="new">➕ {{ t("achats.form.newClient") }}</option>
             <option v-for="c in clients" :key="c.id" :value="String(c.id)">
               {{ c.firstName }} {{ c.lastName }}
             </option>
@@ -165,11 +211,17 @@ async function submit() {
         </div>
         <div class="field">
           <label>{{ t("achats.form.purchaseDate") }}</label>
-          <DatePicker v-model="form.purchaseDate" />
+          <DatePicker v-model="form.purchaseDate" :disabled="scheduleLocked" />
         </div>
       </div>
 
-      <div v-if="form.clientId === 'new'" class="inline-client">
+      <!-- Why half the form is read-only, said once rather than per field. -->
+      <p v-if="scheduleLocked" class="locked-note">
+        <AppIcon name="alert" :size="16" />
+        {{ t("achats.form.lockedByPayments", { count: paidCount }) }}
+      </p>
+
+      <div v-if="!editing && form.clientId === 'new'" class="inline-client">
         <div class="grid-2">
           <div class="field">
             <label>{{ t("clients.form.firstName") }}</label>
@@ -228,6 +280,7 @@ async function submit() {
             min="1"
             class="input"
             :class="{ 'input--error': errors.totalPrice }"
+            :disabled="scheduleLocked"
           />
           <span v-if="errors.totalPrice" class="field-error">{{ errors.totalPrice }}</span>
         </div>
@@ -241,6 +294,7 @@ async function submit() {
             max="60"
             class="input"
             :class="{ 'input--error': errors.installmentCount }"
+            :disabled="scheduleLocked"
           />
           <span v-if="errors.installmentCount" class="field-error">{{
             errors.installmentCount
@@ -248,7 +302,12 @@ async function submit() {
         </div>
         <div class="field">
           <label for="np-interval">{{ t("achats.form.interval") }}</label>
-          <select id="np-interval" v-model="form.intervalKind" class="select">
+          <select
+            id="np-interval"
+            v-model="form.intervalKind"
+            class="select"
+            :disabled="scheduleLocked"
+          >
             <option value="weekly">{{ t("achats.interval.weekly") }}</option>
             <option value="monthly">{{ t("achats.interval.monthly") }}</option>
             <option value="custom">{{ t("achats.interval.custom") }}</option>
@@ -264,7 +323,7 @@ async function submit() {
             type="number"
             min="1"
             class="input"
-            :disabled="form.intervalKind !== 'custom'"
+            :disabled="scheduleLocked || form.intervalKind !== 'custom'"
             :class="{ 'input--error': errors.intervalDays }"
           />
         </div>
@@ -311,7 +370,7 @@ async function submit() {
         {{ t("common.cancel") }}
       </button>
       <button class="btn btn--primary" type="button" :disabled="saving" @click="submit">
-        {{ t("achats.form.submit") }}
+        {{ editing ? t("achats.form.saveEdit") : t("achats.form.submit") }}
       </button>
     </template>
   </BaseModal>
@@ -332,6 +391,17 @@ async function submit() {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
+}
+.locked-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 13px;
+  line-height: 1.45;
 }
 .inline-client {
   display: flex;

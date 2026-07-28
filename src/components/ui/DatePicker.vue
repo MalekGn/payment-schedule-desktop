@@ -11,7 +11,13 @@ import { useFormat, LOCALE_TAG } from "@/composables/useFormat";
 import { useSettingsStore } from "@/stores/settings";
 
 const model = defineModel<string>({ default: "" });
-const props = defineProps<{ min?: string; max?: string; placeholder?: string }>();
+const props = defineProps<{
+  min?: string;
+  max?: string;
+  placeholder?: string;
+  /** Render read-only: the trigger cannot be opened and the clear cross hides. */
+  disabled?: boolean;
+}>();
 
 const { t } = useI18n();
 const fmt = useFormat();
@@ -176,12 +182,13 @@ function clear() {
       class="dp-trigger"
       :class="{ 'is-empty': !model, 'is-open': open }"
       :aria-expanded="open"
+      :disabled="disabled"
       @click="open = !open"
     >
       <AppIcon name="calendar" :size="15" class="dp-cal" />
       <span class="dp-value">{{ display }}</span>
       <AppIcon
-        v-if="model"
+        v-if="model && !disabled"
         name="x"
         :size="14"
         class="dp-clear"
@@ -268,6 +275,10 @@ function clear() {
 }
 .dp-trigger:hover {
   border-color: var(--primary);
+}
+.dp-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .dp-trigger.is-open {
   border-color: var(--primary);

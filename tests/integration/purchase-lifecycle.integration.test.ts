@@ -58,7 +58,8 @@ describe("creating a purchase wires the finance split into the backend", () => {
 
     // It is the 9th purchase and is immediately listable + searchable.
     expect(detail.purchase.reference).toBe("A-000009");
-    const list = await api.listPurchases("A-000009");
+    // `listPurchases` takes the scope first now, then the search.
+    const list = await api.listPurchases("active", "A-000009");
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe(detail.purchase.id);
   });

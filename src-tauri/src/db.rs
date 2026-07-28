@@ -93,8 +93,11 @@ fn seeding_decision(debug_build: bool, seed_env: Option<&str>) -> bool {
 ///
 /// The index in this slice *is* the version: after applying `MIGRATIONS[i]`,
 /// `user_version` becomes `i + 1`.
-const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] =
-    &[m0001_initial_schema, m0002_client_archive];
+const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] = &[
+    m0001_initial_schema,
+    m0002_client_archive,
+    m0003_purchase_archive,
+];
 
 /// Bring the database up to the latest schema version.
 ///
@@ -206,28 +209,51 @@ fn m0001_initial_schema(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
-/// v2 — soft archive for clients. `NULL` means active; an ISO timestamp means
+/// Add a column only if the table does not already have it.
+///
+/// Every `ALTER` migration must go through this. The ladder has to survive a
+/// replay from zero, SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind
+/// `ALTER TABLE` on a database that already has the column fails with
+/// "duplicate column name" — taking `Db::open`, and with it the whole app,
+/// down on launch. This is the `ALTER` equivalent of what
+/// `CREATE TABLE IF NOT EXISTS` does for `m0001`.
+///
+/// `table` and `column` are compile-time literals from the migration bodies
+/// below, never caller input, so interpolating them is safe.
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, ddl: &str) -> DbResult<()> {
+    let already_present: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |r| r.get(0),
+    )?;
+    if already_present == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl};"))?;
+    }
+    Ok(())
+}
+
+/// v2 — soft archive for clients. `NULL` means active; an ISO date means
 /// archived, so the UI gets "archived on <date>" without a second column.
 ///
 /// Archiving replaced the destructive `force` cascade on `delete_client`: a
 /// client with purchases is now hidden rather than erased, and can be restored.
-///
-/// Written defensively, because the ladder has to survive a replay from zero:
-/// SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind `ALTER TABLE` on a
-/// database that already has the column fails with "duplicate column name",
-/// taking `Db::open` — and with it the whole app — down. Every `ALTER` step
-/// added from here on must check first, the same way `m0001` relies on
-/// `CREATE TABLE IF NOT EXISTS`.
 fn m0002_client_archive(conn: &Connection) -> DbResult<()> {
-    let already_present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('client') WHERE name = 'archived_at'",
-        [],
-        |r| r.get(0),
-    )?;
-    if already_present == 0 {
-        conn.execute_batch("ALTER TABLE client ADD COLUMN archived_at TEXT;")?;
-    }
+    add_column_if_missing(conn, "client", "archived_at", "TEXT")?;
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_client_archived ON client(archived_at);")?;
+    Ok(())
+}
+
+/// v3 — soft archive for purchases, replacing the destructive delete.
+///
+/// Unlike an archived *client* — who is settled, and therefore contributes
+/// nothing to the money aggregates either way — an archived *purchase* must
+/// leave every total: a removed purchase is no longer owed. Every money read
+/// model filters on this column; see `commands.rs`.
+fn m0003_purchase_archive(conn: &Connection) -> DbResult<()> {
+    add_column_if_missing(conn, "purchase", "archived_at", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_purchase_archived ON purchase(archived_at);",
+    )?;
     Ok(())
 }
 
@@ -278,6 +304,9 @@ pub const ARCHIVE_HAS_OUTSTANDING: &str = "ARCHIVE_HAS_OUTSTANDING";
 pub const CLIENT_ARCHIVED: &str = "CLIENT_ARCHIVED";
 pub const CLIENT_NOT_FOUND: &str = "CLIENT_NOT_FOUND";
 pub const PURCHASE_NOT_FOUND: &str = "PURCHASE_NOT_FOUND";
+pub const PURCHASE_HAS_PAYMENTS: &str = "PURCHASE_HAS_PAYMENTS";
+pub const PURCHASE_ARCHIVED: &str = "PURCHASE_ARCHIVED";
+pub const PURCHASE_NOT_ARCHIVED: &str = "PURCHASE_NOT_ARCHIVED";
 pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
@@ -526,14 +555,16 @@ mod tests {
         // Replaying the ladder must not have added `archived_at` a second time.
         // `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS`, so an unguarded m0002
         // fails the whole `Db::open` above with "duplicate column name".
-        let archived_cols: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('client') WHERE name = 'archived_at'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(archived_cols, 1, "m0002 must be replay-safe");
+        for table in ["client", "purchase"] {
+            let archived_cols: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'archived_at'",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(archived_cols, 1, "{table} archive step must be replay-safe");
+        }
 
         drop(conn);
         drop(db);
@@ -569,6 +600,49 @@ mod tests {
         assert!(
             archived.is_none(),
             "existing clients must migrate as active"
+        );
+
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The real upgrade path for the purchase archive: a v2 database (clients
+    /// already archivable, purchases not) must come forward with every purchase
+    /// live, or archiving would appear to have happened retroactively.
+    #[test]
+    fn m0003_defaults_existing_purchases_to_active() {
+        let path = temp_db_path("migrate_purchase_archive");
+        {
+            let conn = Connection::open(&path).unwrap();
+            m0001_initial_schema(&conn).unwrap();
+            m0002_client_archive(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Pre', 'V3')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO purchase (reference, client_id, product_label, total_price,
+                     installment_count, purchase_date)
+                 VALUES ('A-000001', 1, 'Machine', 1000, 4, '2024-01-15')",
+                [],
+            )
+            .unwrap();
+            // v2 exactly: both tables present, the ladder stamped two steps in.
+            conn.execute_batch("PRAGMA user_version = 2").unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        let conn = db.lock();
+        let archived: Option<String> = conn
+            .query_row("SELECT archived_at FROM purchase WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            archived.is_none(),
+            "existing purchases must migrate as live"
         );
 
         drop(conn);

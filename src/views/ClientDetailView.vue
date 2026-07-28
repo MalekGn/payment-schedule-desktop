@@ -176,6 +176,41 @@ onMounted(load);
       </table>
     </section>
 
+    <!-- Archived purchases are kept out of every total above; they are shown
+         here so the history stays visible in the client's own context. -->
+    <section v-if="detail.archivedPurchases.length" class="card">
+      <div class="card-header">
+        <h2>{{ t("achats.archivedSection") }}</h2>
+      </div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t("dashboard.table.reference") }}</th>
+            <th>{{ t("common.product") }}</th>
+            <th>{{ t("common.date") }}</th>
+            <th>{{ t("common.total") }}</th>
+            <th>{{ t("achats.archivedBadge") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="p in detail.archivedPurchases"
+            :key="p.id"
+            class="clickable"
+            @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
+          >
+            <td>
+              <span class="row-link">{{ p.reference }}</span>
+            </td>
+            <td class="ellipsis">{{ p.productLabel }}</td>
+            <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
+            <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
+            <td class="tabular">{{ fmt.date(p.archivedAt) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="card">
       <div class="card-header">
         <h2>{{ t("clients.detail.paymentHistory") }}</h2>

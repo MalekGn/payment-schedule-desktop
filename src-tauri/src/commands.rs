@@ -26,7 +26,8 @@ use crate::db::{
     ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, CLIENT_ARCHIVED, CLIENT_HAS_PURCHASES,
     CLIENT_NOT_FOUND, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT, INVALID_INSTALLMENT_COUNT,
     INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LOGO_TYPE, INVALID_TOTAL_PRICE,
-    LOGO_TOO_LARGE, OVERPAYMENT, PURCHASE_NOT_FOUND, SUM_MISMATCH,
+    LOGO_TOO_LARGE, OVERPAYMENT, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED,
+    PURCHASE_NOT_FOUND, SUM_MISMATCH,
 };
 use crate::models::*;
 
@@ -62,12 +63,30 @@ fn fetch_client(conn: &Connection, id: i64) -> DbResult<Client> {
 /// `COALESCE` is load-bearing: a bare `SUM` over an empty join returns `NULL`,
 /// and the comparison is deliberately done in Rust rather than in SQL, where
 /// `NULL > 0` is `NULL` rather than false.
+/// Archived purchases are excluded: they have left every other money view, so
+/// letting one block archiving its client would be inconsistent.
 fn client_outstanding(conn: &Connection, client_id: i64) -> DbResult<i64> {
     conn.query_row(
         "SELECT COALESCE(SUM(i.amount - i.paid_amount), 0)
            FROM purchase p JOIN installment i ON i.purchase_id = p.id
-          WHERE p.client_id = ?1",
+          WHERE p.client_id = ?1 AND p.archived_at IS NULL",
         [client_id],
+        |r| r.get(0),
+    )
+    .map_err(AppError::from)
+}
+
+/// How many payments have been recorded against any installment of `purchase_id`.
+///
+/// The gate on both rescheduling and archiving a purchase: regenerating the
+/// installment rows would cascade these away, and archiving one that carries
+/// real cash would take that cash out of the books.
+fn payment_count(conn: &Connection, purchase_id: i64) -> DbResult<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM payment pay
+           JOIN installment i ON i.id = pay.installment_id
+          WHERE i.purchase_id = ?1",
+        [purchase_id],
         |r| r.get(0),
     )
     .map_err(AppError::from)
@@ -99,6 +118,7 @@ fn map_purchase(row: &rusqlite::Row) -> rusqlite::Result<Purchase> {
         interval_days: row.get("interval_days")?,
         purchase_date: row.get("purchase_date")?,
         created_at: row.get("created_at")?,
+        archived_at: row.get("archived_at")?,
     })
 }
 
@@ -130,12 +150,14 @@ fn load_installments(conn: &Connection, purchase_id: i64) -> DbResult<Vec<Instal
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
+/// Deliberately unfiltered by `archived_at`: an archived purchase's detail page
+/// must still open, whether reached from the archive tab or a direct link.
 fn build_purchase_detail(conn: &Connection, purchase_id: i64) -> DbResult<PurchaseDetail> {
     let purchase = conn
         .query_row(
             "SELECT id, reference, client_id, product_label, total_price,
                     installment_count, interval_kind, interval_days,
-                    purchase_date, created_at
+                    purchase_date, created_at, archived_at
              FROM purchase WHERE id = ?1",
             [purchase_id],
             map_purchase,
@@ -179,6 +201,7 @@ fn build_purchase_summary(conn: &Connection, purchase_id: i64) -> DbResult<Purch
         purchase_date: detail.purchase.purchase_date.clone(),
         status: detail.status.clone(),
         overdue_count,
+        archived_at: detail.purchase.archived_at.clone(),
     })
 }
 
@@ -208,10 +231,15 @@ pub(crate) fn list_clients_impl(
     scope: ClientScope,
 ) -> DbResult<Vec<ClientSummary>> {
     let today_str = today().to_string();
-    // The predicate filters the *driving* table, so it belongs in WHERE rather
-    // than HAVING: the aggregates below are then computed only over the joined
-    // rows of the clients that survive it. Each arm is a `&'static str` — no
-    // caller input reaches the SQL text.
+    // The client predicate filters the *driving* table, so it belongs in WHERE
+    // rather than HAVING: the aggregates below are then computed only over the
+    // joined rows of the clients that survive it. Each arm is a `&'static str`
+    // — no caller input reaches the SQL text.
+    //
+    // The *purchase* predicate is different and must stay in the `LEFT JOIN …
+    // ON` clause below. Moved into this WHERE it would degrade the outer join
+    // into an inner one and drop every client who has no live purchase — see
+    // `list_clients_keeps_clients_with_no_purchases_under_every_scope`.
     let scope_predicate = match scope {
         ClientScope::Active => "c.archived_at IS NULL",
         ClientScope::Archived => "c.archived_at IS NOT NULL",
@@ -225,7 +253,8 @@ pub(crate) fn list_clients_impl(
                 COALESCE(SUM(CASE WHEN i.due_date < ?1 AND i.amount > i.paid_amount
                                   THEN 1 ELSE 0 END), 0) AS overdue_count
              FROM client c
-             LEFT JOIN purchase p ON p.client_id = c.id
+             LEFT JOIN purchase p
+                    ON p.client_id = c.id AND p.archived_at IS NULL
              LEFT JOIN installment i ON i.purchase_id = p.id
              WHERE {scope_predicate}
              GROUP BY c.id
@@ -254,10 +283,17 @@ pub async fn get_client_detail(db: State<'_, Db>, id: i64) -> DbResult<ClientDet
         .query_map([id], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
 
+    // Archived purchases are listed separately and contribute to none of the
+    // totals — the client no longer owes them.
     let mut purchases = Vec::new();
+    let mut archived_purchases = Vec::new();
     let (mut total_purchased, mut total_paid, mut overdue_count) = (0i64, 0i64, 0i64);
     for pid in ids {
         let s = build_purchase_summary(&conn, pid)?;
+        if s.archived_at.is_some() {
+            archived_purchases.push(s);
+            continue;
+        }
         total_purchased += s.total_price;
         total_paid += s.paid_amount;
         overdue_count += s.overdue_count;
@@ -268,6 +304,7 @@ pub async fn get_client_detail(db: State<'_, Db>, id: i64) -> DbResult<ClientDet
     Ok(ClientDetail {
         client,
         purchases,
+        archived_purchases,
         total_purchased,
         total_paid,
         total_outstanding,
@@ -399,16 +436,41 @@ pub(crate) fn delete_client_impl(conn: &mut Connection, id: i64) -> DbResult<()>
 // Purchases (Achats)
 // ===========================================================================
 
+/// SQL predicate selecting one slice of the purchase table.
+///
+/// Each arm is a `&'static str`, so nothing from the caller reaches the SQL
+/// text. Applied in the id query rather than over the built summaries: the
+/// listing is already N+1 (three queries per summary), so filtering afterwards
+/// would pay that cost for rows nobody asked for.
+fn purchase_scope_predicate(scope: PurchaseScope) -> &'static str {
+    match scope {
+        PurchaseScope::Active => "archived_at IS NULL",
+        PurchaseScope::Archived => "archived_at IS NOT NULL",
+        PurchaseScope::All => "1 = 1",
+    }
+}
+
+/// Purchase ids in list order, for one scope. Split out so the predicate is
+/// reachable from `cargo test` without a Tauri `State`.
+pub(crate) fn list_purchase_ids(conn: &Connection, scope: PurchaseScope) -> DbResult<Vec<i64>> {
+    let predicate = purchase_scope_predicate(scope);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM purchase WHERE {predicate} ORDER BY purchase_date DESC, id DESC"
+    ))?;
+    let ids = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(ids)
+}
+
 #[tauri::command]
 pub async fn list_purchases(
     db: State<'_, Db>,
+    scope: Option<PurchaseScope>,
     search: Option<String>,
 ) -> DbResult<Vec<PurchaseSummary>> {
     let conn = db.lock();
-    let mut stmt = conn.prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC")?;
-    let ids: Vec<i64> = stmt
-        .query_map([], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
+    let ids = list_purchase_ids(&conn, scope.unwrap_or_default())?;
 
     let needle = search
         .map(|s| s.trim().to_lowercase())
@@ -467,14 +529,16 @@ fn validate_purchase_input(input: &PurchaseInput) -> DbResult<chrono::NaiveDate>
     parse_date(&input.purchase_date)
 }
 
-pub(crate) fn create_purchase_impl(
-    conn: &mut Connection,
-    input: PurchaseInput,
-) -> DbResult<PurchaseDetail> {
-    let purchase_date = validate_purchase_input(&input)?;
-
-    // Resolve the amounts and due dates *before* opening the transaction so a
-    // rejected request never touches the database at all.
+/// Resolve a request into the installment amounts and due dates to write.
+///
+/// Shared by create and update so the two can never drift: a rescheduling edit
+/// has to produce byte-identical rows to creating the same purchase from
+/// scratch. Runs entirely before any transaction opens, so a rejected request
+/// never touches the database.
+fn resolve_schedule(
+    input: &PurchaseInput,
+    purchase_date: chrono::NaiveDate,
+) -> DbResult<(Vec<i64>, Vec<String>)> {
     let amounts = match &input.installments {
         Some(list) if !list.is_empty() => {
             let sum: i64 = list.iter().map(|i| i.amount).sum();
@@ -514,6 +578,34 @@ pub(crate) fn create_purchase_impl(
             .collect(),
     };
 
+    Ok((amounts, due_dates))
+}
+
+/// Insert the installment rows for `purchase_id`. `idx` is 1-based positional.
+fn insert_installments(
+    tx: &rusqlite::Transaction,
+    purchase_id: i64,
+    amounts: &[i64],
+    due_dates: &[String],
+) -> DbResult<()> {
+    for (i, (amount, due)) in amounts.iter().zip(due_dates).enumerate() {
+        let idx = (i as i64) + 1;
+        tx.execute(
+            "INSERT INTO installment (purchase_id, idx, amount, due_date)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![purchase_id, idx, amount, due],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn create_purchase_impl(
+    conn: &mut Connection,
+    input: PurchaseInput,
+) -> DbResult<PurchaseDetail> {
+    let purchase_date = validate_purchase_input(&input)?;
+    let (amounts, due_dates) = resolve_schedule(&input, purchase_date)?;
+
     let tx = conn.transaction()?;
 
     // An archived client must not take on new debt. Beyond the UI (whose picker
@@ -546,14 +638,7 @@ pub(crate) fn create_purchase_impl(
         params![reference, purchase_id],
     )?;
 
-    for (i, (amount, due)) in amounts.iter().zip(&due_dates).enumerate() {
-        let idx = (i as i64) + 1;
-        tx.execute(
-            "INSERT INTO installment (purchase_id, idx, amount, due_date)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![purchase_id, idx, amount, due],
-        )?;
-    }
+    insert_installments(&tx, purchase_id, &amounts, &due_dates)?;
 
     tx.commit()?;
     log::info!(
@@ -563,20 +648,182 @@ pub(crate) fn create_purchase_impl(
     build_purchase_detail(conn, purchase_id)
 }
 
-#[tauri::command]
-pub async fn delete_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
-    delete_purchase_impl(&db.lock(), id)
+/// Whether applying `input` would produce different installment rows.
+///
+/// Compares the *resolved* schedule against what is stored rather than trusting
+/// the presence of `input.installments`: the editor always sends the rows it is
+/// displaying, so a label-only edit arrives carrying an installment list
+/// identical to the stored one. Treating that as a reschedule would lock the
+/// label behind the payment guard for no reason.
+fn schedule_changed(
+    existing: &PurchaseDetail,
+    input: &PurchaseInput,
+    amounts: &[i64],
+    due_dates: &[String],
+) -> bool {
+    let p = &existing.purchase;
+    if p.total_price != input.total_price
+        || p.installment_count != input.installment_count
+        || p.interval_kind != input.interval_kind
+        || p.interval_days != input.interval_days
+        || p.purchase_date != input.purchase_date
+    {
+        return true;
+    }
+    existing.installments.len() != amounts.len()
+        || existing
+            .installments
+            .iter()
+            .zip(amounts.iter().zip(due_dates))
+            .any(|(inst, (amount, due))| inst.amount != *amount || inst.due_date != *due)
 }
 
-pub(crate) fn delete_purchase_impl(conn: &Connection, id: i64) -> DbResult<()> {
-    conn.execute("DELETE FROM purchase WHERE id = ?1", [id])?;
-    log::info!("deleted purchase id={id}");
+/// Edit a purchase.
+///
+/// The product label is always editable. Everything the schedule is derived
+/// from — total, count, interval and the purchase date that anchors it — may
+/// only change while no payment has been recorded, because applying it means
+/// regenerating the installment rows, and those rows own the payments through
+/// an `ON DELETE CASCADE`. `client_id` is ignored: moving a purchase to another
+/// client is not something this command does.
+#[tauri::command]
+pub async fn update_purchase(
+    db: State<'_, Db>,
+    id: i64,
+    input: PurchaseInput,
+) -> DbResult<PurchaseDetail> {
+    update_purchase_impl(&mut db.lock(), id, input)
+}
+
+pub(crate) fn update_purchase_impl(
+    conn: &mut Connection,
+    id: i64,
+    input: PurchaseInput,
+) -> DbResult<PurchaseDetail> {
+    let purchase_date = validate_purchase_input(&input)?;
+    let (amounts, due_dates) = resolve_schedule(&input, purchase_date)?;
+
+    let tx = conn.transaction()?;
+    let existing = build_purchase_detail(&tx, id)?;
+    if existing.purchase.archived_at.is_some() {
+        return Err(AppError::conflict(PURCHASE_ARCHIVED, ""));
+    }
+
+    let reschedule = schedule_changed(&existing, &input, &amounts, &due_dates);
+    if reschedule {
+        let paid = payment_count(&tx, id)?;
+        if paid > 0 {
+            return Err(AppError::conflict(PURCHASE_HAS_PAYMENTS, paid));
+        }
+    }
+
+    tx.execute(
+        "UPDATE purchase SET product_label = ?1, total_price = ?2,
+             installment_count = ?3, interval_kind = ?4, interval_days = ?5,
+             purchase_date = ?6
+         WHERE id = ?7",
+        params![
+            input.product_label.trim(),
+            input.total_price,
+            input.installment_count,
+            input.interval_kind,
+            input.interval_days,
+            input.purchase_date,
+            id,
+        ],
+    )?;
+
+    if reschedule {
+        // Safe precisely because the guard above proved there are no payments:
+        // dropping these rows would otherwise cascade the payment ledger away.
+        tx.execute("DELETE FROM installment WHERE purchase_id = ?1", [id])?;
+        insert_installments(&tx, id, &amounts, &due_dates)?;
+    }
+
+    tx.commit()?;
+    log::info!("updated purchase id={id} (rescheduled: {reschedule})");
+    build_purchase_detail(conn, id)
+}
+
+/// Archive a purchase: remove it from every list and every total, reversibly.
+#[tauri::command]
+pub async fn archive_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    archive_purchase_impl(&mut db.lock(), id)
+}
+
+/// Refused once any payment has been recorded against it.
+///
+/// This is half of the invariant the money queries rely on: **an archived
+/// purchase carries zero payments**. Together with the guard in
+/// `record_payment_impl` it means `total_collected` never has to filter on
+/// `archived_at` — an archived purchase has nothing to contribute to it.
+/// It also means a purchase against which real cash was taken is permanent:
+/// it can be neither archived nor deleted.
+pub(crate) fn archive_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    build_purchase_detail(&tx, id)?;
+    let paid = payment_count(&tx, id)?;
+    if paid > 0 {
+        return Err(AppError::conflict(PURCHASE_HAS_PAYMENTS, paid));
+    }
+    // `date('now')` and the `IS NULL` guard: see `archive_client_impl`.
+    tx.execute(
+        "UPDATE purchase SET archived_at = date('now')
+          WHERE id = ?1 AND archived_at IS NULL",
+        [id],
+    )?;
+    tx.commit()?;
+    log::info!("archived purchase id={id}");
+    Ok(())
+}
+
+/// Restore an archived purchase, putting it back into every total.
+#[tauri::command]
+pub async fn restore_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    restore_purchase_impl(&mut db.lock(), id)
+}
+
+pub(crate) fn restore_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    build_purchase_detail(&tx, id)?;
+    tx.execute("UPDATE purchase SET archived_at = NULL WHERE id = ?1", [id])?;
+    tx.commit()?;
+    log::info!("restored purchase id={id}");
+    Ok(())
+}
+
+/// Destroy a purchase and its installments for good.
+///
+/// Only ever permitted for a purchase that is already archived, which makes
+/// the two-step real rather than a convention the UI could forget. Combined
+/// with the archive guard, a purchase carrying payments can never reach here.
+#[tauri::command]
+pub async fn delete_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+    delete_purchase_impl(&mut db.lock(), id)
+}
+
+pub(crate) fn delete_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    // Deleting an id that is already gone used to succeed silently.
+    let purchase = build_purchase_detail(&tx, id)?.purchase;
+    if purchase.archived_at.is_none() {
+        return Err(AppError::conflict(PURCHASE_NOT_ARCHIVED, ""));
+    }
+    tx.execute("DELETE FROM purchase WHERE id = ?1", [id])?;
+    tx.commit()?;
+    log::info!("deleted archived purchase id={id}");
     Ok(())
 }
 
 // ===========================================================================
 // Payments
 // ===========================================================================
+//
+// None of the listings below filter on `purchase.archived_at`, deliberately.
+// They are the payment ledger, and under the zero-payments invariant an
+// archived purchase has nothing in it: `archive_purchase` refuses once a
+// payment exists and `record_payment` refuses an archived purchase. A filter
+// here would be dead weight on a join that is already four tables deep.
 
 /// Record a payment against a specific installment. Supports partial payments:
 /// the installment's `paid_amount` accumulates and `paid_date` is set once it
@@ -604,6 +851,18 @@ pub(crate) fn record_payment_impl(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| AppError::not_found(INSTALLMENT_NOT_FOUND))?;
+
+    // The other half of "an archived purchase carries zero payments": without
+    // this, an archived purchase could accrue cash that no total would ever
+    // show, because every money query filters archived purchases out.
+    let archived: Option<String> = tx.query_row(
+        "SELECT archived_at FROM purchase WHERE id = ?1",
+        [purchase_id],
+        |r| r.get(0),
+    )?;
+    if archived.is_some() {
+        return Err(AppError::conflict(PURCHASE_ARCHIVED, ""));
+    }
 
     // Reject overpayment rather than absorbing it. An uncapped `paid_amount`
     // makes `amount - paid_amount` negative, and that column is summed straight
@@ -755,8 +1014,12 @@ fn build_impayes(
          FROM installment i
          JOIN purchase pu ON pu.id = i.purchase_id
          JOIN client c ON c.id = pu.client_id
-         WHERE i.due_date < ?1 AND i.amount > i.paid_amount",
+         WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+           AND pu.archived_at IS NULL",
     );
+    // The archived-purchase predicate above is deliberately a literal with no
+    // placeholder, so it costs the numbering below nothing.
+    //
     // Bind parameters in lockstep with the placeholders: only the optional
     // filters that are actually present contribute both a `?n` clause and a
     // value, so the numbering stays sequential and the count always matches.
@@ -854,7 +1117,11 @@ fn build_impayes(
 /// (Échéances) screen. Sorted by due date.
 #[tauri::command]
 pub async fn list_schedule(db: State<'_, Db>) -> DbResult<Vec<ScheduleRow>> {
-    let conn = db.lock();
+    list_schedule_rows(&db.lock())
+}
+
+/// Split out so the archived-purchase filter is reachable from `cargo test`.
+pub(crate) fn list_schedule_rows(conn: &Connection) -> DbResult<Vec<ScheduleRow>> {
     let today = today();
     let mut stmt = conn.prepare(
         "SELECT i.id, i.purchase_id, pu.reference, c.id AS client_id,
@@ -863,6 +1130,7 @@ pub async fn list_schedule(db: State<'_, Db>) -> DbResult<Vec<ScheduleRow>> {
              FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
              JOIN client c ON c.id = pu.client_id
+             WHERE pu.archived_at IS NULL
              ORDER BY i.due_date ASC, i.id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -910,36 +1178,59 @@ pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbR
         .clamp(*UPCOMING_DAYS_RANGE.start(), *UPCOMING_DAYS_RANGE.end());
     let horizon = add_interval(today, "custom", Some(days), 1).to_string();
 
-    let total_purchases: i64 = conn.query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))?;
-    let total_sales: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(total_price),0) FROM purchase",
+    // Every figure below excludes archived purchases: an archived purchase has
+    // been removed from the books and must not be owed, sold or counted.
+    //
+    // The three installment-only aggregates cannot simply gain a WHERE clause —
+    // they never mention `purchase` — so each carries an EXISTS instead. Miss
+    // one and the headline number silently disagrees with the list it links to.
+    let total_purchases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM purchase WHERE archived_at IS NULL",
         [],
         |r| r.get(0),
     )?;
+    let total_sales: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(total_price),0) FROM purchase WHERE archived_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    // Deliberately unfiltered. `archive_purchase` refuses once a payment
+    // exists and `record_payment` refuses an archived purchase, so an archived
+    // purchase has no payments to exclude — joining payment → installment →
+    // purchase here would cost the app's hottest aggregate nothing but time.
+    // `archiving_is_impossible_once_a_payment_exists` is what keeps that true.
     let total_collected: i64 =
         conn.query_row("SELECT COALESCE(SUM(amount),0) FROM payment", [], |r| {
             r.get(0)
         })?;
     let total_outstanding: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(amount - paid_amount),0) FROM installment",
+        "SELECT COALESCE(SUM(i.amount - i.paid_amount),0) FROM installment i
+             WHERE EXISTS (SELECT 1 FROM purchase pu
+                            WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
         [],
         |r| r.get(0),
     )?;
     let overdue_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM installment WHERE due_date < ?1 AND amount > paid_amount",
+        "SELECT COUNT(*) FROM installment i
+             WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+               AND EXISTS (SELECT 1 FROM purchase pu
+                            WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
         [&today_str],
         |r| r.get(0),
     )?;
     let overdue_clients: i64 = conn.query_row(
         "SELECT COUNT(DISTINCT pu.client_id) FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
-             WHERE i.due_date < ?1 AND i.amount > i.paid_amount",
+             WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+               AND pu.archived_at IS NULL",
         [&today_str],
         |r| r.get(0),
     )?;
     let upcoming_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM installment
-             WHERE due_date >= ?1 AND due_date <= ?2 AND amount > paid_amount",
+        "SELECT COUNT(*) FROM installment i
+             WHERE i.due_date >= ?1 AND i.due_date <= ?2 AND i.amount > i.paid_amount
+               AND EXISTS (SELECT 1 FROM purchase pu
+                            WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
         params![today_str, horizon],
         |r| r.get(0),
     )?;
@@ -955,8 +1246,10 @@ pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbR
     };
 
     // Recent purchases (latest 5).
-    let mut stmt =
-        conn.prepare("SELECT id FROM purchase ORDER BY purchase_date DESC, id DESC LIMIT 5")?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM purchase WHERE archived_at IS NULL
+             ORDER BY purchase_date DESC, id DESC LIMIT 5",
+    )?;
     let recent_ids: Vec<i64> = stmt
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
@@ -972,6 +1265,7 @@ pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbR
             "SELECT i.purchase_id FROM installment i
              JOIN purchase pu ON pu.id = i.purchase_id
              WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+               AND pu.archived_at IS NULL
              ORDER BY pu.purchase_date DESC, pu.id DESC LIMIT 1",
             [&today_str],
             |r| r.get(0),
@@ -991,6 +1285,7 @@ pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbR
              JOIN purchase pu ON pu.id = i.purchase_id
              JOIN client c ON c.id = pu.client_id
              WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+               AND pu.archived_at IS NULL
              ORDER BY i.due_date ASC LIMIT 4",
     )?;
     let due_alerts = stmt
@@ -1408,6 +1703,22 @@ mod tests {
     // untested, and the integration/E2E suites only ever drove the TS mock.
     // =======================================================================
 
+    /// Every money read model's headline figure, captured together.
+    ///
+    /// Archiving a purchase has to move all of these at once and restoring has
+    /// to put them all back; comparing whole snapshots catches the query someone
+    /// forgot to filter far better than asserting them one at a time.
+    #[derive(Debug, PartialEq, Eq)]
+    struct MoneySnapshot {
+        purchases: i64,
+        sales: i64,
+        outstanding: i64,
+        overdue: i64,
+        impayes: i64,
+        schedule: i64,
+        client_outstanding: i64,
+    }
+
     /// A fresh database with exactly one client and nothing else.
     struct Fixture {
         db: Db,
@@ -1454,6 +1765,52 @@ mod tests {
 
         fn count(&self, sql: &str) -> i64 {
             self.db.lock().query_row(sql, [], |r| r.get(0)).unwrap()
+        }
+
+        /// The archive stamp for a purchase, or `None` while it is live.
+        fn purchase_archived_at(&self, id: i64) -> Option<String> {
+            self.db
+                .lock()
+                .query_row(
+                    "SELECT archived_at FROM purchase WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+
+        /// Every money read model in one shot, so an archive can be checked
+        /// against all of them at once and a restore proved exact.
+        fn money_snapshot(&self) -> MoneySnapshot {
+            let conn = self.db.lock();
+            let today_str = today().to_string();
+            let scalar = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+            MoneySnapshot {
+                purchases: scalar("SELECT COUNT(*) FROM purchase WHERE archived_at IS NULL"),
+                sales: scalar(
+                    "SELECT COALESCE(SUM(total_price),0) FROM purchase WHERE archived_at IS NULL",
+                ),
+                outstanding: scalar(
+                    "SELECT COALESCE(SUM(i.amount - i.paid_amount),0) FROM installment i
+                       WHERE EXISTS (SELECT 1 FROM purchase pu
+                                      WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
+                ),
+                overdue: conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM installment i
+                           WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+                             AND EXISTS (SELECT 1 FROM purchase pu
+                                          WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
+                        [&today_str],
+                        |r| r.get(0),
+                    )
+                    .unwrap(),
+                impayes: build_impayes(&conn, ImpayeFilter::default(), None)
+                    .unwrap()
+                    .len() as i64,
+                schedule: list_schedule_rows(&conn).unwrap().len() as i64,
+                client_outstanding: client_outstanding(&conn, self.client_id).unwrap(),
+            }
         }
 
         /// The archive stamp for a client, or `None` while they are active.
@@ -2086,30 +2443,297 @@ mod tests {
         }
     }
 
+    /// Deleting is now the second half of a two-step, enforced in the backend
+    /// rather than left to the UI to remember.
     #[test]
-    fn delete_purchase_cascades_to_installments_and_payments() {
+    fn delete_purchase_refuses_one_that_has_not_been_archived() {
+        let f = Fixture::new("del_purchase_live");
+        let detail = seeded_purchase(&f);
+
+        let err = delete_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_NOT_ARCHIVED");
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 1);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+    }
+
+    #[test]
+    fn delete_purchase_destroys_an_archived_one_and_cascades() {
         let f = Fixture::new("del_purchase");
         let detail = seeded_purchase(&f);
-        {
-            let mut conn = f.db.lock();
-            record_payment_impl(
-                &mut conn,
-                PaymentInput {
-                    installment_id: detail.installments[0].id,
-                    amount: 250,
-                    payment_date: "2024-01-20".into(),
-                    note: None,
-                },
-            )
-            .unwrap();
-        }
+        archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
 
-        delete_purchase_impl(&f.db.lock(), detail.purchase.id).unwrap();
+        delete_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
 
         assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
         assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
-        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
         assert_eq!(f.count("SELECT COUNT(*) FROM client"), 1, "client survives");
+    }
+
+    #[test]
+    fn delete_purchase_reports_a_missing_id() {
+        let f = Fixture::new("del_purchase_missing");
+        let err = delete_purchase_impl(&mut f.db.lock(), 99_999).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_NOT_FOUND");
+    }
+
+    // --- purchase archive / restore ----------------------------------------
+
+    /// Record a payment against the first installment of `detail`.
+    fn pay_first(f: &Fixture, detail: &PurchaseDetail, amount: i64) {
+        let mut conn = f.db.lock();
+        record_payment_impl(
+            &mut conn,
+            PaymentInput {
+                installment_id: detail.installments[0].id,
+                amount,
+                payment_date: "2024-01-20".into(),
+                note: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The invariant the money queries lean on: archiving is impossible once
+    /// cash has been recorded, which is why `total_collected` needs no filter.
+    #[test]
+    fn archiving_is_impossible_once_a_payment_exists() {
+        let f = Fixture::new("archive_purchase_paid");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+
+        let err = archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_HAS_PAYMENTS:1");
+        assert!(f.purchase_archived_at(detail.purchase.id).is_none());
+
+        // ...and therefore it cannot be deleted either. It is permanent.
+        let err = delete_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_NOT_ARCHIVED");
+    }
+
+    /// The other half: an archived purchase cannot start collecting cash.
+    #[test]
+    fn an_archived_purchase_cannot_take_a_payment() {
+        let f = Fixture::new("archive_purchase_pay");
+        let detail = seeded_purchase(&f);
+        archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+
+        let err = record_payment_impl(
+            &mut f.db.lock(),
+            PaymentInput {
+                installment_id: detail.installments[0].id,
+                amount: 250,
+                payment_date: "2024-01-20".into(),
+                note: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_ARCHIVED");
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
+    }
+
+    #[test]
+    fn archive_purchase_stamps_an_iso_date_and_restore_clears_it() {
+        let f = Fixture::new("archive_purchase_stamp");
+        let detail = seeded_purchase(&f);
+
+        archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+        let first = f.purchase_archived_at(detail.purchase.id).unwrap();
+        assert_eq!(first.len(), 10, "expected YYYY-MM-DD, got {first:?}");
+
+        // Re-archiving must not move the stamp.
+        archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+        assert_eq!(f.purchase_archived_at(detail.purchase.id).unwrap(), first);
+
+        restore_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+        assert!(f.purchase_archived_at(detail.purchase.id).is_none());
+        // Restoring an already-live purchase is the state the caller asked for.
+        restore_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+        assert!(f.purchase_archived_at(detail.purchase.id).is_none());
+    }
+
+    #[test]
+    fn archive_and_restore_purchase_report_a_missing_id() {
+        let f = Fixture::new("archive_purchase_missing");
+        assert_eq!(
+            code_of(archive_purchase_impl(&mut f.db.lock(), 99_999).unwrap_err()),
+            "PURCHASE_NOT_FOUND"
+        );
+        assert_eq!(
+            code_of(restore_purchase_impl(&mut f.db.lock(), 99_999).unwrap_err()),
+            "PURCHASE_NOT_FOUND"
+        );
+    }
+
+    /// Archiving must take the purchase out of every money read model, and
+    /// restoring must put it back exactly. This is the whole point of the
+    /// filter sweep, and the one test that covers all of them at once.
+    #[test]
+    fn archiving_removes_the_purchase_from_every_money_view() {
+        let f = Fixture::new("archive_purchase_money");
+        let detail = seeded_purchase(&f);
+        let pid = detail.purchase.id;
+
+        let before = f.money_snapshot();
+        assert!(before.outstanding > 0, "fixture must owe something");
+
+        archive_purchase_impl(&mut f.db.lock(), pid).unwrap();
+        let after = f.money_snapshot();
+
+        assert_eq!(after.purchases, 0, "dashboard purchase count");
+        assert_eq!(after.sales, 0, "dashboard total sales");
+        assert_eq!(after.outstanding, 0, "dashboard outstanding");
+        assert_eq!(after.overdue, 0, "dashboard overdue installments");
+        assert_eq!(after.impayes, 0, "impayés rows");
+        assert_eq!(after.schedule, 0, "échéances rows");
+        assert_eq!(after.client_outstanding, 0, "the client's balance");
+
+        // The rows themselves are untouched — this is a hide, not a delete.
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 1);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+
+        restore_purchase_impl(&mut f.db.lock(), pid).unwrap();
+        assert_eq!(f.money_snapshot(), before, "restore must be exact");
+    }
+
+    #[test]
+    fn list_purchases_partitions_by_scope() {
+        let f = Fixture::new("purchase_scope");
+        let live = seeded_purchase(&f);
+        let archived = create_purchase_impl(&mut f.db.lock(), f.purchase_input()).unwrap();
+        archive_purchase_impl(&mut f.db.lock(), archived.purchase.id).unwrap();
+
+        let conn = f.db.lock();
+        let ids = |scope| list_purchase_ids(&conn, scope).unwrap();
+        assert_eq!(ids(PurchaseScope::Active), vec![live.purchase.id]);
+        assert_eq!(ids(PurchaseScope::Archived), vec![archived.purchase.id]);
+        assert_eq!(ids(PurchaseScope::All).len(), 2);
+    }
+
+    // --- purchase edit ------------------------------------------------------
+
+    #[test]
+    fn updating_the_label_alone_is_allowed_even_after_a_payment() {
+        let f = Fixture::new("update_label");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+
+        let mut input = f.purchase_input();
+        input.product_label = "Réfrigérateur".into();
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(updated.purchase.product_label, "Réfrigérateur");
+        // The schedule and the payment are untouched.
+        assert_eq!(updated.installments.len(), 4);
+        assert_eq!(updated.total_paid, 250);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+    }
+
+    /// The editor always sends the installment rows it is displaying, so a
+    /// label-only edit arrives carrying a list identical to the stored one.
+    /// That must not read as a reschedule, or the label would be locked behind
+    /// the payment guard for no reason.
+    #[test]
+    fn resending_the_unchanged_schedule_is_not_a_reschedule() {
+        let f = Fixture::new("update_same_rows");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+
+        let mut input = f.purchase_input();
+        input.product_label = "Congélateur".into();
+        input.installments = Some(
+            detail
+                .installments
+                .iter()
+                .map(|i| InstallmentInput {
+                    index: i.index,
+                    amount: i.amount,
+                    due_date: i.due_date.clone(),
+                })
+                .collect(),
+        );
+
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+        assert_eq!(updated.purchase.product_label, "Congélateur");
+        assert_eq!(updated.total_paid, 250, "the payment survived");
+    }
+
+    #[test]
+    fn rescheduling_is_refused_once_a_payment_exists() {
+        let f = Fixture::new("update_locked");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+
+        for mutate in [
+            (|i: &mut PurchaseInput| i.total_price = 2000) as fn(&mut PurchaseInput),
+            |i: &mut PurchaseInput| i.installment_count = 6,
+            |i: &mut PurchaseInput| i.interval_kind = "weekly".into(),
+            |i: &mut PurchaseInput| i.purchase_date = "2024-02-01".into(),
+        ] {
+            let mut input = f.purchase_input();
+            mutate(&mut input);
+            let err =
+                update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+            assert_eq!(code_of(err), "PURCHASE_HAS_PAYMENTS:1");
+        }
+
+        // Nothing moved.
+        let after = build_purchase_detail(&f.db.lock(), detail.purchase.id).unwrap();
+        assert_eq!(after.purchase.total_price, 1000);
+        assert_eq!(after.purchase.purchase_date, "2024-01-15");
+        assert_eq!(after.installments.len(), 4);
+    }
+
+    #[test]
+    fn rescheduling_regenerates_the_installments_while_unpaid() {
+        let f = Fixture::new("update_reschedule");
+        let detail = seeded_purchase(&f);
+
+        let mut input = f.purchase_input();
+        input.total_price = 900;
+        input.installment_count = 3;
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(updated.purchase.total_price, 900);
+        let amounts: Vec<i64> = updated.installments.iter().map(|i| i.amount).collect();
+        assert_eq!(amounts, vec![300, 300, 300]);
+        // Regenerated, not appended.
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 3);
+        // The reference is derived at creation and must survive an edit.
+        assert_eq!(updated.purchase.reference, detail.purchase.reference);
+    }
+
+    #[test]
+    fn updating_an_archived_purchase_is_refused() {
+        let f = Fixture::new("update_archived");
+        let detail = seeded_purchase(&f);
+        archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
+
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, f.purchase_input())
+            .unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_ARCHIVED");
+    }
+
+    #[test]
+    fn updating_rejects_a_mismatched_manual_split_without_writing() {
+        let f = Fixture::new("update_mismatch");
+        let detail = seeded_purchase(&f);
+
+        let mut input = f.purchase_input();
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 400,
+                due_date: "2024-01-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 500,
+                due_date: "2024-02-15".into(),
+            },
+        ]);
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "SUM_MISMATCH:900:1000");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
     }
 
     // --- settings ----------------------------------------------------------

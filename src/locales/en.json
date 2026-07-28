@@ -128,6 +128,11 @@
     "title": "Purchases",
     "new": "New purchase",
     "searchPlaceholder": "Search a purchase, client, product…",
+    "scope": {
+      "active": "Active",
+      "archived": "Archived",
+      "all": "All"
+    },
     "columns": {
       "reference": "Ref.",
       "client": "Client",
@@ -155,14 +160,37 @@
       "sumOk": "Installments add up to the total.",
       "sumMismatch": "Installments ({sum}) don't match the total ({total}).",
       "recompute": "Recalculate automatically",
-      "submit": "Save purchase"
+      "submit": "Save purchase",
+      "editTitle": "Edit purchase",
+      "saveEdit": "Save changes",
+      "lockedByPayments": "{count} payment(s) already recorded: the amount, the schedule and the date can no longer change. Only the product label can be edited."
     },
     "interval": {
       "weekly": "Weekly",
       "monthly": "Monthly",
       "custom": "Custom"
     },
-    "empty": "No purchases yet. Create your first purchase."
+    "empty": "No purchases yet. Create your first purchase.",
+    "emptyArchived": "No archived purchases.",
+    "archivedBadge": "Archived",
+    "archivedOn": "Archived on {date}",
+    "archivedSection": "Archived purchases",
+    "archive": {
+      "action": "Archive",
+      "confirmTitle": "Archive purchase",
+      "confirmText": "This purchase will be removed from the lists and from every total. Nothing is lost — you can restore it at any time.",
+      "hasPayments": "{count} payment(s) have already been collected on this purchase. It cannot be archived."
+    },
+    "restore": {
+      "action": "Restore",
+      "confirmTitle": "Restore purchase",
+      "confirmText": "This purchase will reappear in the lists and count towards the totals again."
+    },
+    "delete": {
+      "action": "Delete permanently",
+      "confirmTitle": "Delete purchase permanently",
+      "confirmText": "This purchase and its installments will be erased for good. This cannot be undone."
+    }
   },
   "clients": {
     "title": "Clients",
@@ -351,6 +379,9 @@
     "clientArchived": "This client is archived. Restore them before recording a new purchase.",
     "clientNotFound": "This client no longer exists.",
     "purchaseNotFound": "This purchase no longer exists.",
+    "purchaseHasPayments": "{count} payment(s) have already been collected on this purchase.",
+    "purchaseArchived": "This purchase is archived. Restore it before editing it or recording a payment.",
+    "purchaseNotArchived": "Archive this purchase before deleting it permanently.",
     "installmentNotFound": "This installment no longer exists.",
     "invalidDate": "Please enter a valid date.",
     "invalidTotalPrice": "The total price must be greater than zero.",

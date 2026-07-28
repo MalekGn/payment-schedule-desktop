@@ -44,6 +44,9 @@
 //! | `CLIENT_ARCHIVED`             | New purchase for an archived client            |
 //! | `CLIENT_NOT_FOUND`            | No such client                                 |
 //! | `PURCHASE_NOT_FOUND`          | No such purchase                               |
+//! | `PURCHASE_HAS_PAYMENTS:{n}`   | Archive/reschedule of a purchase already paid  |
+//! | `PURCHASE_ARCHIVED`           | Payment on, or edit of, an archived purchase   |
+//! | `PURCHASE_NOT_ARCHIVED`       | Permanent delete before archiving              |
 //! | `INSTALLMENT_NOT_FOUND`       | No such installment                            |
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |

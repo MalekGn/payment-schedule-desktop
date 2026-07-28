@@ -214,8 +214,16 @@ Everything is stored locally in the OS **app-data directory**:
 ### Backing up
 
 **Settings → Backup database** writes a consistent snapshot to a location you
-choose. Take one before deleting purchases: a purchase delete cascades to its
-installments and payments and cannot be undone.
+choose. Take one before emptying the purchase archive: that final delete
+cascades to the purchase's installments and cannot be undone.
+
+Purchases follow the same reversible-by-default rule as clients. Editing one is
+free while nothing has been paid on it; once a payment is recorded, the amount,
+the schedule and the date lock and only the product label can change. Removing a
+purchase **archives** it — it disappears from every list and every total and can
+be restored exactly — and archiving is refused once a payment has been
+collected, so a purchase that took real money stays on the books. A purchase
+must be archived before it can be deleted for good.
 
 Clients are safer by design. A client who has any purchase cannot be deleted at
 all — you **archive** them instead, which hides them from the client list and

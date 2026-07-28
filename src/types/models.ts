@@ -8,6 +8,9 @@ export type IntervalKind = "weekly" | "monthly" | "custom";
 /** Which slice of the client list to fetch. Defaults to `"active"`. */
 export type ClientScope = "active" | "archived" | "all";
 
+/** Which slice of the purchase list to fetch. Defaults to `"active"`. */
+export type PurchaseScope = "active" | "archived" | "all";
+
 export interface Client {
   id: number;
   firstName: string;
@@ -40,7 +43,10 @@ export interface ClientSummary extends Client {
 
 export interface ClientDetail {
   client: Client;
+  /** Live purchases. The totals below are computed from these alone. */
   purchases: PurchaseSummary[];
+  /** Archived purchases, shown separately and excluded from every total. */
+  archivedPurchases: PurchaseSummary[];
   totalPurchased: number;
   totalPaid: number;
   totalOutstanding: number;
@@ -58,6 +64,12 @@ export interface Purchase {
   intervalDays: number | null;
   purchaseDate: string;
   createdAt: string;
+  /**
+   * ISO date the purchase was archived, or `null` while it is live.
+   * An archived purchase leaves every money view and always carries zero
+   * payments — archiving is refused once any payment is recorded.
+   */
+  archivedAt: string | null;
 }
 
 export interface PurchaseSummary {
@@ -73,6 +85,8 @@ export interface PurchaseSummary {
   purchaseDate: string;
   status: PurchaseStatus;
   overdueCount: number;
+  /** Mirrors `Purchase.archivedAt`; repeated because this row is flat. */
+  archivedAt: string | null;
 }
 
 export interface Installment {

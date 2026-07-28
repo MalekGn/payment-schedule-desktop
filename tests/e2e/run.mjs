@@ -180,6 +180,173 @@ test("achats list renders 8 purchases and search filters them", async (page) => 
   assert(/Samsung/i.test(row), `filtered row should mention Samsung, got: ${row}`);
 });
 
+test("editing a purchase's label from the Achats list", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  await row.locator('button[title="Modifier"]').click();
+
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await modal.locator(".modal-head h2").innerText(),
+    "Modifier l'achat",
+    "edit modal title",
+  );
+  // The client cannot change hands on an edit.
+  assertEqual(await modal.locator("#np-client").isDisabled(), true, "client select is fixed");
+
+  await modal.locator("#np-product").fill("Four électrique encastrable");
+  await modal.getByRole("button", { name: "Enregistrer les modifications" }).click();
+  await modal.waitFor({ state: "hidden", timeout: 5000 });
+
+  // Stays on the list rather than drilling in, and the new label is there.
+  await page.waitForFunction(
+    () => document.body.innerText.includes("Four électrique encastrable"),
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), 8, "still 8 purchases");
+});
+
+test("a purchase with payments locks its schedule fields in the editor", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // "Réfrigérateur Samsung 260L" has one installment paid in the seed.
+  const row = page.locator("table.table tbody tr", { hasText: "Samsung" });
+  await row.locator('button[title="Modifier"]').click();
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+
+  const note = modal.locator(".locked-note");
+  await note.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await note.innerText()).trim();
+  assert(/paiement/i.test(text), `expected the locked reason, got: ${text}`);
+
+  assertEqual(await modal.locator("#np-total").isDisabled(), true, "total is locked");
+  assertEqual(await modal.locator("#np-count").isDisabled(), true, "installment count is locked");
+  assertEqual(await modal.locator("#np-interval").isDisabled(), true, "interval is locked");
+  // ...but the label is not.
+  assertEqual(await modal.locator("#np-product").isDisabled(), false, "label stays editable");
+});
+
+test("archiving a purchase with payments is refused before the user can confirm", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Samsung" });
+  await row.locator('button[title="Archiver"]').click();
+
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  const warning = dialog.locator(".confirm-warning");
+  await warning.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await warning.innerText()).trim();
+  assert(/paiement/i.test(text), `expected the payments refusal, got: ${text}`);
+  assert(
+    !/PURCHASE_HAS_PAYMENTS/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  assertEqual(
+    await dialog.getByRole("button", { name: "Archiver" }).isDisabled(),
+    true,
+    "the archive button must be disabled",
+  );
+
+  await dialog.getByRole("button", { name: "Annuler" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 8, "nothing was archived");
+});
+
+test("archiving an unpaid purchase takes it out of the list and the dashboard", async (page) => {
+  await open(page, "/");
+  const outstandingKpi = page.locator(".kpi", { hasText: "Montant restant dû" });
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 10000 });
+  const outstandingBefore = (await outstandingKpi.locator(".kpi-value").innerText()).trim();
+
+  // "Four électrique" is the one seeded purchase with nothing paid on it.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+
+  // The Archivés tab starts empty.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  const emptyState = page.locator(".empty");
+  await emptyState.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await emptyState.locator(".empty-title").innerText(),
+    "Aucun achat archivé.",
+    "the Archivés tab shows its own empty state",
+  );
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  const row = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  await row.locator('button[title="Archiver"]').click();
+
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await dialog.locator(".confirm-warning").count(), 0, "unpaid archive is not blocked");
+  await dialog.getByRole("button", { name: "Archiver" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 7,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  // It moved to the Archivés tab, badged, and offers a permanent delete there.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 1, "exactly one archived");
+  const archivedRow = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  assertEqual(await archivedRow.locator(".badge").first().innerText(), "Archivé", "archived badge");
+  assertEqual(
+    await archivedRow.locator(".icon-action--danger").count(),
+    1,
+    "permanent delete is offered only in the archive",
+  );
+
+  // The money left the dashboard with it.
+  await page.locator(".nav-item", { hasText: NAV.dashboard }).click();
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 5000 });
+  const outstandingAfter = (await outstandingKpi.locator(".kpi-value").innerText()).trim();
+  assert(
+    outstandingAfter !== outstandingBefore,
+    `outstanding should have dropped, still ${outstandingAfter}`,
+  );
+
+  // Restore puts it back.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  await page
+    .locator("table.table tbody tr", { hasText: "Four électrique" })
+    .locator('button[title="Restaurer"]')
+    .click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Restaurer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 8,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  await page.locator(".nav-item", { hasText: NAV.dashboard }).click();
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 5000 });
+  assertEqual(
+    (await outstandingKpi.locator(".kpi-value").innerText()).trim(),
+    outstandingBefore,
+    "restore must put the outstanding back exactly",
+  );
+});
+
 test("impayés page lists overdue clients and sidebar shows a danger badge", async (page) => {
   await open(page, "/impayes");
   // Seed produces past-due unpaid installments, so this must not be the empty state.

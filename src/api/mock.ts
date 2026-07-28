@@ -26,6 +26,7 @@ import type {
   PaymentInput,
   PurchaseDetail,
   PurchaseInput,
+  PurchaseScope,
   PurchaseSummary,
   ScheduleRow,
   Settings,
@@ -89,6 +90,7 @@ interface PurchaseRow {
   intervalDays: number | null;
   purchaseDate: string;
   createdAt: string;
+  archivedAt: string | null;
 }
 interface InstallmentRow {
   id: number;
@@ -213,6 +215,7 @@ class MockDb {
         intervalDays: null,
         purchaseDate,
         createdAt: todayIso(),
+        archivedAt: null,
       });
       const amounts = splitAmounts(p.total, p.count);
       amounts.forEach((amount, i) => {
@@ -313,7 +316,22 @@ class MockDb {
       purchaseDate: d.purchase.purchaseDate,
       status: d.status,
       overdueCount: d.installments.filter((i) => i.status === "late").length,
+      archivedAt: d.purchase.archivedAt,
     };
+  }
+
+  /**
+   * Purchases that still count. Archiving removes a purchase from every money
+   * view — unlike an archived *client*, who is settled and so contributes
+   * nothing either way. Every aggregate below goes through this or `isLive`.
+   */
+  private livePurchases(): PurchaseRow[] {
+    return this.purchases.filter((p) => p.archivedAt === null);
+  }
+
+  /** Whether an installment belongs to a purchase that still counts. */
+  private isLive(inst: InstallmentRow): boolean {
+    return this.purchases.find((p) => p.id === inst.purchaseId)?.archivedAt === null;
   }
 
   private buildImpayes(filter: ImpayeFilter, limit?: number): ImpayeClient[] {
@@ -321,7 +339,7 @@ class MockDb {
     const map = new Map<number, ImpayeClient>();
     const order: number[] = [];
     const overdue = this.installments
-      .filter((i) => dayDiff(i.dueDate, today) < 0 && i.amount > i.paidAmount)
+      .filter((i) => this.isLive(i) && dayDiff(i.dueDate, today) < 0 && i.amount > i.paidAmount)
       .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
     for (const inst of overdue) {
@@ -374,7 +392,7 @@ class MockDb {
       .filter((c) => (scope === "all" ? true : (scope === "archived") === (c.archivedAt !== null)))
       .sort((a, b) => `${a.lastName}${a.firstName}`.localeCompare(`${b.lastName}${b.firstName}`))
       .map((c) => {
-        const purchases = this.purchases.filter((p) => p.clientId === c.id);
+        const purchases = this.livePurchases().filter((p) => p.clientId === c.id);
         const insts = this.installments.filter((i) => purchases.some((p) => p.id === i.purchaseId));
         const outstanding = insts.reduce((s, i) => s + (i.amount - i.paidAmount), 0);
         const overdue = insts.filter(
@@ -392,16 +410,21 @@ class MockDb {
   getClientDetail(id: number): ClientDetail {
     const client = this.clients.find((c) => c.id === id);
     if (!client) throw new Error("CLIENT_NOT_FOUND");
-    const purchases = this.purchases
+    const all = this.purchases
       .filter((p) => p.clientId === id)
       .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate) || b.id - a.id)
       .map((p) => this.buildPurchaseSummary(p.id));
+    // Archived purchases are listed separately and counted in no total —
+    // the client no longer owes them.
+    const purchases = all.filter((p) => p.archivedAt === null);
+    const archivedPurchases = all.filter((p) => p.archivedAt !== null);
     const totalPurchased = purchases.reduce((s, p) => s + p.totalPrice, 0);
     const totalPaid = purchases.reduce((s, p) => s + p.paidAmount, 0);
     const overdueCount = purchases.reduce((s, p) => s + p.overdueCount, 0);
     return {
       client: this.clientOut(client),
       purchases,
+      archivedPurchases,
       totalPurchased,
       totalPaid,
       totalOutstanding: Math.max(0, totalPurchased - totalPaid),
@@ -470,10 +493,10 @@ class MockDb {
     this.clients = this.clients.filter((c) => c.id !== id);
   }
 
-  listPurchases(search?: string): PurchaseSummary[] {
+  listPurchases(scope: PurchaseScope = "active", search?: string): PurchaseSummary[] {
     const needle = search?.trim().toLowerCase();
     return this.purchases
-      .slice()
+      .filter((p) => (scope === "all" ? true : (scope === "archived") === (p.archivedAt !== null)))
       .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate) || b.id - a.id)
       .map((p) => this.buildPurchaseSummary(p.id))
       .filter((s) =>
@@ -487,6 +510,36 @@ class MockDb {
     return this.buildPurchaseDetail(id);
   }
 
+  /**
+   * Resolve a request into the installment amounts and due dates to write.
+   *
+   * Mirrors `resolve_schedule` in commands.rs, and is shared by create and
+   * update for the same reason: a rescheduling edit must produce exactly what
+   * creating the same purchase from scratch would. Runs before any mutation,
+   * so a rejected request leaves nothing half-written — the mock's stand-in
+   * for the Rust side's transaction.
+   */
+  private resolveSchedule(input: PurchaseInput): { amounts: number[]; dueDates: string[] } {
+    if (input.installments && input.installments.length > 0) {
+      const sum = input.installments.reduce((s, i) => s + i.amount, 0);
+      if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
+      return {
+        amounts: input.installments.map((i) => i.amount),
+        dueDates: input.installments.map((i) => {
+          assertIsoDate(i.dueDate);
+          return i.dueDate;
+        }),
+      };
+    }
+    const amounts = splitAmounts(input.totalPrice, input.installmentCount);
+    return {
+      amounts,
+      dueDates: amounts.map((_, i) =>
+        addInterval(input.purchaseDate, input.intervalKind, input.intervalDays, i),
+      ),
+    };
+  }
+
   createPurchase(input: PurchaseInput): PurchaseDetail {
     validatePurchaseInput(input);
 
@@ -496,25 +549,7 @@ class MockDb {
     if (!client) throw new Error("CLIENT_NOT_FOUND");
     if (client.archivedAt !== null) throw new Error("CLIENT_ARCHIVED");
 
-    // Resolve amounts and due dates before mutating anything, so a rejected
-    // request leaves no half-created purchase behind — the mock's stand-in for
-    // the Rust side's transaction.
-    let amounts: number[];
-    let dueDates: string[];
-    if (input.installments && input.installments.length > 0) {
-      const sum = input.installments.reduce((s, i) => s + i.amount, 0);
-      if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
-      amounts = input.installments.map((i) => i.amount);
-      dueDates = input.installments.map((i) => {
-        assertIsoDate(i.dueDate);
-        return i.dueDate;
-      });
-    } else {
-      amounts = splitAmounts(input.totalPrice, input.installmentCount);
-      dueDates = amounts.map((_, i) =>
-        addInterval(input.purchaseDate, input.intervalKind, input.intervalDays, i),
-      );
-    }
+    const { amounts, dueDates } = this.resolveSchedule(input);
 
     const id = this.nextId("purchase");
     this.purchases.push({
@@ -528,6 +563,7 @@ class MockDb {
       intervalDays: input.intervalDays,
       purchaseDate: input.purchaseDate,
       createdAt: todayIso(),
+      archivedAt: null,
     });
 
     amounts.forEach((amount, i) => {
@@ -544,7 +580,101 @@ class MockDb {
     return this.buildPurchaseDetail(id);
   }
 
+  /** Payments recorded against any installment of `purchaseId`. */
+  private purchasePaymentCount(purchaseId: number): number {
+    const instIds = this.installments.filter((i) => i.purchaseId === purchaseId).map((i) => i.id);
+    return this.payments.filter((p) => instIds.includes(p.installmentId)).length;
+  }
+
+  /**
+   * Mirrors `schedule_changed` in commands.rs: compares the *resolved* rows
+   * against what is stored, because the editor always sends the installments
+   * it is displaying — a label-only edit carries an identical list.
+   */
+  private scheduleChanged(
+    row: PurchaseRow,
+    input: PurchaseInput,
+    amounts: number[],
+    dueDates: string[],
+  ): boolean {
+    if (
+      row.totalPrice !== input.totalPrice ||
+      row.installmentCount !== input.installmentCount ||
+      row.intervalKind !== input.intervalKind ||
+      row.intervalDays !== input.intervalDays ||
+      row.purchaseDate !== input.purchaseDate
+    ) {
+      return true;
+    }
+    const current = this.installments
+      .filter((i) => i.purchaseId === row.id)
+      .sort((a, b) => a.index - b.index);
+    return (
+      current.length !== amounts.length ||
+      current.some((inst, i) => inst.amount !== amounts[i] || inst.dueDate !== dueDates[i])
+    );
+  }
+
+  updatePurchase(id: number, input: PurchaseInput): PurchaseDetail {
+    validatePurchaseInput(input);
+    const row = this.purchases.find((p) => p.id === id);
+    if (!row) throw new Error("PURCHASE_NOT_FOUND");
+    if (row.archivedAt !== null) throw new Error("PURCHASE_ARCHIVED");
+
+    // Resolve before mutating, so a rejected request changes nothing — the
+    // mock's stand-in for the Rust transaction.
+    const { amounts, dueDates } = this.resolveSchedule(input);
+
+    const reschedule = this.scheduleChanged(row, input, amounts, dueDates);
+    if (reschedule) {
+      const paid = this.purchasePaymentCount(id);
+      if (paid > 0) throw new Error(`PURCHASE_HAS_PAYMENTS:${paid}`);
+    }
+
+    row.productLabel = input.productLabel.trim();
+    row.totalPrice = input.totalPrice;
+    row.installmentCount = input.installmentCount;
+    row.intervalKind = input.intervalKind;
+    row.intervalDays = input.intervalDays;
+    row.purchaseDate = input.purchaseDate;
+
+    if (reschedule) {
+      // Safe only because the guard above proved there are no payments.
+      this.installments = this.installments.filter((i) => i.purchaseId !== id);
+      amounts.forEach((amount, i) => {
+        this.installments.push({
+          id: this.nextId("installment"),
+          purchaseId: id,
+          index: i + 1,
+          amount,
+          dueDate: dueDates[i],
+          paidAmount: 0,
+          paidDate: null,
+        });
+      });
+    }
+    return this.buildPurchaseDetail(id);
+  }
+
+  archivePurchase(id: number): void {
+    const row = this.purchases.find((p) => p.id === id);
+    if (!row) throw new Error("PURCHASE_NOT_FOUND");
+    const paid = this.purchasePaymentCount(id);
+    if (paid > 0) throw new Error(`PURCHASE_HAS_PAYMENTS:${paid}`);
+    // Re-archiving must not move the stamp — see `archive_purchase_impl`.
+    row.archivedAt ??= todayIso();
+  }
+
+  restorePurchase(id: number): void {
+    const row = this.purchases.find((p) => p.id === id);
+    if (!row) throw new Error("PURCHASE_NOT_FOUND");
+    row.archivedAt = null;
+  }
+
   deletePurchase(id: number): void {
+    const row = this.purchases.find((p) => p.id === id);
+    if (!row) throw new Error("PURCHASE_NOT_FOUND");
+    if (row.archivedAt === null) throw new Error("PURCHASE_NOT_ARCHIVED");
     const instIds = this.installments.filter((i) => i.purchaseId === id).map((i) => i.id);
     this.payments = this.payments.filter((p) => !instIds.includes(p.installmentId));
     this.installments = this.installments.filter((i) => i.purchaseId !== id);
@@ -556,6 +686,9 @@ class MockDb {
     assertIsoDate(input.paymentDate);
     const inst = this.installments.find((i) => i.id === input.installmentId);
     if (!inst) throw new Error("INSTALLMENT_NOT_FOUND");
+    // The other half of "an archived purchase carries zero payments".
+    const owner = this.purchases.find((p) => p.id === inst.purchaseId);
+    if (owner?.archivedAt != null) throw new Error("PURCHASE_ARCHIVED");
     // Mirrors the Rust guard: an uncapped paidAmount makes `amount - paidAmount`
     // negative, which then cancels out other clients' debt in the aggregates.
     const remaining = inst.amount - inst.paidAmount;
@@ -626,7 +759,7 @@ class MockDb {
   listSchedule(): ScheduleRow[] {
     const today = todayIso();
     return this.installments
-      .slice()
+      .filter((i) => this.isLive(i))
       .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id - b.id)
       .map((i) => {
         const purchase = this.purchases.find((p) => p.id === i.purchaseId)!;
@@ -651,21 +784,27 @@ class MockDb {
   getDashboard(upcomingDays = 7): Dashboard {
     const today = todayIso();
     const horizon = addInterval(today, "custom", upcomingDays, 1);
-    const totalPurchases = this.purchases.length;
-    const totalSales = this.purchases.reduce((s, p) => s + p.totalPrice, 0);
+    const live = this.livePurchases();
+    const totalPurchases = live.length;
+    const totalSales = live.reduce((s, p) => s + p.totalPrice, 0);
+    // Unfiltered on purpose: archiving is refused once a payment exists and an
+    // archived purchase cannot take one, so it has no payments to exclude.
     const totalCollected = this.payments.reduce((s, p) => s + p.amount, 0);
-    const totalOutstanding = this.installments.reduce((s, i) => s + (i.amount - i.paidAmount), 0);
+    const totalOutstanding = this.installments
+      .filter((i) => this.isLive(i))
+      .reduce((s, i) => s + (i.amount - i.paidAmount), 0);
     const overdueInsts = this.installments.filter(
-      (i) => dayDiff(i.dueDate, today) < 0 && i.amount > i.paidAmount,
+      (i) => this.isLive(i) && dayDiff(i.dueDate, today) < 0 && i.amount > i.paidAmount,
     );
     const overdueClients = new Set(
       overdueInsts.map((i) => this.purchases.find((p) => p.id === i.purchaseId)!.clientId),
     ).size;
     const upcomingCount = this.installments.filter(
-      (i) => i.dueDate >= today && i.dueDate <= horizon && i.amount > i.paidAmount,
+      (i) =>
+        this.isLive(i) && i.dueDate >= today && i.dueDate <= horizon && i.amount > i.paidAmount,
     ).length;
 
-    const recentIds = this.purchases
+    const recentIds = live
       .slice()
       .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate) || b.id - a.id)
       .slice(0, 5)

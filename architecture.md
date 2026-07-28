@@ -136,7 +136,8 @@ setting (key/value)
 
 - FK cascades: deleting a client cascades to its purchases → installments →
   payments. Indices on `purchase.client_id`, `installment.purchase_id`,
-  `installment.due_date`, `payment.installment_id`, `client.archived_at`.
+  `installment.due_date`, `payment.installment_id`, `client.archived_at`,
+  `purchase.archived_at`.
 
 ### Retiring a client: archive, never delete
 
@@ -174,6 +175,47 @@ client from the client list and the new-purchase picker, nothing more.
 The deliberate consequence: a client with unpaid installments can be neither
 deleted nor archived. Someone who owes you money cannot be made to disappear.
 
+### Retiring a purchase: the opposite rule
+
+Purchases are archivable too (`purchase.archived_at`, `m0003`), but the money
+rule is **inverted**. An archived client is settled, so leaving them in the
+aggregates changes nothing. An archived purchase has been removed from the
+books, so it must **leave every total** — a purchase you deleted is not still
+owed. `list_purchases` takes a `PurchaseScope`, and nine read models filter on
+`archived_at`: the dashboard's counts and sums, its outstanding/overdue/upcoming
+aggregates, `build_impayes`, `list_schedule`, `list_clients_impl` and
+`client_outstanding`.
+
+Three of those aggregates query `installment` without ever naming `purchase`,
+so they carry an `EXISTS (SELECT 1 FROM purchase pu WHERE pu.id = i.purchase_id
+AND pu.archived_at IS NULL)` rather than a join. Miss one and a headline figure
+silently disagrees with the list it links to.
+
+**The invariant: an archived purchase carries zero payments.** `archive_purchase`
+refuses once any payment exists (`PURCHASE_HAS_PAYMENTS:{n}`) and
+`record_payment` refuses an archived purchase (`PURCHASE_ARCHIVED`); there is no
+delete-payment command, so this cannot be worked around. It is what lets
+`total_collected` — `SELECT SUM(amount) FROM payment`, the hottest aggregate in
+the app — skip the filter entirely instead of joining payment → installment →
+purchase. It is guarded by a test, not by a redundant join.
+
+Consequences, both intended:
+
+- A purchase with recorded payments is **permanent**: neither archivable nor
+  deletable. Real cash was taken against it.
+- Deleting a purchase is a two-step. `delete_purchase` refuses anything not
+  already archived (`PURCHASE_NOT_ARCHIVED`), so the destructive cascade is only
+  reachable from the archive tab, and only deliberately.
+
+Editing follows the same logic. `update_purchase` always accepts the product
+label; changing the total, count, interval or the **purchase date** regenerates
+the installment rows — and those rows own the payments through an
+`ON DELETE CASCADE` — so it is refused once a payment exists.
+`schedule_changed` compares the _resolved_ schedule against what is stored
+rather than trusting the presence of `input.installments`, because the editor
+always sends the rows it is displaying. `client_id` is ignored: a purchase
+cannot change hands.
+
 - **Queries name their columns.** No `SELECT *`: the payment queries join four
   tables and `map_payment` resolves columns by name, so a star would let a new
   `payment.reference` or `payment.purchase_id` column silently shadow the
@@ -204,7 +246,7 @@ historical `CREATE TABLE IF NOT EXISTS` batch verbatim — re-running it is a
 no-op that stamps the version on. **Never reorder or edit a step that has
 shipped**; append a new one.
 
-**Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` is
+**Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` was
 the first appended step, and it has to check `pragma_table_info` before its
 `ALTER TABLE ADD COLUMN` — SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind
 `ALTER` against a database that already has the column fails the whole

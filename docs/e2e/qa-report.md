@@ -6,6 +6,98 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-28 — Editing and archiving purchases
+
+### Summary
+
+Purchases were write-once: no edit, and `delete_purchase` existed in Rust, the
+gateway and the mock but had **zero callers in `src/**`** — the Achats table had
+no action column at all. Both are now built.
+
+**Editing.** The product label is always editable. Everything the schedule is
+derived from — total, installment count, interval, and the purchase date that
+anchors it — locks once a payment is recorded, because applying a change
+regenerates the installment rows and those rows own the payments through an
+`ON DELETE CASCADE`.
+
+**Archiving replaces deleting**, and the money rule is the _inverse_ of the
+client archive: an archived client is settled so the totals do not move, whereas
+an archived purchase must **leave every total** — a removed purchase is not still
+owed. Nine read models gained an `archived_at` filter. A permanent delete is
+offered only inside the Archivés tab and refuses anything not already archived.
+
+The whole thing rests on one invariant: **an archived purchase carries zero
+payments.** `archive_purchase` refuses once a payment exists and `record_payment`
+refuses an archived purchase; there is no delete-payment command, so it cannot be
+worked around. That is what lets `total_collected` skip the filter instead of
+joining payment → installment → purchase on the app's hottest aggregate.
+
+### Test cases run
+
+| Suite                                    | Result                    |
+| ---------------------------------------- | ------------------------- |
+| Rust `cargo test`                        | **52 passed** (was 37)    |
+| TS unit (`npm test`)                     | 110 passed, 7 files       |
+| Integration (`npm run test:integration`) | **125 passed** (was 108)  |
+| E2E (`npm run test:e2e`)                 | **39/39 passed** (was 35) |
+
+**Gates:** eslint · vue-tsc · vite build · prettier · cargo fmt · cargo clippy
+(`--all-targets -D warnings`) — all clean.
+
+New coverage: 15 Rust cases (edit guards, archive/restore/delete guards, the
+zero-payments invariant from both directions, `list_purchases` scope, the m0003
+upgrade path, and `archiving_removes_the_purchase_from_every_money_view` which
+snapshots all seven money figures at once); a new 17-case
+`purchase-archive.integration.test.ts`; and four E2E scenarios (label edit,
+locked schedule fields, blocked archive, and the archive → dashboard → restore
+round trip).
+
+### Issues found
+
+1. **`listPurchases(search)` silently became `listPurchases(scope)`.** Adding the
+   scope as the _first_ parameter meant the one existing caller passing a bare
+   search string — `purchase-lifecycle.integration.test.ts` — bound `"A-000009"`
+   to `scope`, which the mock's filter treated as "not archived" and returned all
+   9 rows. Caught by the integration suite, not the typechecker: **`npm run build`
+   typechecks `src/` only, not `tests/`.** Worth knowing that gateway signature
+   changes are unverified against the test suites until they actually run.
+2. **The editor always sends the rows it is displaying**, so a label-only edit
+   arrives carrying an installment list identical to the stored one. Treating the
+   mere presence of `input.installments` as a reschedule would have locked the
+   label behind the payment guard. `schedule_changed` compares the _resolved_
+   schedule against what is stored instead; `resending_the_unchanged_schedule_is_not_a_reschedule`
+   pins it.
+3. **`DatePicker` had no `disabled` prop**, so the purchase date could not be
+   locked with the other schedule fields. Added one (trigger disabled, clear
+   cross hidden) rather than faking it with a wrapper.
+4. **Three dashboard aggregates never mention `purchase`.** `total_outstanding`,
+   `overdue_count` and `upcoming_count` query `installment` alone, so they could
+   not simply gain a `WHERE`; each carries an `EXISTS` subquery. This was the
+   sharpest hazard in the change — missing one leaves a headline figure
+   disagreeing with the list it links to, with nothing failing loudly.
+5. **`list_clients_impl`'s purchase filter had to go in the `LEFT JOIN … ON`
+   clause**, not the `WHERE`. In the `WHERE` it degrades the outer join into an
+   inner one and drops every client with no live purchase.
+   `list_clients_keeps_clients_with_no_purchases_under_every_scope` already
+   existed for exactly this and would have caught it.
+
+### Recommendations
+
+- **Typecheck the test suites.** Issue 1 was a type error that no gate could see.
+  A `vue-tsc` pass over `tests/` (or including them in the build tsconfig) would
+  turn that class of break into a compile failure.
+- The payment ledger (`list_payments_*`) and `total_collected` are deliberately
+  unfiltered, each with a comment saying why. If the zero-payments invariant is
+  ever relaxed, those four queries are what breaks — and silently.
+- Manual passes still outstanding: the Arabic RTL rendering of the new Achats
+  action column and scope tabs, and one launch against a `user_version = 2`
+  database to exercise `m0003` on disk.
+- Deleting a _client_ still counts archived purchases when deciding
+  `CLIENT_HAS_PURCHASES` — deliberate, since those rows still exist and would
+  still cascade, but worth revisiting if it ever surprises anyone.
+
+---
+
 ## 2026-07-27 (e) — Executing the integration and E2E suites for the archive work
 
 ### Summary
