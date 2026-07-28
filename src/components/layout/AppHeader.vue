@@ -45,6 +45,7 @@ const NAV_KEY: Record<string, string> = {
   alertes: "nav.alertes",
   rapports: "nav.rapports",
   parametres: "nav.parametres",
+  "not-found": "notFound.title",
 };
 
 const title = computed(() => {
@@ -58,7 +59,12 @@ const alertCount = computed(() => stats.overdueInstallments);
 
 <template>
   <header class="header">
-    <button class="icon-btn menu-btn" type="button" @click="ui.toggleSidebar()" :aria-label="'menu'">
+    <button
+      class="icon-btn menu-btn"
+      type="button"
+      :aria-label="'menu'"
+      @click="ui.toggleSidebar()"
+    >
       <AppIcon name="menu" :size="22" />
     </button>
     <h1 class="page-title">{{ title }}</h1>
@@ -93,10 +99,16 @@ const alertCount = computed(() => stats.overdueInstallments);
       </ul>
     </div>
 
-    <button class="icon-btn bell" type="button" aria-label="notifications">
+    <!-- The badge counts overdue installments, which is exactly what the alerts
+         centre lists — so the bell is a shortcut to it, not its own surface. -->
+    <RouterLink
+      class="icon-btn bell"
+      :to="{ name: 'alertes' }"
+      :aria-label="t('header.notifications')"
+    >
       <AppIcon name="bell" :size="21" />
       <span v-if="alertCount > 0" class="bell-badge">{{ alertCount }}</span>
-    </button>
+    </RouterLink>
 
     <div class="user">
       <div class="avatar">A</div>
@@ -127,7 +139,11 @@ const alertCount = computed(() => stats.overdueInstallments);
   border-radius: 10px;
   background: transparent;
   color: var(--text-secondary);
-  transition: background 0.13s ease, color 0.13s ease;
+  /* The bell is a RouterLink, so opt out of the global `a:hover` underline. */
+  text-decoration: none;
+  transition:
+    background 0.13s ease,
+    color 0.13s ease;
   position: relative;
 }
 .icon-btn:hover {
@@ -154,7 +170,9 @@ const alertCount = computed(() => stats.overdueInstallments);
   color: var(--text-secondary);
   font-weight: 600;
   font-size: 13.5px;
-  transition: background 0.13s ease, border-color 0.13s ease;
+  transition:
+    background 0.13s ease,
+    border-color 0.13s ease;
 }
 .lang-btn:hover {
   background: var(--bg);

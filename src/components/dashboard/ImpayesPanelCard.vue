@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useContactActions } from "@/composables/useContactActions";
 import { todayIso } from "@/lib/finance";
 import type { ImpayeClient } from "@/types/models";
 
@@ -27,8 +28,7 @@ function openClient(id: number) {
   router.push({ name: "client-detail", params: { id } });
 }
 
-const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
-const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
+const contact = useContactActions();
 </script>
 
 <template>
@@ -69,12 +69,22 @@ const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
           <span class="impaye-count">{{ t("impaye.trancheLate", c.overdueCount) }}</span>
         </div>
         <div class="impaye-actions">
-          <a class="contact-btn contact-btn--call" :href="tel(c.phone)" :title="t('impaye.call')">
+          <button
+            class="contact-btn contact-btn--call"
+            type="button"
+            :title="t('impaye.call')"
+            @click="contact.call(c.phone)"
+          >
             <AppIcon name="phone" :size="17" />
-          </a>
-          <a class="contact-btn contact-btn--msg" :href="sms(c.phone)" :title="t('impaye.message')">
+          </button>
+          <button
+            class="contact-btn contact-btn--msg"
+            type="button"
+            :title="t('impaye.message')"
+            @click="contact.message(c.phone)"
+          >
             <AppIcon name="message" :size="17" />
-          </a>
+          </button>
         </div>
       </li>
     </ul>

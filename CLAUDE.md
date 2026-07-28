@@ -4,12 +4,27 @@ This project follows a structured delivery workflow with four phases: **Planning
 
 ---
 
+## Project Facts
+
+Tauri 2 desktop app: a Rust core (`src-tauri/src/`, rusqlite + SQLite) owns all state and persistence; a Vue 3 `<script setup>` + TypeScript WebView renders the UI. They communicate only through typed Tauri commands. Read `architecture.md` before any non-trivial change.
+
+Invariants — violating these is a Code Review blocker, not a nit:
+
+- The frontend never touches the DB or filesystem directly. Everything goes through the `src/api/index.ts` gateway.
+- `src/api/index.ts` and `src/api/mock.ts` must stay in sync. A new command means editing the Rust side, the gateway, _and_ the browser mock — the mock is what makes the integration and E2E suites run without Tauri.
+- `src/lib/finance.ts` mirrors the installment math in `src-tauri/src/db.rs`. Change one, change the other, and update both test suites.
+- Money is stored as whole currency units (`INTEGER`) so installment splits are exact. Never introduce floats into money math.
+- Every user-facing string lands in all three of `src/locales/{ar,fr,en}.json`. Arabic is RTL — verify the mirrored layout, don't assume it.
+
+---
+
 ## Phase Routing
 
 For every new request, first classify it:
 
 - **Bug report, "test this," "validate," "does X work"** → go to **QA phase**
 - **"Add," "build," "implement," "refactor," "design"** → go to **Planning phase**, then **Implementation phase**, then **Code Review phase**
+- **Question, explanation, doc-only edit, or exploratory debugging** → answer directly, no phases. Say that you're skipping them.
 - **Ambiguous or multi-part request** → split into sub-tasks, route each independently, note the split before starting
 
 State the routing decision in one line before proceeding (e.g. "Routing: Implementation — this adds a new feature").
@@ -18,7 +33,7 @@ State the routing decision in one line before proceeding (e.g. "Routing: Impleme
 
 ## Phase 1: Planning
 
-- Read relevant existing code and `architecture.md` (if present) before proposing anything
+- Read relevant existing code, and `architecture.md` for any non-trivial change, before proposing anything
 - Summarize the requirement in 2-3 sentences
 - List any real ambiguities that would change the implementation approach — ask about these; don't ask about things with a reasonable default
 - Propose the approach in a few bullet points (components touched, new files, key decisions)
@@ -31,24 +46,26 @@ State the routing decision in one line before proceeding (e.g. "Routing: Impleme
 - Include unit tests alongside the feature (co-located per project convention, or in the existing test directory)
 - Document new/changed APIs inline (docstrings/JSDoc) and in an OpenAPI/Swagger file if the project already has one
 - Update project docs (see below) if the change affects them
-- Run the test suite / linter if one exists in the project before considering the task done
+- Before considering the task done, run what CI gates on:
+  - Frontend: `npm test` (Vitest, unit), `npm run lint`, `npm run build` (`vue-tsc --noEmit` typecheck — the most common CI failure).
+  - Rust, if `src-tauri/` changed, from `src-tauri/`: `cargo test`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
+  - Don't hand-format; the husky + lint-staged pre-commit hook runs `eslint --fix` and prettier on staged files.
+- Unit tests always run here, automatically — they're fast and give immediate feedback on the change just made. Integration and E2E tests do not (see Phase 4).
 
 ## Phase 3: Code Review
 
 Every implementation goes through a self-review pass before QA. This is not optional and does not require the user to ask for it. Review the actual diff/files just written — don't review from memory or assumption.
 
-Check and explicitly report on each of the following:
+Check every category below; report only the ones with findings, plus one line confirming the rest were checked and are clean.
 
-- **Organization & structure** — logical file/module layout, appropriate separation of concerns, no god-objects/god-functions, sensible dependency direction
-- **SOLID principles** — single responsibility, open/closed, Liskov substitution, interface segregation, dependency inversion, applied where relevant to the language/paradigm (not forced onto code where they don't fit, e.g. simple scripts)
-- **Data integrity (ACID-relevant changes)** — for any code touching persistence/transactions: atomicity, consistency, isolation, durability are preserved; no partial-write states, no race conditions on shared state
-- **Safety & robustness** — no memory leaks (unclosed handles/connections/listeners, unbounded caches, dangling references), no obvious concurrency hazards, resource cleanup (finally/using/defer/context managers) present where needed
-- **Error handling** — errors are caught at the right level, not swallowed silently, not overly broad (no bare `except:`/`catch {}`), failure paths leave the system in a consistent state, user-facing errors don't leak internals
-- **Security / vulnerabilities** — no injection risks (SQL, command, template, XSS), no hardcoded secrets/credentials, proper input validation and output encoding, safe handling of authN/authZ, no insecure deserialization, dependencies free of known-bad patterns, least-privilege access to resources
-- **Readability & naming** — names are descriptive and consistent with project convention, functions/methods are appropriately sized, control flow isn't needlessly nested or clever
-- **Formatting** — consistent with project linter/formatter config if one exists; run it rather than eyeballing
-- **Comments & documentation** — non-obvious logic is explained, public APIs/functions have docstrings/JSDoc, comments explain *why* not *what*, no stale/misleading comments left behind
-- **Logging** — meaningful log points at appropriate levels (not excessive, not silent on failure paths), no sensitive data (secrets, PII, tokens) logged
+- **Invariants** — the Project Facts list above: api/mock parity, `finance.ts` ↔ `db.rs` parity, integer money, all three locale files.
+- **Error handling across IPC** — command errors surface as toasts, aren't swallowed, and don't leak internals (SQL text, filesystem paths) into user-facing messages.
+- **Data integrity** — multi-write commands in `commands.rs` are transactional; no partial-write states; no races on the shared `Mutex<Connection>`.
+- **Resource cleanup** — listeners registered in composables (`useClickOutside`, `useBack`) are removed on unmount; no unbounded caches or dangling refs.
+- **Security** — `npm run lint` already runs `eslint-plugin-security` and `eslint-plugin-no-unsanitized`; run it, then review what a linter can't see (input validation, path handling in the logo/FS commands, least-privilege Tauri capabilities).
+- **Organization, readability & naming** — sensible module layout and dependency direction, appropriately sized functions, names consistent with project convention, control flow not needlessly nested or clever.
+- **Comments & documentation** — non-obvious logic explained, JSDoc/docstrings on public APIs, comments say _why_ not _what_, no stale or misleading comments left behind.
+- **Logging** — meaningful levels, never silent on a failure path, no secrets or PII.
 
 Report the review as: **Summary → Findings by category (only categories with findings) → Severity (blocker / should-fix / nit) → Action taken**.
 
@@ -68,11 +85,10 @@ Report the review as: **Summary → Findings by category (only categories with f
 - **Generate or update a QA report** at `docs/e2e/qa-report.md` on every QA pass. Use the same Summary → Test cases → Issues → Recommendations structure, date each entry, and append a new dated section rather than discarding prior history. This is the durable record of what was tested and what remains open; the terminal summary is a mirror of it, not a replacement.
 
 Integration/E2E test layout for this project:
+
 - **Unit tests** live co-located in `src/**` and run with `npm test` (Vitest).
 - **Integration tests** live in `tests/integration/**` and run only via `npm run test:integration` (separate `vitest.integration.config.ts`) — kept out of the default unit run so they stay opt-in per the constraint below.
 - **End-to-end tests** live in `tests/e2e/` (`run.mjs`, Playwright) and run via `npm run test:e2e`; failure screenshots land in `tests/e2e/artifacts/`. The QA report itself stays under `docs/e2e/qa-report.md` (it is documentation, not test code).
-
-**Unit tests are the exception** — always run these automatically as part of Implementation (Phase 2), since they're fast and give immediate feedback on the change just made.
 
 ---
 
@@ -80,12 +96,12 @@ Integration/E2E test layout for this project:
 
 Update these only when their content is actually affected — don't touch them otherwise:
 
-| File | Update when... |
-|---|---|
-| `features.md` | A feature is added, removed, or its status changes. Format: name, status, one-line description. |
-| `README.md` | Setup, usage, tech stack, or high-level architecture changes. |
-| `architecture.md` | System design, components, data flow, or a key technical decision changes. |
-| `docs/e2e/qa-report.md` | Every QA pass — append a dated entry (Summary → Test cases → Issues → Recommendations). Created if absent. |
+| File                    | Update when...                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `features.md`           | A feature is added, removed, or its status changes. Format: name, status, one-line description. |
+| `README.md`             | Setup, usage, tech stack, or high-level architecture changes.                                   |
+| `architecture.md`       | System design, components, data flow, or a key technical decision changes.                      |
+| `docs/e2e/qa-report.md` | Every QA pass — append a dated entry (Summary → Test cases → Issues → Recommendations).         |
 
 Each update should be a diff to the existing file, not a full rewrite, unless the file doesn't exist yet.
 

@@ -21,7 +21,8 @@
     "helpText": "Read our guide or contact support."
   },
   "header": {
-    "admin": "Admin"
+    "admin": "Admin",
+    "notifications": "Notifications"
   },
   "common": {
     "viewAll": "View all",
@@ -54,7 +55,8 @@
     "note": "Note",
     "all": "All",
     "currency": "{amount} {code}",
-    "none": "—"
+    "none": "—",
+    "retry": "Retry"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -91,7 +93,8 @@
       "paymentDate": "Payment date",
       "paymentHistory": "Payment history",
       "register": "Record",
-      "view": "View"
+      "view": "View",
+      "updatePayment": "Update payment"
     },
     "alert": {
       "tranche": "Installment {index}/{count}",
@@ -118,12 +121,20 @@
     "allClients": "All clients",
     "call": "Call",
     "message": "Message",
-    "since": "Overdue since"
+    "since": "Overdue since",
+    "callFailed": "Can't call {phone} — no phone app on this computer.",
+    "messageFailed": "Can't text {phone} — no messaging app on this computer.",
+    "invalidPhone": "Unusable phone number: {phone}"
   },
   "achats": {
     "title": "Purchases",
     "new": "New purchase",
     "searchPlaceholder": "Search a purchase, client, product…",
+    "scope": {
+      "active": "Active",
+      "archived": "Archived",
+      "all": "All"
+    },
     "columns": {
       "reference": "Ref.",
       "client": "Client",
@@ -151,19 +162,61 @@
       "sumOk": "Installments add up to the total.",
       "sumMismatch": "Installments ({sum}) don't match the total ({total}).",
       "recompute": "Recalculate automatically",
-      "submit": "Save purchase"
+      "submit": "Save purchase",
+      "editTitle": "Edit purchase",
+      "saveEdit": "Save changes",
+      "lockedByPayments": "{count} payment(s) already recorded: the amount, the schedule and the date can no longer change. Only the product label can be edited."
+    },
+    "installmentEdit": {
+      "title": "Update payment — Installment {index}/{count}",
+      "saved": "Installment updated.",
+      "scheduleSection": "What is owed",
+      "moneySection": "What was collected",
+      "negativeAmount": "The amount cannot be negative.",
+      "paidAmountHint": "The total collected on this installment so far. The difference is recorded as a payment.",
+      "settledNote": "This installment is settled, so what it owes and when can no longer change.",
+      "lockedByPrevious": "Installment {index} has to be settled before a payment can be recorded here.",
+      "rebalanceTitle": "The other installments become",
+      "rebalanceNote": "The purchase total stays the same.",
+      "confirmTitle": "Modify a paid installment",
+      "confirmText": "Installment {index} is already paid. You are about to change what was collected on it. Continue?"
     },
     "interval": {
       "weekly": "Weekly",
       "monthly": "Monthly",
       "custom": "Custom"
     },
-    "empty": "No purchases yet. Create your first purchase."
+    "empty": "No purchases yet. Create your first purchase.",
+    "emptyArchived": "No archived purchases.",
+    "archivedBadge": "Archived",
+    "archivedOn": "Archived on {date}",
+    "archivedSection": "Archived purchases",
+    "archive": {
+      "action": "Archive",
+      "confirmTitle": "Archive purchase",
+      "confirmText": "This purchase will be removed from the lists and from every total. Nothing is lost — you can restore it at any time.",
+      "hasPayments": "{count} payment(s) have already been collected on this purchase. It cannot be archived."
+    },
+    "restore": {
+      "action": "Restore",
+      "confirmTitle": "Restore purchase",
+      "confirmText": "This purchase will reappear in the lists and count towards the totals again."
+    },
+    "delete": {
+      "action": "Delete permanently",
+      "confirmTitle": "Delete purchase permanently",
+      "confirmText": "This purchase and its installments will be erased for good. This cannot be undone."
+    }
   },
   "clients": {
     "title": "Clients",
     "new": "New client",
     "searchPlaceholder": "Search a client…",
+    "scope": {
+      "active": "Active",
+      "archived": "Archived",
+      "all": "All"
+    },
     "columns": {
       "name": "Name",
       "phone": "Phone",
@@ -194,9 +247,24 @@
     "delete": {
       "confirmTitle": "Delete client",
       "confirmText": "Do you really want to delete this client?",
-      "hasPurchases": "This client has {n} purchase(s). Deleting will also erase all their purchases, schedules and payments. Continue?"
+      "hasPurchases": "This client has {n} purchase(s) and cannot be deleted. Archive them instead to hide them without losing their history."
     },
-    "empty": "No clients. Add your first client."
+    "archive": {
+      "action": "Archive",
+      "confirmTitle": "Archive client",
+      "confirmText": "This client will be hidden from the active list and can no longer be given a new purchase. Their history is kept and you can restore them at any time.",
+      "hasOutstanding": "This client still owes {amount}. Settle their installments before archiving.",
+      "viewInstallments": "View their installments"
+    },
+    "restore": {
+      "action": "Restore",
+      "confirmTitle": "Restore client",
+      "confirmText": "This client will reappear in the active list and can be given purchases again."
+    },
+    "archivedBadge": "Archived",
+    "archivedOn": "Archived on {date}",
+    "empty": "No clients. Add your first client.",
+    "emptyArchived": "No archived clients."
   },
   "paiements": {
     "title": "Payments",
@@ -303,7 +371,11 @@
     "noLogo": "No logo",
     "shopName": "Shop name",
     "shopInfo": "Contact / information",
-    "shopInfoPlaceholder": "Address, phone, tax ID…"
+    "shopInfoPlaceholder": "Address, phone, tax ID…",
+    "backup": "Backup",
+    "backupHint": "Save a copy of your database. Deleting a client also deletes their purchases and payments, and that cannot be undone.",
+    "backupAction": "Backup database",
+    "backupDone": "Backup saved."
   },
   "validation": {
     "required": "This field is required.",
@@ -316,8 +388,37 @@
   },
   "errors": {
     "generic": "Something went wrong.",
-    "clientHasPurchases": "This client has purchases.",
-    "loadFailed": "Failed to load data."
+    "internal": "Something went wrong. Please try again.",
+    "loadFailed": "Failed to load data.",
+    "clientHasPurchases": "This client has {count} purchase(s) and cannot be deleted.",
+    "archiveHasOutstanding": "This client still has an unpaid balance of {remaining}. A client who owes money cannot be archived.",
+    "clientArchived": "This client is archived. Restore them before recording a new purchase.",
+    "clientNotFound": "This client no longer exists.",
+    "purchaseNotFound": "This purchase no longer exists.",
+    "purchaseHasPayments": "{count} payment(s) have already been collected on this purchase.",
+    "purchaseArchived": "This purchase is archived. Restore it before editing it or recording a payment.",
+    "purchaseNotArchived": "Archive this purchase before deleting it permanently.",
+    "installmentNotFound": "This installment no longer exists.",
+    "invalidDate": "Please enter a valid date.",
+    "invalidTotalPrice": "The total price must be greater than zero.",
+    "invalidInstallmentCount": "The number of installments must be between 1 and 120.",
+    "invalidIntervalKind": "Unknown payment interval.",
+    "invalidIntervalDays": "The custom interval must be between 1 and 365 days.",
+    "invalidAmount": "The amount must be greater than zero.",
+    "sumMismatch": "The installments add up to {sum}, but the total is {total}.",
+    "overpayment": "That is more than this installment still owes ({remaining}).",
+    "invalidLogoType": "Choose a PNG, JPG, WEBP or GIF image.",
+    "logoTooLarge": "The image is too large (5 MB maximum).",
+    "backupFailed": "The backup could not be saved.",
+    "dueDateLocked": "This installment is settled — its due date can no longer be changed.",
+    "futurePaidDate": "The payment date cannot be in the future.",
+    "previousUnpaid": "Installment {index} has to be settled before a payment can be recorded here.",
+    "belowPaid": "{paidAmount} has already been collected on this installment; the amount cannot go below that.",
+    "noRebalanceRoom": "The other installments cannot absorb this change, and the purchase total has to stay the same.",
+    "amountLocked": "This installment is settled — its amount can no longer be changed.",
+    "dueDateOutOfOrder": "The due date has to stay between the installment before it and the one after it.",
+    "paidAboveAmount": "More than this installment is worth ({amount}).",
+    "noPaymentToDate": "There is no payment on this installment yet, so there is no payment date to change."
   },
   "filters": {
     "date": "Filter by date",

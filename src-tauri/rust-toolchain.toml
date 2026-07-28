@@ -1,0 +1,10 @@
+# Gives contributors the toolchain the CI gates assume, without a version pin
+# that rots. `channel = "stable"` matches CI's `dtolnay/rust-toolchain@stable`;
+# the components are the ones `cargo fmt --check` and
+# `cargo clippy --all-targets -- -D warnings` need.
+#
+# The floor this project actually requires is `rust-version` in Cargo.toml
+# (1.88, measured against the locked dependency set).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

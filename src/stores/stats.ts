@@ -14,8 +14,11 @@ export const useStatsStore = defineStore("stats", () => {
       const dash = await api.getDashboard();
       overdueClients.value = dash.stats.overdueClients;
       overdueInstallments.value = dash.stats.overdueCount;
-    } catch {
-      /* non-fatal for badges */
+    } catch (e) {
+      // Non-fatal: the badges keep their last value rather than blocking the
+      // mutation the caller just completed. But it must not be invisible —
+      // silently frozen counters look identical to "nothing is overdue".
+      console.error("stats.refresh failed; sidebar badges are stale:", e);
     }
   }
 

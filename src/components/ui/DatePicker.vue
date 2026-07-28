@@ -11,7 +11,13 @@ import { useFormat, LOCALE_TAG } from "@/composables/useFormat";
 import { useSettingsStore } from "@/stores/settings";
 
 const model = defineModel<string>({ default: "" });
-const props = defineProps<{ min?: string; max?: string; placeholder?: string }>();
+const props = defineProps<{
+  min?: string;
+  max?: string;
+  placeholder?: string;
+  /** Render read-only: the trigger cannot be opened and the clear cross hides. */
+  disabled?: boolean;
+}>();
 
 const { t } = useI18n();
 const fmt = useFormat();
@@ -136,7 +142,8 @@ const cells = computed<Cell[]>(() => {
   const nextM = m === 12 ? 1 : m + 1;
 
   const out: Cell[] = [];
-  for (let i = startDow - 1; i >= 0; i--) out.push(makeCell(prevY, prevM, prevMonthDays - i, false));
+  for (let i = startDow - 1; i >= 0; i--)
+    out.push(makeCell(prevY, prevM, prevMonthDays - i, false));
   for (let d = 1; d <= daysInMonth; d++) out.push(makeCell(y, m, d, true));
   for (let d = 1; out.length < 42; d++) out.push(makeCell(nextY, nextM, d, false));
   return out;
@@ -175,12 +182,13 @@ function clear() {
       class="dp-trigger"
       :class="{ 'is-empty': !model, 'is-open': open }"
       :aria-expanded="open"
+      :disabled="disabled"
       @click="open = !open"
     >
       <AppIcon name="calendar" :size="15" class="dp-cal" />
       <span class="dp-value">{{ display }}</span>
       <AppIcon
-        v-if="model"
+        v-if="model && !disabled"
         name="x"
         :size="14"
         class="dp-clear"
@@ -191,44 +199,55 @@ function clear() {
     </button>
 
     <Teleport to="body">
-      <div v-if="open" ref="popup" class="dp-pop" role="dialog" data-datepicker-pop :style="popStyle">
-      <div class="dp-head">
-        <button type="button" class="dp-nav" aria-label="previous month" @click="shiftMonth(-1)">
-          <AppIcon name="chevron-left" :size="18" />
-        </button>
-        <span class="dp-month">{{ monthLabel }}</span>
-        <button type="button" class="dp-nav" aria-label="next month" @click="shiftMonth(1)">
-          <AppIcon name="chevron-right" :size="18" />
-        </button>
-      </div>
+      <div
+        v-if="open"
+        ref="popup"
+        class="dp-pop"
+        role="dialog"
+        data-datepicker-pop
+        :style="popStyle"
+      >
+        <div class="dp-head">
+          <button type="button" class="dp-nav" aria-label="previous month" @click="shiftMonth(-1)">
+            <AppIcon name="chevron-left" :size="18" />
+          </button>
+          <span class="dp-month">{{ monthLabel }}</span>
+          <button type="button" class="dp-nav" aria-label="next month" @click="shiftMonth(1)">
+            <AppIcon name="chevron-right" :size="18" />
+          </button>
+        </div>
 
-      <div class="dp-grid dp-weekdays">
-        <span v-for="(w, i) in weekdays" :key="i" class="dp-weekday">{{ w }}</span>
-      </div>
+        <div class="dp-grid dp-weekdays">
+          <span v-for="(w, i) in weekdays" :key="i" class="dp-weekday">{{ w }}</span>
+        </div>
 
-      <div class="dp-grid">
-        <button
-          v-for="c in cells"
-          :key="c.iso"
-          type="button"
-          class="dp-day"
-          :class="{
-            'is-outside': !c.inMonth,
-            'is-today': c.iso === today,
-            'is-selected': c.iso === model,
-            'is-disabled': c.disabled,
-          }"
-          :disabled="c.disabled"
-          @click="pick(c)"
-        >
-          {{ c.day }}
-        </button>
-      </div>
+        <div class="dp-grid">
+          <button
+            v-for="c in cells"
+            :key="c.iso"
+            type="button"
+            class="dp-day"
+            :class="{
+              'is-outside': !c.inMonth,
+              'is-today': c.iso === today,
+              'is-selected': c.iso === model,
+              'is-disabled': c.disabled,
+            }"
+            :disabled="c.disabled"
+            @click="pick(c)"
+          >
+            {{ c.day }}
+          </button>
+        </div>
 
-      <div class="dp-foot">
-        <button type="button" class="btn btn--ghost btn--sm" @click="clear">{{ t("filters.clear") }}</button>
-        <button type="button" class="btn btn--primary btn--sm" @click="pickToday">{{ t("filters.today") }}</button>
-      </div>
+        <div class="dp-foot">
+          <button type="button" class="btn btn--ghost btn--sm" @click="clear">
+            {{ t("filters.clear") }}
+          </button>
+          <button type="button" class="btn btn--primary btn--sm" @click="pickToday">
+            {{ t("filters.today") }}
+          </button>
+        </div>
       </div>
     </Teleport>
   </div>
@@ -256,6 +275,10 @@ function clear() {
 }
 .dp-trigger:hover {
   border-color: var(--primary);
+}
+.dp-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .dp-trigger.is-open {
   border-color: var(--primary);
@@ -344,7 +367,9 @@ function clear() {
   color: var(--text);
   font-size: 13px;
   font-weight: 500;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition:
+    background 0.1s ease,
+    color 0.1s ease;
 }
 .dp-day:hover:not(.is-disabled) {
   background: var(--primary-soft);

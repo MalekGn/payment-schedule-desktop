@@ -8,7 +8,8 @@ dist-ssr/
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
-src-tauri/Cargo.lock
+# NOTE: Cargo.lock is intentionally committed for this binary app — it gives
+# reproducible builds and lets cargo-audit / cargo-deny scan the exact dep set.
 
 # environment & secrets
 .env
@@ -32,3 +33,15 @@ launch.json
 # logs
 *.log
 npm-debug.log*
+
+# local databases & backups — these hold real client PII (names, phones,
+# addresses, debt positions). The app keeps its database in the OS app-data dir,
+# but `backup_database` writes wherever the user points it and a dev can point
+# the app at the repo, so nothing here should ever be committable.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.part
+*.sqlite
+*.sqlite3

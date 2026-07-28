@@ -22,6 +22,9 @@ const routes: RouteRecordRaw[] = [
   { path: "/alertes", name: "alertes", component: () => import("@/views/AlertesView.vue") },
   { path: "/rapports", name: "rapports", component: () => import("@/views/RapportsView.vue") },
   { path: "/parametres", name: "parametres", component: () => import("@/views/SettingsView.vue") },
+  // Catch-all. The "not-found" name is matched by string elsewhere — `useBack`
+  // (to avoid sending the user back into another unknown URL) and `AppHeader`'s
+  // NAV_KEY (page title). Renaming it silently degrades both; grep before you do.
   {
     path: "/:pathMatch(.*)*",
     name: "not-found",

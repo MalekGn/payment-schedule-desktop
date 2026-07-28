@@ -6,8 +6,13 @@ import AppIcon from "@/components/ui/AppIcon.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
+import LoadError from "@/components/ui/LoadError.vue";
+import { buildImpayesCsv } from "@/lib/csv";
+import { todayIso } from "@/lib/finance";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSortState, sortRows } from "@/composables/useSort";
+import { useContactActions } from "@/composables/useContactActions";
 import { api } from "@/api";
 import type { ImpayeClient, OverdueInstallment } from "@/types/models";
 
@@ -17,7 +22,6 @@ const router = useRouter();
 const fmt = useFormat();
 
 const impayes = ref<ImpayeClient[]>([]);
-const loading = ref(true);
 
 // Same filter controls as Payments and Due dates (shared ListFilterBar), applied
 // reactively client-side: search matches reference + client, amount min/max maps
@@ -48,7 +52,8 @@ const filtered = computed<ImpayeClient[]>(() => {
   const out: ImpayeClient[] = [];
   for (const c of impayes.value) {
     const installments = c.installments.filter((i) => {
-      if (needle && !`${i.purchaseReference} ${c.clientName}`.toLowerCase().includes(needle)) return false;
+      if (needle && !`${i.purchaseReference} ${c.clientName}`.toLowerCase().includes(needle))
+        return false;
       if (min != null && i.remaining < min) return false;
       if (max != null && i.remaining > max) return false;
       if (dateFrom.value && i.dueDate < dateFrom.value) return false;
@@ -66,9 +71,12 @@ const filtered = computed<ImpayeClient[]>(() => {
   return out;
 });
 
-onMounted(async () => {
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   impayes.value = await api.listImpayes();
-  loading.value = false;
   // Deep-link from the dashboard overdue panel: pre-fill the search with the
   // client's name so the unified search filters down to them.
   const qid = route.query.client ? Number(route.query.client) : null;
@@ -77,33 +85,35 @@ onMounted(async () => {
     if (match) search.value = match.clientName;
   }
 });
+onMounted(load);
 
-const tel = (phone: string) => `tel:${phone.replace(/\s/g, "")}`;
-const sms = (phone: string) => `sms:${phone.replace(/\s/g, "")}`;
+const contact = useContactActions();
 
+/**
+ * Download the filtered overdue list as a spreadsheet.
+ *
+ * Escaping and formula-injection defence live in `@/lib/csv`; this only does
+ * the browser plumbing. Headers reuse the same keys as the on-screen table
+ * above — the file used to be hard-coded French, so an Arabic or English user
+ * got a localized UI and a French export.
+ */
 function exportCsv() {
-  const header = ["Client", "Téléphone", "N° Achat", "Tranche", "Échéance", "Montant", "Jours de retard"];
-  const lines = [header.join(",")];
-  for (const c of filtered.value) {
-    for (const i of c.installments) {
-      lines.push(
-        [
-          `"${c.clientName}"`,
-          `"${c.phone}"`,
-          i.purchaseReference,
-          `${i.index}/${i.installmentCount}`,
-          i.dueDate,
-          i.remaining,
-          i.daysLate,
-        ].join(","),
-      );
-    }
-  }
-  const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const csv = buildImpayesCsv(filtered.value, {
+    client: t("impayes.columns.client"),
+    phone: t("clients.columns.phone"),
+    reference: t("echeances.columns.reference"),
+    installment: t("echeances.columns.tranche"),
+    dueDate: t("echeances.columns.dueDate"),
+    amount: t("echeances.columns.amount"),
+    daysLate: t("impaye.since"),
+  });
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "impayes.csv";
+  // Dated so successive exports don't silently overwrite one another.
+  a.download = `impayes-${todayIso()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -111,90 +121,131 @@ function exportCsv() {
 
 <template>
   <div class="page">
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2>{{ t("impayes.title") }}</h2>
-          <p class="subtitle">{{ t("impayes.subtitle") }}</p>
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
+
+    <template v-else>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>{{ t("impayes.title") }}</h2>
+            <p class="subtitle">{{ t("impayes.subtitle") }}</p>
+          </div>
+          <button v-if="filtered.length" class="btn btn--ghost" type="button" @click="exportCsv">
+            <AppIcon name="download" :size="16" /> {{ t("common.export") }}
+          </button>
         </div>
-        <button v-if="filtered.length" class="btn btn--ghost" type="button" @click="exportCsv">
-          <AppIcon name="download" :size="16" /> {{ t("common.export") }}
-        </button>
+        <ListFilterBar
+          v-model:search="search"
+          v-model:amount-min="amountMin"
+          v-model:amount-max="amountMax"
+          v-model:date-from="dateFrom"
+          v-model:date-to="dateTo"
+          show-amount
+        />
       </div>
-      <ListFilterBar
-        v-model:search="search"
-        v-model:amount-min="amountMin"
-        v-model:amount-max="amountMax"
-        v-model:date-from="dateFrom"
-        v-model:date-to="dateTo"
-        show-amount
-      />
-    </div>
 
-    <div v-if="!loading && filtered.length === 0" class="card">
-      <EmptyState :title="t('impayes.empty')" :hint="t('impayes.emptyHint')" />
-    </div>
+      <div v-if="!loading && filtered.length === 0" class="card">
+        <EmptyState :title="t('impayes.empty')" :hint="t('impayes.emptyHint')" />
+      </div>
 
-    <div v-else class="impaye-cards">
-      <section v-for="c in filtered" :key="c.clientId" class="card impaye-card">
-        <div class="impaye-head">
-          <div class="impaye-who">
-            <span class="impaye-name">{{ c.clientName }}</span>
-            <span class="impaye-contact">
-              <AppIcon name="phone" :size="13" /> {{ c.phone }}
-              <template v-if="c.address"><span class="sep">·</span><AppIcon name="map-pin" :size="13" /> {{ c.address }}</template>
-            </span>
-          </div>
-          <div class="impaye-right">
-            <div class="impaye-total-box">
-              <span class="impaye-total-label">{{ t("impayes.totalOverdue") }}</span>
-              <span class="impaye-total tabular">{{ fmt.money(c.totalOverdue) }}</span>
+      <div v-else class="impaye-cards">
+        <section v-for="c in filtered" :key="c.clientId" class="card impaye-card">
+          <div class="impaye-head">
+            <div class="impaye-who">
+              <span class="impaye-name">{{ c.clientName }}</span>
+              <span class="impaye-contact">
+                <AppIcon name="phone" :size="13" /> {{ c.phone }}
+                <template v-if="c.address"
+                  ><span class="sep">·</span><AppIcon name="map-pin" :size="13" />
+                  {{ c.address }}</template
+                >
+              </span>
             </div>
-            <div class="impaye-actions">
-              <a class="contact-btn contact-btn--call" :href="tel(c.phone)" :title="t('impaye.call')">
-                <AppIcon name="phone" :size="17" />
-              </a>
-              <a class="contact-btn contact-btn--msg" :href="sms(c.phone)" :title="t('impaye.message')">
-                <AppIcon name="message" :size="17" />
-              </a>
-              <button
-                class="contact-btn contact-btn--view"
-                type="button"
-                :title="t('common.view')"
-                @click="router.push({ name: 'client-detail', params: { id: c.clientId } })"
-              >
-                <AppIcon name="users" :size="17" />
-              </button>
+            <div class="impaye-right">
+              <div class="impaye-total-box">
+                <span class="impaye-total-label">{{ t("impayes.totalOverdue") }}</span>
+                <span class="impaye-total tabular">{{ fmt.money(c.totalOverdue) }}</span>
+              </div>
+              <div class="impaye-actions">
+                <button
+                  class="contact-btn contact-btn--call"
+                  type="button"
+                  :title="t('impaye.call')"
+                  @click="contact.call(c.phone)"
+                >
+                  <AppIcon name="phone" :size="17" />
+                </button>
+                <button
+                  class="contact-btn contact-btn--msg"
+                  type="button"
+                  :title="t('impaye.message')"
+                  @click="contact.message(c.phone)"
+                >
+                  <AppIcon name="message" :size="17" />
+                </button>
+                <button
+                  class="contact-btn contact-btn--view"
+                  type="button"
+                  :title="t('common.view')"
+                  @click="router.push({ name: 'client-detail', params: { id: c.clientId } })"
+                >
+                  <AppIcon name="users" :size="17" />
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <table class="table inner-table">
-          <thead>
-            <tr>
-              <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
-              <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
-              <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
-              <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
-              <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="i in sortedInstallments(c.installments)" :key="i.installmentId" class="is-late">
-              <td>
-                <a class="row-link" href="#" @click.prevent="router.push({ name: 'achat-detail', params: { id: i.purchaseId } })">
-                  {{ i.purchaseReference }}
-                </a>
-              </td>
-              <td class="tabular">{{ i.index }}/{{ i.installmentCount }}</td>
-              <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
-              <td class="tabular strong">{{ fmt.money(i.remaining) }}</td>
-              <td class="late-cell">{{ t("dashboard.alert.daysLate", i.daysLate) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-    </div>
+          <div class="table-scroll">
+            <table class="table inner-table">
+              <thead>
+                <tr>
+                  <SortHeader
+                    :sort="sort"
+                    field="reference"
+                    :label="t('echeances.columns.reference')"
+                  />
+                  <SortHeader
+                    :sort="sort"
+                    field="tranche"
+                    :label="t('echeances.columns.tranche')"
+                  />
+                  <SortHeader
+                    :sort="sort"
+                    field="dueDate"
+                    :label="t('echeances.columns.dueDate')"
+                  />
+                  <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+                  <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="i in sortedInstallments(c.installments)"
+                  :key="i.installmentId"
+                  class="is-late"
+                >
+                  <td>
+                    <a
+                      class="row-link"
+                      href="#"
+                      @click.prevent="
+                        router.push({ name: 'achat-detail', params: { id: i.purchaseId } })
+                      "
+                    >
+                      {{ i.purchaseReference }}
+                    </a>
+                  </td>
+                  <td class="tabular">{{ i.index }}/{{ i.installmentCount }}</td>
+                  <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
+                  <td class="tabular strong">{{ fmt.money(i.remaining) }}</td>
+                  <td class="late-cell">{{ t("dashboard.alert.daysLate", i.daysLate) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </template>
   </div>
 </template>
 

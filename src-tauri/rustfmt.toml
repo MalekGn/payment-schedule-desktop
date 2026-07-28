@@ -1,0 +1,4 @@
+# rustfmt configuration for the Tauri backend.
+# Only stable options are used so `cargo fmt` works on the stable toolchain.
+edition = "2021"
+max_width = 100

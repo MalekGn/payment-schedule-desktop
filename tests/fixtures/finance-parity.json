@@ -1,0 +1,265 @@
+{
+  "splitAmounts": [
+    {
+      "total": 1000,
+      "n": 3,
+      "expected": [333, 333, 334]
+    },
+    {
+      "total": 1000,
+      "n": 1,
+      "expected": [1000]
+    },
+    {
+      "total": 999,
+      "n": 4,
+      "expected": [249, 249, 249, 252]
+    },
+    {
+      "total": 100,
+      "n": 7,
+      "expected": [14, 14, 14, 14, 14, 14, 16]
+    },
+    {
+      "total": 1200,
+      "n": 12,
+      "expected": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    },
+    {
+      "total": 5,
+      "n": 3,
+      "expected": [1, 1, 3]
+    },
+    {
+      "total": 0,
+      "n": 3,
+      "expected": [0, 0, 0]
+    },
+    {
+      "total": 7,
+      "n": 120,
+      "expected": [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7
+      ]
+    }
+  ],
+  "addInterval": [
+    {
+      "date": "2024-01-31",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 1,
+      "expected": "2024-02-29"
+    },
+    {
+      "date": "2024-01-31",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 2,
+      "expected": "2024-03-31"
+    },
+    {
+      "date": "2024-01-15",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 0,
+      "expected": "2024-01-15"
+    },
+    {
+      "date": "2023-01-31",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 1,
+      "expected": "2023-02-28"
+    },
+    {
+      "date": "2024-03-31",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 1,
+      "expected": "2024-04-30"
+    },
+    {
+      "date": "2024-01-01",
+      "kind": "monthly",
+      "intervalDays": null,
+      "k": 12,
+      "expected": "2025-01-01"
+    },
+    {
+      "date": "2024-01-01",
+      "kind": "weekly",
+      "intervalDays": null,
+      "k": 0,
+      "expected": "2024-01-01"
+    },
+    {
+      "date": "2024-01-01",
+      "kind": "weekly",
+      "intervalDays": null,
+      "k": 3,
+      "expected": "2024-01-22"
+    },
+    {
+      "date": "2024-12-25",
+      "kind": "weekly",
+      "intervalDays": null,
+      "k": 2,
+      "expected": "2025-01-08"
+    },
+    {
+      "date": "2024-02-27",
+      "kind": "custom",
+      "intervalDays": 3,
+      "k": 1,
+      "expected": "2024-03-01"
+    },
+    {
+      "date": "2024-02-27",
+      "kind": "custom",
+      "intervalDays": 30,
+      "k": 4,
+      "expected": "2024-06-26"
+    },
+    {
+      "date": "2024-01-01",
+      "kind": "custom",
+      "intervalDays": null,
+      "k": 2,
+      "expected": "2024-03-01"
+    },
+    {
+      "date": "2024-01-01",
+      "kind": "custom",
+      "intervalDays": 365,
+      "k": 1,
+      "expected": "2024-12-31"
+    }
+  ],
+  "installmentStatus": [
+    {
+      "amount": 100,
+      "paid": 100,
+      "dueDate": "2024-01-01",
+      "today": "2024-06-01",
+      "expected": "paid"
+    },
+    {
+      "amount": 100,
+      "paid": 120,
+      "dueDate": "2024-01-01",
+      "today": "2024-06-01",
+      "expected": "paid"
+    },
+    {
+      "amount": 100,
+      "paid": 0,
+      "dueDate": "2024-01-01",
+      "today": "2024-06-01",
+      "expected": "late"
+    },
+    {
+      "amount": 100,
+      "paid": 40,
+      "dueDate": "2024-01-01",
+      "today": "2024-06-01",
+      "expected": "late"
+    },
+    {
+      "amount": 100,
+      "paid": 0,
+      "dueDate": "2024-12-01",
+      "today": "2024-06-01",
+      "expected": "pending"
+    },
+    {
+      "amount": 100,
+      "paid": 40,
+      "dueDate": "2024-12-01",
+      "today": "2024-06-01",
+      "expected": "partial"
+    },
+    {
+      "amount": 100,
+      "paid": 0,
+      "dueDate": "2024-06-01",
+      "today": "2024-06-01",
+      "expected": "pending"
+    }
+  ],
+  "rebalanceAmounts": [
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [0, 0, 0, 0, 0],
+      "index": 2,
+      "newAmount": 350,
+      "expected": [200, 200, 350, 125, 125]
+    },
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [0, 0, 0, 0, 0],
+      "index": 0,
+      "newAmount": 0,
+      "expected": [0, 250, 250, 250, 250]
+    },
+    {
+      "amounts": [334, 333, 333],
+      "paidAmounts": [0, 0, 0],
+      "index": 0,
+      "newAmount": 0,
+      "expected": [0, 500, 500]
+    },
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [200, 200, 0, 0, 0],
+      "index": 4,
+      "newAmount": 100,
+      "expected": [200, 200, 250, 250, 100]
+    },
+    {
+      "amounts": [200, 200, 200],
+      "paidAmounts": [0, 0, 200],
+      "index": 0,
+      "newAmount": 100,
+      "expected": [100, 300, 200]
+    },
+    {
+      "amounts": [400, 300, 200],
+      "paidAmounts": [0, 0, 180],
+      "index": 1,
+      "newAmount": 400,
+      "expected": [250, 400, 250]
+    },
+    {
+      "amounts": [200, 300],
+      "paidAmounts": [0, 0],
+      "index": 1,
+      "newAmount": 300,
+      "expected": [200, 300]
+    },
+    {
+      "amounts": [200, 200],
+      "paidAmounts": [0, 200],
+      "index": 0,
+      "newAmount": 100,
+      "expected": null
+    },
+    {
+      "amounts": [200, 200, 200],
+      "paidAmounts": [0, 50, 0],
+      "index": 0,
+      "newAmount": 600,
+      "expected": null
+    },
+    {
+      "amounts": [200, 200],
+      "paidAmounts": [150, 0],
+      "index": 0,
+      "newAmount": 100,
+      "expected": null
+    }
+  ]
+}

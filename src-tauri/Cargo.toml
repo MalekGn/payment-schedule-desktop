@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "paymentSchedule — installment-sale tracking for small Tunisian appliance shops"
 authors = ["paymentSchedule"]
 edition = "2021"
-rust-version = "1.77"
+# Measured against the locked dependency set, not guessed: `darling`, `plist`,
+# `time` and `serde_with` all declare 1.88. The previous value (1.77) advertised
+# a floor that could never have built.
+rust-version = "1.88"
+repository = "https://github.com/MalekGn/payment-schedule-desktop"
+# Proprietary — see the LICENSE file at the repository root. `publish = false`
+# keeps this off crates.io and lets `cargo deny` skip the SPDX check for our own
+# crate (see `[licenses.private]` in deny.toml).
+license-file = "../LICENSE"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,12 +29,21 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
+tauri-plugin-opener = "2.5.4"
+# Two SQLite connections to one file is the classic corruption window. The DB
+# lives in the app-data dir, so nothing stops a user double-launching the
+# AppImage or the desktop entry — this makes a second launch focus the first.
+tauri-plugin-single-instance = "2"
+# Backend diagnostics. Command failures used to vanish entirely: every error was
+# stringified to the renderer and recorded nowhere, so a user's report could not
+# be traced. See `AppError::internal`.
+log = "0.4"
+tauri-plugin-log = "2"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified,

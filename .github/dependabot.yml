@@ -1,0 +1,30 @@
+version: 2
+
+# Automated dependency-update PRs across all three ecosystems this repo uses.
+# github-actions updates keep the SHA-pinned actions in .github/workflows/* current,
+# so pinning does not mean the actions rot.
+updates:
+  # JavaScript / frontend dependencies.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Batch minor/patch dev-dependency bumps into one PR to cut noise.
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  # Rust / Tauri backend dependencies.
+  - package-ecosystem: cargo
+    directory: "/src-tauri"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The GitHub Actions used in the workflows (kept pinned; Dependabot bumps the SHAs).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

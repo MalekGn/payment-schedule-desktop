@@ -24,6 +24,21 @@ pub struct Client {
     pub address: String,
     pub email: Option<String>,
     pub created_at: String,
+    /// `None` while the client is active; the ISO timestamp they were archived
+    /// at otherwise. Archiving hides a client from the active list and the
+    /// new-purchase picker without touching any of their history.
+    pub archived_at: Option<String>,
+}
+
+/// Which slice of the client list to return. Serialized as
+/// `"active" | "archived" | "all"`; absent means [`ClientScope::Active`].
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClientScope {
+    #[default]
+    Active,
+    Archived,
+    All,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,7 +66,11 @@ pub struct ClientSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ClientDetail {
     pub client: Client,
+    /// Live purchases. The totals below are computed from these alone.
     pub purchases: Vec<PurchaseSummary>,
+    /// Archived purchases, listed separately on the client page and excluded
+    /// from every total — an archived purchase is no longer owed.
+    pub archived_purchases: Vec<PurchaseSummary>,
     pub total_purchased: i64,
     pub total_paid: i64,
     pub total_outstanding: i64,
@@ -75,6 +94,21 @@ pub struct Purchase {
     pub interval_days: Option<i64>,
     pub purchase_date: String,
     pub created_at: String,
+    /// `None` while the purchase is live; the ISO date it was archived
+    /// otherwise. An archived purchase leaves every money aggregate — see
+    /// `m0003_purchase_archive` — and always has zero payments recorded.
+    pub archived_at: Option<String>,
+}
+
+/// Which slice of the purchase list to return. Serialized as
+/// `"active" | "archived" | "all"`; absent means [`PurchaseScope::Active`].
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PurchaseScope {
+    #[default]
+    Active,
+    Archived,
+    All,
 }
 
 /// A purchase row enriched with client name + computed status/balance,
@@ -95,6 +129,9 @@ pub struct PurchaseSummary {
     /// "pending" | "in_progress" | "paid" | "late"
     pub status: String,
     pub overdue_count: i64,
+    /// Mirrors [`Purchase::archived_at`]. Repeated rather than flattened
+    /// because this struct is flat by design, unlike `ClientSummary`.
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +189,30 @@ pub struct Installment {
     /// Effective status computed against today's date:
     /// "paid" | "partial" | "late" | "pending"
     pub status: String,
+}
+
+/// A partial edit of one existing installment.
+///
+/// Every field is optional and an absent one means "leave it alone", so the
+/// editor can send only what the user actually touched.
+///
+/// The two halves are governed by opposite rules. `amount` and `due_date` are
+/// the *schedule* — what is owed and when — and stay editable until the
+/// installment settles. `paid_amount`, `payment_date` and `note` are the
+/// *money*, and are editable only in payment order.
+///
+/// `paid_amount` is absolute, not an increment: it is the new cumulative total
+/// collected on the row. The backend turns the difference into a `payment`
+/// ledger entry, so `payment_date` and `note` describe that entry rather than
+/// writing `installment.paid_date` directly — that column stays derived.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallmentEdit {
+    pub amount: Option<i64>,
+    pub due_date: Option<String>,
+    pub paid_amount: Option<i64>,
+    pub payment_date: Option<String>,
+    pub note: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,59 @@
+# cargo-deny configuration — supply-chain checks for the Rust dependency tree.
+# Run with: cargo deny check   (from the src-tauri/ directory)
+
+# Reject crates with known RustSec advisories or that have been yanked.
+[advisories]
+version = 2
+yanked = "deny"
+# Only fail on unmaintained crates we could actually act on. `cargo audit`
+# currently reports 0 vulnerabilities and 17 warnings — 10 gtk-rs GTK3 bindings
+# (RUSTSEC-2024-0411..0418), `glib` 0.18.5 unsoundness (RUSTSEC-2024-0429),
+# `proc-macro-error`, and five `unic-*` crates. Every one is transitive through
+# `tauri` -> `tauri-runtime-wry` -> `tao`/`gtk`, and no fixed version exists;
+# they clear when Tauri's Linux backend leaves GTK3. Stating the policy here
+# makes that a decision on the record rather than a reliance on cargo-deny's
+# defaults, while the warnings stay visible in the weekly run.
+unmaintained = "workspace"
+# Advisory IDs to temporarily ignore (with a tracking note). Keep this empty by default.
+ignore = []
+
+# Only allow permissive / well-understood licenses. `cargo deny check licenses`
+# fails on anything outside this list, guarding against surprise copyleft pulls.
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "OpenSSL",
+  # SQLite (pulled in bundled via rusqlite) is released under the "blessing"
+  # public-domain dedication.
+  "blessing",
+]
+
+# This crate is proprietary (`license-file = "../LICENSE"`, `publish = false`).
+# It carries no SPDX expression, so exempt our own unpublished crate rather than
+# inventing a licence identifier for it. Third-party crates are still held to
+# the allow-list above.
+[licenses.private]
+ignore = true
+
+# Flag duplicate crate versions and wildcard version requirements — both are
+# supply-chain smells — as warnings rather than hard errors to start with.
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+# Dependencies must come from crates.io; unknown registries/git sources are flagged.
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"

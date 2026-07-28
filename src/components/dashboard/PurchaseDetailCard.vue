@@ -10,30 +10,37 @@ import type { Installment, PurchaseDetail } from "@/types/models";
 
 const props = defineProps<{
   detail: PurchaseDetail;
-  // When true, every unpaid installment gets a "Record" action (detail page).
+  // When true, every installment gets the update action (purchase detail page).
   // When false (dashboard), only actionable (late/partial) ones do.
   fullActions?: boolean;
   showHeader?: boolean;
 }>();
-const emit = defineEmits<{ pay: [installment: Installment] }>();
+const emit = defineEmits<{ updateInstallment: [installment: Installment] }>();
 
 const { t } = useI18n();
 const fmt = useFormat();
 const router = useRouter();
 
-const { sort, sorted: sortedInstallments } = useSort(
-  () => props.detail.installments,
-  {
-    tranche: (i) => i.index,
-    dueDate: (i) => i.dueDate,
-    amount: (i) => i.amount,
-    status: (i) => i.status,
-    paymentDate: (i) => i.paidDate,
-  },
-);
+const { sort, sorted: sortedInstallments } = useSort(() => props.detail.installments, {
+  tranche: (i) => i.index,
+  dueDate: (i) => i.dueDate,
+  amount: (i) => i.amount,
+  remaining: (i) => i.amount - i.paidAmount,
+  status: (i) => i.status,
+  paymentDate: (i) => i.paidDate,
+});
 
-function canPay(i: Installment): boolean {
-  if (i.status === "paid") return false;
+/**
+ * Whether this row offers the update action.
+ *
+ * `update_installment` refuses an archived purchase outright, so offering it
+ * there is a button that can only ever produce an error toast. On the purchase
+ * page every row qualifies — including settled ones, whose collected figure and
+ * payment date stay editable. The dashboard card is a preview, so it keeps to
+ * the rows that actually need attention.
+ */
+function canUpdate(i: Installment): boolean {
+  if (props.detail.purchase.archivedAt) return false;
   if (props.fullActions) return true;
   return i.status === "late" || i.status === "partial";
 }
@@ -65,8 +72,12 @@ function goToPurchase() {
           <a class="ident-client" href="#" @click.prevent="goToClient">
             {{ detail.client.firstName }} {{ detail.client.lastName }}
           </a>
-          <span class="ident-line"><AppIcon name="phone" :size="14" /> {{ detail.client.phone }}</span>
-          <span class="ident-line"><AppIcon name="map-pin" :size="14" /> {{ detail.client.address }}</span>
+          <span class="ident-line"
+            ><AppIcon name="phone" :size="14" /> {{ detail.client.phone }}</span
+          >
+          <span class="ident-line"
+            ><AppIcon name="map-pin" :size="14" /> {{ detail.client.address }}</span
+          >
           <span v-if="detail.client.email" class="ident-line">
             <AppIcon name="mail" :size="14" /> {{ detail.client.email }}
           </span>
@@ -97,36 +108,60 @@ function goToPurchase() {
       </div>
     </div>
 
-    <table class="table inst-table">
-      <thead>
-        <tr>
-          <SortHeader :sort="sort" field="tranche" :label="t('dashboard.detail.tranche')" />
-          <SortHeader :sort="sort" field="dueDate" :label="t('dashboard.detail.dueDate')" />
-          <SortHeader :sort="sort" field="amount" :label="t('dashboard.detail.amount')" />
-          <SortHeader :sort="sort" field="status" :label="t('common.status')" />
-          <SortHeader :sort="sort" field="paymentDate" :label="t('dashboard.detail.paymentDate')" />
-          <th class="col-action">{{ t("common.actions") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="i in sortedInstallments" :key="i.id" :class="{ 'is-late': i.status === 'late' }">
-          <td class="tabular">{{ i.index }}/{{ detail.purchase.installmentCount }}</td>
-          <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
-          <td class="tabular">{{ fmt.number(i.amount) }}</td>
-          <td><StatusBadge :status="i.status" feminine /></td>
-          <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
-          <td class="col-action">
-            <button v-if="canPay(i)" class="btn btn--primary btn--sm" type="button" @click="emit('pay', i)">
-              {{ fullActions ? t("common.edit") : t("dashboard.detail.register") }}
-            </button>
-            <a v-else-if="i.status === 'paid'" class="row-link" href="#" @click.prevent="goToPurchase">
-              {{ t("dashboard.detail.view") }}
-            </a>
-            <span v-else class="muted">—</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table inst-table">
+        <thead>
+          <tr>
+            <SortHeader :sort="sort" field="tranche" :label="t('dashboard.detail.tranche')" />
+            <SortHeader :sort="sort" field="dueDate" :label="t('dashboard.detail.dueDate')" />
+            <SortHeader :sort="sort" field="amount" :label="t('dashboard.detail.amount')" />
+            <SortHeader :sort="sort" field="remaining" :label="t('common.remaining')" />
+            <SortHeader :sort="sort" field="status" :label="t('common.status')" />
+            <SortHeader
+              :sort="sort"
+              field="paymentDate"
+              :label="t('dashboard.detail.paymentDate')"
+            />
+            <th class="col-action">{{ t("common.actions") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="i in sortedInstallments"
+            :key="i.id"
+            :class="{ 'is-late': i.status === 'late' }"
+          >
+            <td class="tabular">{{ i.index }}/{{ detail.purchase.installmentCount }}</td>
+            <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
+            <td class="tabular">{{ fmt.money(i.amount) }}</td>
+            <td class="tabular strong">{{ fmt.money(i.amount - i.paidAmount) }}</td>
+            <td><StatusBadge :status="i.status" feminine /></td>
+            <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
+            <td class="col-action">
+              <div class="row-actions">
+                <button
+                  v-if="canUpdate(i)"
+                  class="btn btn--primary btn--sm"
+                  type="button"
+                  @click="emit('updateInstallment', i)"
+                >
+                  {{ t("dashboard.detail.updatePayment") }}
+                </button>
+                <a
+                  v-else-if="i.status === 'paid'"
+                  class="row-link"
+                  href="#"
+                  @click.prevent="goToPurchase"
+                >
+                  {{ t("dashboard.detail.view") }}
+                </a>
+                <span v-else class="muted">—</span>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div class="detail-foot">
       <button class="btn btn--ghost btn--sm" type="button" @click="goToPurchase">
@@ -241,6 +276,13 @@ function goToPurchase() {
 }
 .col-action {
   text-align: end;
+}
+/* Flex rather than inline spacing so the pair mirrors under `dir="rtl"`. */
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
 }
 .detail-foot {
   padding: 16px 24px;

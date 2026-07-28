@@ -60,7 +60,7 @@ onMounted(load);
 <template>
   <div v-if="notFound" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
     <div class="card">
       <EmptyState icon="users" :title="t('notFound.clientMissing')" />
@@ -69,18 +69,32 @@ onMounted(load);
 
   <div v-else-if="detail" class="page">
     <button class="back-link" type="button" @click="goBack">
-      <AppIcon name="arrow-left" :size="16" /> {{ t("common.back") }}
+      <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
 
     <div class="top-grid">
       <section class="card contact-card">
-        <div class="card-header"><h2>{{ t("clients.detail.contact") }}</h2></div>
+        <div class="card-header">
+          <h2>{{ t("clients.detail.contact") }}</h2>
+        </div>
         <div class="contact-body">
           <div class="contact-avatar">
             {{ detail.client.firstName.charAt(0) }}{{ detail.client.lastName.charAt(0) }}
           </div>
           <div class="contact-info">
-            <span class="contact-name">{{ detail.client.firstName }} {{ detail.client.lastName }}</span>
+            <span class="contact-name"
+              >{{ detail.client.firstName }} {{ detail.client.lastName }}</span
+            >
+            <!-- Reachable by deep link or from a purchase, so an archived
+                 client must not read as active here. Archive/restore stay on
+                 the list view; this page has no mutating actions. -->
+            <span
+              v-if="detail.client.archivedAt"
+              class="badge badge--pending archived-badge"
+              :title="t('clients.archivedOn', { date: fmt.date(detail.client.archivedAt) })"
+            >
+              {{ t("clients.archivedBadge") }}
+            </span>
             <span v-if="detail.client.phone" class="contact-line">
               <AppIcon name="phone" :size="15" /> {{ detail.client.phone }}
             </span>
@@ -101,70 +115,151 @@ onMounted(load);
         </div>
         <div class="fig-card card">
           <span class="fig-label">{{ t("clients.detail.totalPaid") }}</span>
-          <span class="fig-value tabular" style="color: var(--success)">{{ fmt.money(detail.totalPaid) }}</span>
+          <span class="fig-value tabular" style="color: var(--success)">{{
+            fmt.money(detail.totalPaid)
+          }}</span>
         </div>
         <div class="fig-card card">
           <span class="fig-label">{{ t("clients.detail.outstanding") }}</span>
-          <span class="fig-value tabular" style="color: var(--warning-text)">{{ fmt.money(detail.totalOutstanding) }}</span>
+          <span class="fig-value tabular" style="color: var(--warning-text)">{{
+            fmt.money(detail.totalOutstanding)
+          }}</span>
         </div>
       </div>
     </div>
 
     <section class="card">
-      <div class="card-header"><h2>{{ t("clients.detail.purchases") }}</h2></div>
-      <EmptyState v-if="detail.purchases.length === 0" icon="cart" :title="t('clients.detail.noPurchases')" />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="purchaseSort" field="reference" :label="t('dashboard.table.reference')" />
-            <SortHeader :sort="purchaseSort" field="product" :label="t('common.product')" />
-            <SortHeader :sort="purchaseSort" field="date" :label="t('common.date')" />
-            <SortHeader :sort="purchaseSort" field="total" :label="t('common.total')" />
-            <SortHeader :sort="purchaseSort" field="remaining" :label="t('achats.columns.remaining')" />
-            <SortHeader :sort="purchaseSort" field="status" :label="t('common.status')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="p in sortedPurchases"
-            :key="p.id"
-            class="clickable"
-            @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
-          >
-            <td><span class="row-link">{{ p.reference }}</span></td>
-            <td class="ellipsis">{{ p.productLabel }}</td>
-            <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
-            <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
-            <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
-            <td><StatusBadge :status="p.status" /></td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="card-header">
+        <h2>{{ t("clients.detail.purchases") }}</h2>
+      </div>
+      <EmptyState
+        v-if="detail.purchases.length === 0"
+        icon="cart"
+        :title="t('clients.detail.noPurchases')"
+      />
+      <div v-else class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <SortHeader
+                :sort="purchaseSort"
+                field="reference"
+                :label="t('dashboard.table.reference')"
+              />
+              <SortHeader :sort="purchaseSort" field="product" :label="t('common.product')" />
+              <SortHeader :sort="purchaseSort" field="date" :label="t('common.date')" />
+              <SortHeader :sort="purchaseSort" field="total" :label="t('common.total')" />
+              <SortHeader
+                :sort="purchaseSort"
+                field="remaining"
+                :label="t('achats.columns.remaining')"
+              />
+              <SortHeader :sort="purchaseSort" field="status" :label="t('common.status')" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in sortedPurchases"
+              :key="p.id"
+              class="clickable"
+              @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
+            >
+              <td>
+                <span class="row-link">{{ p.reference }}</span>
+              </td>
+              <td class="ellipsis">{{ p.productLabel }}</td>
+              <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
+              <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
+              <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
+              <td><StatusBadge :status="p.status" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Archived purchases are kept out of every total above; they are shown
+         here so the history stays visible in the client's own context. -->
+    <section v-if="detail.archivedPurchases.length" class="card">
+      <div class="card-header">
+        <h2>{{ t("achats.archivedSection") }}</h2>
+      </div>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>{{ t("dashboard.table.reference") }}</th>
+              <th>{{ t("common.product") }}</th>
+              <th>{{ t("common.date") }}</th>
+              <th>{{ t("common.total") }}</th>
+              <th>{{ t("achats.archivedBadge") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in detail.archivedPurchases"
+              :key="p.id"
+              class="clickable"
+              @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
+            >
+              <td>
+                <span class="row-link">{{ p.reference }}</span>
+              </td>
+              <td class="ellipsis">{{ p.productLabel }}</td>
+              <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
+              <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
+              <td class="tabular">{{ fmt.date(p.archivedAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>{{ t("clients.detail.paymentHistory") }}</h2></div>
-      <EmptyState v-if="payments.length === 0" icon="card" :title="t('clients.detail.noPayments')" />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="paymentSort" field="date" :label="t('paiements.columns.date')" />
-            <SortHeader :sort="paymentSort" field="reference" :label="t('paiements.columns.reference')" />
-            <SortHeader :sort="paymentSort" field="tranche" :label="t('paiements.columns.tranche')" />
-            <SortHeader :sort="paymentSort" field="amount" :label="t('paiements.columns.amount')" />
-            <SortHeader :sort="paymentSort" field="note" :label="t('paiements.columns.note')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="pay in sortedPayments" :key="pay.id">
-            <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
-            <td><span class="row-link">{{ pay.purchaseReference }}</span></td>
-            <td class="tabular">{{ pay.installmentIndex }}</td>
-            <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
-            <td class="muted">{{ pay.note || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="card-header">
+        <h2>{{ t("clients.detail.paymentHistory") }}</h2>
+      </div>
+      <EmptyState
+        v-if="payments.length === 0"
+        icon="card"
+        :title="t('clients.detail.noPayments')"
+      />
+      <div v-else class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <SortHeader :sort="paymentSort" field="date" :label="t('paiements.columns.date')" />
+              <SortHeader
+                :sort="paymentSort"
+                field="reference"
+                :label="t('paiements.columns.reference')"
+              />
+              <SortHeader
+                :sort="paymentSort"
+                field="tranche"
+                :label="t('paiements.columns.tranche')"
+              />
+              <SortHeader
+                :sort="paymentSort"
+                field="amount"
+                :label="t('paiements.columns.amount')"
+              />
+              <SortHeader :sort="paymentSort" field="note" :label="t('paiements.columns.note')" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="pay in sortedPayments" :key="pay.id">
+              <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
+              <td>
+                <span class="row-link">{{ pay.purchaseReference }}</span>
+              </td>
+              <td class="tabular">{{ pay.installmentIndex }}</td>
+              <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
+              <td class="muted">{{ pay.note || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
   </div>
 </template>
@@ -221,6 +316,12 @@ onMounted(load);
 .contact-name {
   font-size: 16px;
   font-weight: 700;
+}
+.archived-badge {
+  /* The contact info is a column, so keep the badge at its own width. */
+  align-self: flex-start;
+  font-size: 11.5px;
+  padding: 2px 8px;
 }
 .contact-line {
   display: flex;

@@ -7,7 +7,9 @@ import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { useSettingsStore } from "@/stores/settings";
 import { api } from "@/api";
@@ -23,7 +25,6 @@ const settings = useSettingsStore();
 type Filter = "all" | AlertKind;
 const schedule = ref<ScheduleRow[]>([]);
 const filter = ref<Filter>("all");
-const loading = ref(true);
 
 // The "due soon" horizon is a user setting, so derive alerts reactively: editing
 // it in Settings re-classifies the visible rows without a reload.
@@ -89,119 +90,141 @@ function timingLabel(a: AlertRow): string {
   return t("alertes.timing.inDays", a.days);
 }
 
-onMounted(async () => {
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   schedule.value = await api.listSchedule();
-  loading.value = false;
 });
+onMounted(load);
 </script>
 
 <template>
   <div class="page">
-    <div class="summary">
-      <button
-        class="tile card"
-        :class="{ 'tile--active': filter === 'overdue' }"
-        type="button"
-        @click="filter = filter === 'overdue' ? 'all' : 'overdue'"
-      >
-        <span class="tile-icon tile-icon--red"><AppIcon name="alert" :size="22" /></span>
-        <span class="tile-body">
-          <span class="tile-value tabular">{{ summary.overdue.count }}</span>
-          <span class="tile-label">{{ t("alertes.summary.overdue") }}</span>
-          <span class="tile-sub tabular">{{ fmt.money(summary.overdue.total) }}</span>
-        </span>
-      </button>
-      <button
-        class="tile card"
-        :class="{ 'tile--active': filter === 'dueToday' }"
-        type="button"
-        @click="filter = filter === 'dueToday' ? 'all' : 'dueToday'"
-      >
-        <span class="tile-icon tile-icon--orange"><AppIcon name="calendar" :size="22" /></span>
-        <span class="tile-body">
-          <span class="tile-value tabular">{{ summary.dueToday.count }}</span>
-          <span class="tile-label">{{ t("alertes.summary.dueToday") }}</span>
-          <span class="tile-sub tabular">{{ fmt.money(summary.dueToday.total) }}</span>
-        </span>
-      </button>
-      <button
-        class="tile card"
-        :class="{ 'tile--active': filter === 'dueSoon' }"
-        type="button"
-        @click="filter = filter === 'dueSoon' ? 'all' : 'dueSoon'"
-      >
-        <span class="tile-icon tile-icon--blue"><AppIcon name="bell" :size="22" /></span>
-        <span class="tile-body">
-          <span class="tile-value tabular">{{ summary.dueSoon.count }}</span>
-          <span class="tile-label">{{ t("alertes.summary.dueSoon", { days: settings.alertSoonDays }) }}</span>
-          <span class="tile-sub tabular">{{ fmt.money(summary.dueSoon.total) }}</span>
-        </span>
-      </button>
-    </div>
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
 
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2>{{ t("alertes.title") }}</h2>
-          <p class="subtitle">{{ t("alertes.subtitle") }}</p>
-        </div>
-        <div class="tabs">
-          <button
-            v-for="f in FILTERS"
-            :key="f.key"
-            class="tab"
-            :class="{ 'tab--active': filter === f.key }"
-            type="button"
-            @click="filter = f.key"
-          >
-            {{ t(f.label) }}
-          </button>
-        </div>
+    <template v-else>
+      <div class="summary">
+        <button
+          class="tile card"
+          :class="{ 'tile--active': filter === 'overdue' }"
+          type="button"
+          @click="filter = filter === 'overdue' ? 'all' : 'overdue'"
+        >
+          <span class="tile-icon tile-icon--red"><AppIcon name="alert" :size="22" /></span>
+          <span class="tile-body">
+            <span class="tile-value tabular">{{ summary.overdue.count }}</span>
+            <span class="tile-label">{{ t("alertes.summary.overdue") }}</span>
+            <span class="tile-sub tabular">{{ fmt.money(summary.overdue.total) }}</span>
+          </span>
+        </button>
+        <button
+          class="tile card"
+          :class="{ 'tile--active': filter === 'dueToday' }"
+          type="button"
+          @click="filter = filter === 'dueToday' ? 'all' : 'dueToday'"
+        >
+          <span class="tile-icon tile-icon--orange"><AppIcon name="calendar" :size="22" /></span>
+          <span class="tile-body">
+            <span class="tile-value tabular">{{ summary.dueToday.count }}</span>
+            <span class="tile-label">{{ t("alertes.summary.dueToday") }}</span>
+            <span class="tile-sub tabular">{{ fmt.money(summary.dueToday.total) }}</span>
+          </span>
+        </button>
+        <button
+          class="tile card"
+          :class="{ 'tile--active': filter === 'dueSoon' }"
+          type="button"
+          @click="filter = filter === 'dueSoon' ? 'all' : 'dueSoon'"
+        >
+          <span class="tile-icon tile-icon--blue"><AppIcon name="bell" :size="22" /></span>
+          <span class="tile-body">
+            <span class="tile-value tabular">{{ summary.dueSoon.count }}</span>
+            <span class="tile-label">{{
+              t("alertes.summary.dueSoon", { days: settings.alertSoonDays })
+            }}</span>
+            <span class="tile-sub tabular">{{ fmt.money(summary.dueSoon.total) }}</span>
+          </span>
+        </button>
       </div>
 
-      <ListFilterBar
-        v-model:search="search"
-        v-model:amount-min="amountMin"
-        v-model:amount-max="amountMax"
-        v-model:date-from="dateFrom"
-        v-model:date-to="dateTo"
-        show-amount
-      />
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>{{ t("alertes.title") }}</h2>
+            <p class="subtitle">{{ t("alertes.subtitle") }}</p>
+          </div>
+          <div class="tabs">
+            <button
+              v-for="f in FILTERS"
+              :key="f.key"
+              class="tab"
+              :class="{ 'tab--active': filter === f.key }"
+              type="button"
+              @click="filter = f.key"
+            >
+              {{ t(f.label) }}
+            </button>
+          </div>
+        </div>
 
-      <EmptyState v-if="!loading && filtered.length === 0" icon="bell" :title="t('alertes.empty')" />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="reference" :label="t('alertes.columns.reference')" />
-            <SortHeader :sort="sort" field="client" :label="t('alertes.columns.client')" />
-            <SortHeader :sort="sort" field="tranche" :label="t('alertes.columns.tranche')" />
-            <SortHeader :sort="sort" field="dueDate" :label="t('alertes.columns.dueDate')" />
-            <SortHeader :sort="sort" field="amount" :label="t('alertes.columns.amount')" />
-            <SortHeader :sort="sort" field="timing" :label="t('alertes.columns.timing')" />
-            <th>{{ t("common.status") }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="a in sorted"
-            :key="a.installmentId"
-            class="clickable"
-            :class="{ 'is-late': a.kind === 'overdue' }"
-            @click="router.push({ name: 'achat-detail', params: { id: a.purchaseId } })"
-          >
-            <td><span class="row-link">{{ a.reference }}</span></td>
-            <td>{{ a.clientName }}</td>
-            <td class="tabular">{{ a.index }}/{{ a.installmentCount }}</td>
-            <td class="tabular">{{ fmt.date(a.dueDate) }}</td>
-            <td class="tabular strong">{{ fmt.money(a.remaining) }}</td>
-            <td>
-              <span class="timing" :class="`timing--${a.kind}`">{{ timingLabel(a) }}</span>
-            </td>
-            <td><StatusBadge :status="a.status" feminine /></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+        <ListFilterBar
+          v-model:search="search"
+          v-model:amount-min="amountMin"
+          v-model:amount-max="amountMax"
+          v-model:date-from="dateFrom"
+          v-model:date-to="dateTo"
+          show-amount
+        />
+
+        <EmptyState
+          v-if="!loading && filtered.length === 0"
+          icon="bell"
+          :title="t('alertes.empty')"
+        />
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader
+                  :sort="sort"
+                  field="reference"
+                  :label="t('alertes.columns.reference')"
+                />
+                <SortHeader :sort="sort" field="client" :label="t('alertes.columns.client')" />
+                <SortHeader :sort="sort" field="tranche" :label="t('alertes.columns.tranche')" />
+                <SortHeader :sort="sort" field="dueDate" :label="t('alertes.columns.dueDate')" />
+                <SortHeader :sort="sort" field="amount" :label="t('alertes.columns.amount')" />
+                <SortHeader :sort="sort" field="timing" :label="t('alertes.columns.timing')" />
+                <th>{{ t("common.status") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="a in sorted"
+                :key="a.installmentId"
+                class="clickable"
+                :class="{ 'is-late': a.kind === 'overdue' }"
+                @click="router.push({ name: 'achat-detail', params: { id: a.purchaseId } })"
+              >
+                <td>
+                  <span class="row-link">{{ a.reference }}</span>
+                </td>
+                <td>{{ a.clientName }}</td>
+                <td class="tabular">{{ a.index }}/{{ a.installmentCount }}</td>
+                <td class="tabular">{{ fmt.date(a.dueDate) }}</td>
+                <td class="tabular strong">{{ fmt.money(a.remaining) }}</td>
+                <td>
+                  <span class="timing" :class="`timing--${a.kind}`">{{ timingLabel(a) }}</span>
+                </td>
+                <td><StatusBadge :status="a.status" feminine /></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 

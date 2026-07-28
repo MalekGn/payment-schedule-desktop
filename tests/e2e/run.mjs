@@ -13,6 +13,7 @@
 // Usage: node tests/e2e/run.mjs   (spawns Vite itself, tears it down on exit)
 
 import { chromium } from "playwright";
+import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -39,7 +40,9 @@ function assert(cond, msg) {
 }
 function assertEqual(actual, expected, msg) {
   if (actual !== expected) {
-    throw new Error(`${msg}\n    expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`);
+    throw new Error(
+      `${msg}\n    expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`,
+    );
   }
 }
 
@@ -98,7 +101,11 @@ test("app shell + sidebar render on first load", async (page) => {
   assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "brand line 1");
   assertEqual(await page.locator(".brand-line2").innerText(), "Échelonnés", "brand line 2");
   assertEqual(await page.locator(".nav-item").count(), 9, "sidebar should have 9 nav items");
-  assertEqual(await page.locator("h1.page-title").innerText(), NAV.dashboard, "header title on dashboard");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "header title on dashboard",
+  );
 });
 
 test("dashboard shows 5 KPI cards seeded from mock (8 purchases)", async (page) => {
@@ -123,6 +130,37 @@ test("sidebar navigates to every page and header title updates", async (page) =>
     );
     assertEqual(await page.locator("h1.page-title").innerText(), label, `header title for ${name}`);
   }
+});
+
+// --- Header notification bell ------------------------------------------------
+// The bell badge counts overdue installments (`stats.overdueInstallments`), the
+// same signal the Alerts page lists, so the bell is a shortcut to `/alertes`.
+
+test("header bell navigates to the alerts page", async (page) => {
+  await open(page, "/");
+
+  const badge = page.locator(".header .bell .bell-badge");
+  await badge.waitFor({ timeout: 10000 });
+  const count = parseInt((await badge.innerText()).trim(), 10);
+  assert(count >= 1, `seeded data should produce a bell badge >= 1, got ${count}`);
+
+  await page.locator(".header .bell").click();
+  await page.waitForFunction(() => window.location.pathname === "/alertes", undefined, {
+    timeout: 5000,
+  });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.alertes,
+    "header title after clicking the bell",
+  );
+  // Landed on the default "Toutes" tab, not a pre-filtered subset.
+  assertEqual(
+    (await page.locator(".tabs .tab--active").innerText()).trim(),
+    "Toutes",
+    "alerts page opens on the All tab",
+  );
+  // The badge survives the navigation and still points back at the same page.
+  assert(await badge.isVisible(), "bell badge still rendered on the alerts page");
 });
 
 test("clients list renders the 6 seeded clients", async (page) => {
@@ -173,6 +211,173 @@ test("achats list renders 8 purchases and search filters them", async (page) => 
   assert(/Samsung/i.test(row), `filtered row should mention Samsung, got: ${row}`);
 });
 
+test("editing a purchase's label from the Achats list", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  await row.locator('button[title="Modifier"]').click();
+
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await modal.locator(".modal-head h2").innerText(),
+    "Modifier l'achat",
+    "edit modal title",
+  );
+  // The client cannot change hands on an edit.
+  assertEqual(await modal.locator("#np-client").isDisabled(), true, "client select is fixed");
+
+  await modal.locator("#np-product").fill("Four électrique encastrable");
+  await modal.getByRole("button", { name: "Enregistrer les modifications" }).click();
+  await modal.waitFor({ state: "hidden", timeout: 5000 });
+
+  // Stays on the list rather than drilling in, and the new label is there.
+  await page.waitForFunction(
+    () => document.body.innerText.includes("Four électrique encastrable"),
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), 8, "still 8 purchases");
+});
+
+test("a purchase with payments locks its schedule fields in the editor", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // "Réfrigérateur Samsung 260L" has one installment paid in the seed.
+  const row = page.locator("table.table tbody tr", { hasText: "Samsung" });
+  await row.locator('button[title="Modifier"]').click();
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+
+  const note = modal.locator(".locked-note");
+  await note.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await note.innerText()).trim();
+  assert(/paiement/i.test(text), `expected the locked reason, got: ${text}`);
+
+  assertEqual(await modal.locator("#np-total").isDisabled(), true, "total is locked");
+  assertEqual(await modal.locator("#np-count").isDisabled(), true, "installment count is locked");
+  assertEqual(await modal.locator("#np-interval").isDisabled(), true, "interval is locked");
+  // ...but the label is not.
+  assertEqual(await modal.locator("#np-product").isDisabled(), false, "label stays editable");
+});
+
+test("archiving a purchase with payments is refused before the user can confirm", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Samsung" });
+  await row.locator('button[title="Archiver"]').click();
+
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  const warning = dialog.locator(".confirm-warning");
+  await warning.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await warning.innerText()).trim();
+  assert(/paiement/i.test(text), `expected the payments refusal, got: ${text}`);
+  assert(
+    !/PURCHASE_HAS_PAYMENTS/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  assertEqual(
+    await dialog.getByRole("button", { name: "Archiver" }).isDisabled(),
+    true,
+    "the archive button must be disabled",
+  );
+
+  await dialog.getByRole("button", { name: "Annuler" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 8, "nothing was archived");
+});
+
+test("archiving an unpaid purchase takes it out of the list and the dashboard", async (page) => {
+  await open(page, "/");
+  const outstandingKpi = page.locator(".kpi", { hasText: "Montant restant dû" });
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 10000 });
+  const outstandingBefore = (await outstandingKpi.locator(".kpi-value").innerText()).trim();
+
+  // "Four électrique" is the one seeded purchase with nothing paid on it.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+
+  // The Archivés tab starts empty.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  const emptyState = page.locator(".empty");
+  await emptyState.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await emptyState.locator(".empty-title").innerText(),
+    "Aucun achat archivé.",
+    "the Archivés tab shows its own empty state",
+  );
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  const row = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  await row.locator('button[title="Archiver"]').click();
+
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await dialog.locator(".confirm-warning").count(), 0, "unpaid archive is not blocked");
+  await dialog.getByRole("button", { name: "Archiver" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 7,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  // It moved to the Archivés tab, badged, and offers a permanent delete there.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 1, "exactly one archived");
+  const archivedRow = page.locator("table.table tbody tr", { hasText: "Four électrique" });
+  assertEqual(await archivedRow.locator(".badge").first().innerText(), "Archivé", "archived badge");
+  assertEqual(
+    await archivedRow.locator(".icon-action--danger").count(),
+    1,
+    "permanent delete is offered only in the archive",
+  );
+
+  // The money left the dashboard with it.
+  await page.locator(".nav-item", { hasText: NAV.dashboard }).click();
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 5000 });
+  const outstandingAfter = (await outstandingKpi.locator(".kpi-value").innerText()).trim();
+  assert(
+    outstandingAfter !== outstandingBefore,
+    `outstanding should have dropped, still ${outstandingAfter}`,
+  );
+
+  // Restore puts it back.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  await page
+    .locator("table.table tbody tr", { hasText: "Four électrique" })
+    .locator('button[title="Restaurer"]')
+    .click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Restaurer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 8,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  await page.locator(".nav-item", { hasText: NAV.dashboard }).click();
+  await outstandingKpi.locator(".kpi-value").waitFor({ timeout: 5000 });
+  assertEqual(
+    (await outstandingKpi.locator(".kpi-value").innerText()).trim(),
+    outstandingBefore,
+    "restore must put the outstanding back exactly",
+  );
+});
+
 test("impayés page lists overdue clients and sidebar shows a danger badge", async (page) => {
   await open(page, "/impayes");
   // Seed produces past-due unpaid installments, so this must not be the empty state.
@@ -186,13 +391,12 @@ test("impayés page lists overdue clients and sidebar shows a danger badge", asy
   assert(count >= 1, `danger badge should be >= 1, got ${count}`);
 });
 
-test("record a partial payment on a purchase (PaymentModal)", async (page) => {
+test("record a payment on a tranche through the update modal", async (page) => {
   // Seed purchase A-000001: 2400 over 6 monthly tranches of 400, tranche 1 paid.
   await open(page, "/achats/1");
   await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
 
   // Payment history starts with the single seeded payment (tranche 1).
-  const history = page.locator("table.table").last();
   await page.waitForFunction(
     () => {
       const tables = document.querySelectorAll("table.table");
@@ -202,25 +406,25 @@ test("record a partial payment on a purchase (PaymentModal)", async (page) => {
     undefined,
     { timeout: 5000 },
   );
+  const history = page.locator("table.table").last();
 
-  // The first "Enregistrer" action in the schedule is tranche 2 (400 remaining).
-  await page.locator(".inst-table .btn--primary").first().click();
+  // Tranche 2: its predecessor is settled, so the money fields are open.
+  await page.locator(".inst-table tbody tr").nth(1).locator(".btn--primary").click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
   assertEqual(
     await dialog.locator(".modal-head h2").innerText(),
-    "Enregistrer un paiement — Tranche 2/6",
-    "payment modal title (tranche 2 of 6)",
+    "Mettre à jour le paiement — Tranche 2/6",
+    "update modal title",
   );
 
-  // Amount pre-fills with the full remaining (400); pay a partial 150 instead.
-  assertEqual(await page.locator("#pay-amount").inputValue(), "400", "amount pre-filled with remaining");
-  await page.locator("#pay-amount").fill("150");
+  // The paid amount is absolute: 0 collected so far, set it to a partial 150.
+  assertEqual(await page.locator("#inst-paid").inputValue(), "0", "paid amount starts at 0");
+  await page.locator("#inst-paid").fill("150");
   await dialog.getByRole("button", { name: "Enregistrer" }).click();
-
   await dialog.waitFor({ state: "hidden", timeout: 5000 });
 
-  // History now has two rows; the newest (dated today) is the 150 partial payment.
+  // The ledger gained a correction entry for the difference, not the total.
   await page.waitForFunction(
     () => {
       const tables = document.querySelectorAll("table.table");
@@ -230,8 +434,113 @@ test("record a partial payment on a purchase (PaymentModal)", async (page) => {
     undefined,
     { timeout: 5000 },
   );
-  const newest = await history.locator("tbody tr").first().innerText();
-  assert(/150/.test(newest), `newest payment row should show the 150 partial, got: ${newest}`);
+  const rows = await history.locator("tbody tr").allInnerTexts();
+  assert(
+    rows.some((r) => /150/.test(r)),
+    `payment history should show the 150 correction entry, got: ${rows.join(" / ")}`,
+  );
+
+  // And the tranche now reports 250 remaining of its 400.
+  const remaining = await page
+    .locator(".inst-table tbody tr")
+    .nth(1)
+    .locator("td:nth-child(4)")
+    .innerText();
+  assert(/250/.test(remaining), `remaining column should read 250, got: ${remaining}`);
+});
+
+test("editing a tranche rebalances the others and holds the purchase total", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const amounts = async () =>
+    (await page.locator(".inst-table tbody tr td:nth-child(3)").allInnerTexts()).map((s) =>
+      s.trim(),
+    );
+  assertEqual((await amounts()).join("|"), Array(6).fill("400 TND").join("|"), "6 x 400");
+
+  // Tranche 3, whose predecessor is unpaid — the schedule ignores that gate.
+  await page.locator(".inst-table tbody tr").nth(2).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assert(!(await page.locator("#inst-amount").isDisabled()), "the amount must stay editable");
+
+  await page.locator("#inst-amount").fill("600");
+  // The preview names every tranche the change moves, before it is saved.
+  const preview = page.locator(".rebalance");
+  await preview.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await preview.locator("li").count(), 3, "tranches 4-6 absorb the change");
+
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  const after = await amounts();
+  const total = after.reduce((s, v) => s + parseInt(v.replace(/\D/g, ""), 10), 0);
+  assertEqual(after[2], "600 TND", "the edited tranche took the new amount");
+  assertEqual(total, 2400, "purchase total unchanged");
+});
+
+test("a tranche whose predecessor is unpaid locks only its money fields", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 3: tranche 2 is still owing, so a payment cannot be recorded here —
+  // but what tranche 3 owes, and when, is still the shopkeeper's to change.
+  await page.locator(".inst-table tbody tr").nth(2).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  assert(await page.locator("#inst-paid").isDisabled(), "paid amount must be disabled");
+  assert(!(await page.locator("#inst-amount").isDisabled()), "amount must stay enabled");
+  const note = await dialog.locator(".lock-note").first().innerText();
+  assert(/tranche 2/i.test(note), `the reason should name tranche 2, got: ${note}`);
+});
+
+test("a paid tranche locks its schedule and warns before changing collected money", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 1 is paid: what it owes is history, what was collected is not.
+  await page.locator(".inst-table tbody tr").nth(0).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  assert(await page.locator("#inst-amount").isDisabled(), "amount must be disabled once paid");
+  assert(!(await page.locator("#inst-paid").isDisabled()), "paid amount must stay editable");
+
+  // Collecting more than the tranche is worth is refused as it is typed.
+  await page.locator("#inst-paid").fill("900");
+  await dialog.locator(".field-error").first().waitFor({ state: "visible", timeout: 5000 });
+  assert(
+    await dialog.getByRole("button", { name: "Enregistrer" }).isDisabled(),
+    "save must be disabled above the tranche amount",
+  );
+
+  // A legal change still needs an explicit confirmation.
+  await page.locator("#inst-paid").fill("300");
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+  const confirm = page.locator(".confirm-msg");
+  await confirm.waitFor({ state: "visible", timeout: 5000 });
+  const text = await confirm.innerText();
+  assert(/tranche 1/i.test(text), `confirmation should name the tranche, got: ${text}`);
+});
+
+test("the installment table carries a remaining column", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const headers = (await page.locator(".inst-table thead th").allInnerTexts()).map((h) => h.trim());
+  assert(
+    headers.some((h) => /Reste/i.test(h)),
+    `expected a Reste column, got: ${headers.join(" | ")}`,
+  );
+
+  // Tranche 1 is fully paid, so it owes nothing; tranche 2 owes its full 400.
+  const remaining = (
+    await page.locator(".inst-table tbody tr td:nth-child(4)").allInnerTexts()
+  ).map((s) => s.trim());
+  assertEqual(remaining[0], "0 TND", "a settled tranche has nothing remaining");
+  assertEqual(remaining[1], "400 TND", "an untouched tranche remains its full amount");
 });
 
 test("new purchase: auto-split installments and sum-mismatch validation", async (page) => {
@@ -252,13 +561,15 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   await page.locator("#np-count").fill("3");
 
   // Amounts auto-split 3000 / 3 = 1000 each and the running sum matches the total.
-  await page.waitForFunction(
-    () => document.querySelectorAll(".inst-row").length === 3,
-    undefined,
-    { timeout: 5000 },
-  );
+  await page.waitForFunction(() => document.querySelectorAll(".inst-row").length === 3, undefined, {
+    timeout: 5000,
+  });
   await page.locator(".inst-sum.ok").waitFor({ timeout: 5000 });
-  assertEqual(await page.locator(".inst-amount").first().inputValue(), "1000", "first tranche auto-split to 1000");
+  assertEqual(
+    await page.locator(".inst-amount").first().inputValue(),
+    "1000",
+    "first tranche auto-split to 1000",
+  );
 
   // Break the balance by hand-editing one tranche -> the sum no longer matches.
   await page.locator(".inst-amount").first().fill("999");
@@ -281,38 +592,302 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
     undefined,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("h1.page-title").innerText(), "A-000009", "navigated to new purchase detail");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    "A-000009",
+    "navigated to new purchase detail",
+  );
 });
 
-test("delete-client safeguard warns when the client has purchases", async (page) => {
+test("a client with purchases offers no delete at all", async (page) => {
   await open(page, "/clients");
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
   assertEqual(await page.locator("table.table tbody tr").count(), 6, "precondition: 6 clients");
 
-  // Mohamed Trabelsi has 2 seeded purchases -> the confirm must warn about cascade.
+  // Mohamed Trabelsi has 2 seeded purchases. Under the archive policy the
+  // destructive cascade is gone entirely, so the button is not rendered rather
+  // than rendered-and-refused.
   const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
-  await row.locator(".icon-action--danger").click();
+  assertEqual(
+    await row.locator(".icon-action--danger").count(),
+    0,
+    "a client with history must offer no delete button",
+  );
+  assertEqual(
+    await row.locator('button[title="Archiver"]').count(),
+    1,
+    "archive is the offered alternative",
+  );
+  assertEqual(await page.locator("table.table tbody tr").count(), 6, "nothing was removed");
+});
+
+test("archiving a client who owes money is refused before the user can confirm", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Mohamed Trabelsi carries an outstanding balance across his 2 purchases.
+  // The row already knows that, so the dialog must open explaining itself
+  // rather than accepting a confirm it is going to reject.
+  const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
+  await row.locator('button[title="Archiver"]').click();
 
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
-  assertEqual(await dialog.locator(".modal-head h2").innerText(), "Supprimer le client", "confirm dialog title");
-  const msg = await dialog.locator(".confirm-msg").innerText();
-  assert(/2 achat/.test(msg), `message should warn about the 2 purchases, got: ${msg}`);
 
-  // Confirming force-deletes the client (cascading its purchases) -> 5 rows remain.
-  await dialog.getByRole("button", { name: "Supprimer" }).click();
+  const warning = dialog.locator(".confirm-warning");
+  await warning.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await warning.innerText()).trim();
+  assert(/doit encore/.test(text), `expected the outstanding-balance refusal, got: ${text}`);
+  assert(
+    !/ARCHIVE_HAS_OUTSTANDING/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  // The amount must be formatted, not a bare integer.
+  assert(/TND/.test(text), `expected a formatted amount with its currency, got: ${text}`);
+
+  // The action itself is unavailable, and visibly so.
+  const confirmBtn = dialog.getByRole("button", { name: "Archiver" });
+  assertEqual(await confirmBtn.isDisabled(), true, "the archive button must be disabled");
+
+  // The plain confirmation body is replaced by the warning, not shown alongside it.
+  assertEqual(await dialog.locator(".confirm-msg").count(), 0, "no confirm body when blocked");
+
+  await dialog.getByRole("button", { name: "Annuler" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 6, "the client is still active");
+});
+
+test("the blocked archive dialog routes to the client's installments", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Mohamed Trabelsi" });
+  await row.locator('button[title="Archiver"]').click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  // A refusal has to leave somewhere to go: the detail page lists what is owed.
+  await dialog.getByRole("button", { name: "Voir ses échéances" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.waitForFunction(() => /^\/clients\/\d+$/.test(window.location.pathname), undefined, {
+    timeout: 5000,
+  });
+  await page.locator(".contact-name").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await page.locator(".contact-name").innerText(),
+    "Mohamed Trabelsi",
+    "landed on the right client",
+  );
+});
+
+test("archiving a settled client hides it behind the Archivés tab, and restore brings it back", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // The Archivés tab starts empty.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  const emptyState = page.locator(".empty");
+  await emptyState.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await emptyState.locator(".empty-title").innerText(),
+    "Aucun client archivé.",
+    "the Archivés tab shows its own empty state",
+  );
+  assertEqual(
+    await page.locator("table.table tbody tr").count(),
+    0,
+    "nothing is archived to begin with",
+  );
+
+  // Salma Jlassi owns exactly one purchase, fully paid -> the only seeded
+  // client with a zero balance, and so the only one that can be archived.
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  const row = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  await row.locator('button[title="Archiver"]').click();
+
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await dialog.locator(".modal-head h2").innerText(),
+    "Archiver le client",
+    "archive dialog title",
+  );
+  await dialog.getByRole("button", { name: "Archiver" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 5,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Salma Jlassi" }).count(),
+    0,
+    "archived client left the active list",
+  );
+
+  // She is now under Archivés, badged.
+  await page.getByRole("button", { name: "Archivés" }).click();
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 5000 });
+  assertEqual(await page.locator("table.table tbody tr").count(), 1, "exactly one archived client");
+  const archivedRow = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  assertEqual(await archivedRow.locator(".badge").first().innerText(), "Archivé", "archived badge");
+
+  // Her purchase count survived the archive — the row still reports it, so the
+  // history underneath was not cascaded away. (That the detail page and the
+  // payment log also survive is asserted in the integration suite, which can
+  // check the read models directly; re-navigating here would reload the page
+  // and reset the mock.)
+  assertEqual(
+    await archivedRow.locator("td").nth(3).innerText(),
+    "1",
+    "the archived client keeps her purchase",
+  );
+
+  // Restore puts her back. Stay on this page: `open()` is a full document load,
+  // which re-instantiates the mock and would silently undo the archive.
+  await archivedRow.locator('button[title="Restaurer"]').click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Restaurer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  await page.getByRole("button", { name: "Actifs" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 6,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Salma Jlassi" }).count(),
+    1,
+    "restored client is back in the active list",
+  );
+});
+
+test("archived clients are absent from the new-purchase client picker", async (page) => {
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Salma Jlassi" });
+  await row.locator('button[title="Archiver"]').click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await dialog.getByRole("button", { name: "Archiver" }).click();
   await dialog.waitFor({ state: "hidden", timeout: 5000 });
   await page.waitForFunction(
     () => document.querySelectorAll("table.table tbody tr").length === 5,
     undefined,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("table.table tbody tr").count(), 5, "client removed from table");
-  assertEqual(
-    await page.locator("table.table", { hasText: "Mohamed Trabelsi" }).count(),
-    0,
-    "deleted client no longer listed",
+
+  // An archived client must not be selectable, or archiving would not stop
+  // them taking on new debt. Navigate in-app rather than via `open()`, which
+  // reloads the document and would reset the mock along with the archive.
+  await page.locator(".nav-item", { hasText: "Achats" }).first().click();
+  await page.waitForFunction(() => window.location.pathname === "/achats", undefined, {
+    timeout: 5000,
+  });
+  // Scope to main: the sidebar carries a permanent "Nouvel achat" button too.
+  await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+  const options = await modal.locator("select option").allInnerTexts();
+  assert(
+    !options.some((o) => /Salma Jlassi/.test(o)),
+    `archived client must not be offered, got: ${options.join(" | ")}`,
   );
+  assert(
+    options.some((o) => /Mohamed Trabelsi/.test(o)),
+    "active clients must still be offered",
+  );
+});
+
+test("deleting a client with no purchases needs a single confirm", async (page) => {
+  // The only hard delete left in the app. A freshly created client is
+  // guaranteed to have no purchases, which is the sole case the backend allows.
+  await open(page, "/clients");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  await page.getByRole("button", { name: "Nouveau client" }).click();
+  let dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  await page.locator("#cf-first").fill("Zied");
+  await page.locator("#cf-last").fill("Zzzsupprime");
+  await page.locator("#cf-phone").fill("+216 21 000 000");
+  await dialog.getByRole("button", { name: "Créer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 7,
+    undefined,
+    { timeout: 5000 },
+  );
+
+  const row = page.locator("table.table tbody tr", { hasText: "Zzzsupprime" });
+  await row.locator(".icon-action--danger").click();
+  dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  // No purchases -> the plain confirmation; there is no cascade to warn about.
+  const msg = await dialog.locator(".confirm-msg").innerText();
+  assert(!/achat/i.test(msg), `no-purchase delete must not mention purchases, got: ${msg}`);
+
+  await dialog.getByRole("button", { name: "Supprimer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.table tbody tr").length === 6,
+    undefined,
+    { timeout: 5000 },
+  );
+  assertEqual(
+    await page.locator("table.table", { hasText: "Zzzsupprime" }).count(),
+    0,
+    "client deleted on a single confirm",
+  );
+});
+
+test("impayés: the exported CSV is localized and properly quoted", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 10000 }),
+    page.getByRole("button", { name: /Exporter/ }).click(),
+  ]);
+
+  assert(
+    /^impayes-\d{4}-\d{2}-\d{2}\.csv$/.test(download.suggestedFilename()),
+    `filename should carry the export date, got: ${download.suggestedFilename()}`,
+  );
+
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString("utf8");
+
+  // BOM first, so Excel reads it as UTF-8 (the accented French headers and the
+  // Arabic ones depend on it).
+  assert(text.charCodeAt(0) === 0xfeff, "CSV must start with a UTF-8 BOM");
+
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .trimEnd()
+    .split("\r\n");
+  assertEqual(
+    lines[0],
+    '"Client","Téléphone","N° Achat","Tranche","Échéance","Montant","En retard depuis"',
+    "header row must use the localized column labels, not hard-coded strings",
+  );
+
+  // One row per overdue installment, and every row must have exactly seven
+  // fields — the property that broke when an unescaped quote split a field.
+  assert(lines.length > 1, "seeded data should produce at least one overdue row");
+  for (const line of lines.slice(1)) {
+    const fields = line.match(/("([^"]|"")*"|[^,]*)/g).filter((f) => f !== "");
+    assertEqual(fields.length, 7, `every row needs 7 fields, got ${fields.length} in: ${line}`);
+  }
 });
 
 test("switching to Arabic mirrors the layout to RTL", async (page) => {
@@ -334,7 +909,11 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   );
   assertEqual(await page.locator("html").getAttribute("dir"), "rtl", "dir switches to rtl");
   assertEqual(await page.locator("html").getAttribute("lang"), "ar", "lang switches to ar");
-  assertEqual(await page.locator(".brand-line1").innerText(), "الدفع", "brand re-renders in Arabic");
+  assertEqual(
+    await page.locator(".brand-line1").innerText(),
+    "الدفع",
+    "brand re-renders in Arabic",
+  );
   assertEqual(
     await page.locator(".nav-item", { hasText: "لوحة التحكم" }).count(),
     1,
@@ -407,8 +986,7 @@ test("impayés: sorting by amount reorders a client's installment rows", async (
   }
   assert(target, "expected at least one client with 2+ overdue installments");
 
-  const amountCells = () =>
-    target.locator("tbody tr td:nth-child(4)").allInnerTexts();
+  const amountCells = () => target.locator("tbody tr td:nth-child(4)").allInnerTexts();
   const num = (s) => Number(s.replace(/[^\d]/g, ""));
 
   // Click the "amount" column header (4th column) to sort ascending.
@@ -438,12 +1016,92 @@ test("impayés: export button is present and each card exposes call/SMS/view act
   await exportBtn.waitFor({ timeout: 5000 });
   assertEqual(await exportBtn.count(), 1, "one export button while results exist");
 
+  // Contact actions must be buttons, never <a href="tel:…"> — see the
+  // not-stranding test below for why.
   const first = page.locator(".impaye-card").first();
-  const tel = await first.locator("a.contact-btn--call").getAttribute("href");
-  const sms = await first.locator("a.contact-btn--msg").getAttribute("href");
-  assert(tel?.startsWith("tel:") && !/\s/.test(tel), `call link should be a spaceless tel:, got ${tel}`);
-  assert(sms?.startsWith("sms:") && !/\s/.test(sms), `message link should be a spaceless sms:, got ${sms}`);
-  assertEqual(await first.locator("button.contact-btn--view").count(), 1, "view-client button present");
+  assertEqual(
+    await first.locator("button.contact-btn--call").count(),
+    1,
+    "call action is a button",
+  );
+  assertEqual(
+    await first.locator("button.contact-btn--msg").count(),
+    1,
+    "message action is a button",
+  );
+  assertEqual(
+    await first.locator("button.contact-btn--view").count(),
+    1,
+    "view-client button present",
+  );
+  assertEqual(
+    await first.locator("a[href^='tel:'], a[href^='sms:']").count(),
+    0,
+    "no external-scheme anchors remain",
+  );
+});
+
+// Regression guard for the 2026-07-26 bug: the call/SMS actions used to be
+// <a href="tel:…"> anchors. Tauri's WebView cannot load those schemes, so the
+// click navigated the WebView itself and replaced the whole SPA with a native
+// error page the user could not escape.
+//
+// Note on strength: the *structural* assertions above and below (the actions are
+// buttons, no tel:/sms: anchors exist) are what actually catch a revert.
+// Playwright drives Chromium, which does not reproduce WebKitGTK's failure mode,
+// so "the app is still here after clicking" is a sanity check rather than a
+// faithful reproduction. The full path is exercised though: click → composable →
+// api gateway → mock, and a rejection there would raise an error toast.
+
+test("impayés: contact actions never navigate the app away", async (page) => {
+  await open(page, "/impayes");
+  await page.locator(".impaye-card").first().waitFor({ timeout: 10000 });
+  const before = page.url();
+
+  await page.locator("button.contact-btn--call").first().click();
+  await page.locator("button.contact-btn--msg").first().click();
+
+  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(page.url(), before, "URL unchanged after call + message");
+  assert(
+    (await page.locator(".impaye-card").count()) > 0,
+    "overdue cards still rendered after contact actions",
+  );
+  // A seeded client's number is dialable and the mock resolves, so the happy
+  // path must stay silent — an error toast here means validation or the gateway
+  // rejected a perfectly good number.
+  assertEqual(
+    await page.locator(".toast--error").count(),
+    0,
+    "no error toast for a valid seeded phone number",
+  );
+});
+
+test("dashboard: overdue panel contact actions are buttons, not scheme links", async (page) => {
+  await open(page, "/");
+  await page.locator(".impaye-list .impaye-row").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator(".impaye-list .impaye-row").first();
+  assertEqual(await row.locator("button.contact-btn--call").count(), 1, "call action is a button");
+  assertEqual(
+    await row.locator("button.contact-btn--msg").count(),
+    1,
+    "message action is a button",
+  );
+  assertEqual(
+    await page.locator("a[href^='tel:'], a[href^='sms:']").count(),
+    0,
+    "dashboard has no external-scheme anchors either",
+  );
+
+  // Same defect lived here, reachable without ever opening Impayés.
+  await row.locator("button.contact-btn--call").click();
+  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(
+    await page.locator(".kpi-row .kpi").count(),
+    5,
+    "dashboard still rendered after a call action",
+  );
 });
 
 test("impayés: deep link ?client=<id> pre-filters the search to that client", async (page) => {
@@ -523,7 +1181,11 @@ test("alertes: clicking the Overdue tile filters the table to overdue rows", asy
     overdue,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("table.table tbody tr").count(), overdue, "rows narrowed to overdue count");
+  assertEqual(
+    await page.locator("table.table tbody tr").count(),
+    overdue,
+    "rows narrowed to overdue count",
+  );
 
   // Every visible timing cell is an overdue label ("… de retard") and every row
   // carries the late-row highlight class.
@@ -551,7 +1213,258 @@ test("alertes: a row links through to its purchase detail", async (page) => {
     reference,
     { timeout: 5000 },
   );
-  assertEqual(await page.locator("h1.page-title").innerText(), reference, "navigated to the purchase detail");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    reference,
+    "navigated to the purchase detail",
+  );
+});
+
+// --- Not-found recovery ------------------------------------------------------
+// Unknown URLs hit the router's catch-all (`name: "not-found"`) and render
+// NotFoundView: a localized card with a ghost "Retour" button (useBack) and a
+// primary link to the dashboard.
+//
+// Coverage limit, deliberate: `open()` does a full document load, and vue-router
+// replaceState's fresh history state on initial navigation, so `state.back` is
+// always null here — these tests exercise the *fallback* branch. There is no UI
+// path that router-navigates to an unknown URL, so the genuine `router.back()`
+// branch and the "don't go back into another 404" skip are covered by the
+// `shouldGoBack` unit tests in src/composables/useBack.test.ts instead.
+
+test("unknown route renders the localized not-found page", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+
+  assertEqual(await page.locator(".stub h2").innerText(), "Page introuvable", "not-found heading");
+  // The catch-all is in AppHeader's NAV_KEY, so the header names the page
+  // rather than falling back to the app name.
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    "Page introuvable",
+    "header title on the not-found page",
+  );
+  assertEqual(
+    await page.locator(".stub-actions .btn").count(),
+    2,
+    "not-found offers two ways out (back + dashboard)",
+  );
+  assertEqual(
+    (await page.locator(".stub-actions .btn--ghost").innerText()).trim(),
+    "Retour",
+    "back button label",
+  );
+});
+
+test("not-found Back falls back to the dashboard when there is no in-app history", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  await page.locator(".stub-actions .btn--ghost").click();
+
+  await page.waitForFunction(() => window.location.pathname === "/", undefined, { timeout: 5000 });
+  assertEqual(await page.evaluate(() => window.location.pathname), "/", "landed on the dashboard");
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "header title after recovering from the not-found page",
+  );
+});
+
+test("not-found dashboard link returns to the dashboard", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  await page.locator(".stub-actions .btn--primary").click();
+
+  await page.waitForFunction(() => window.location.pathname === "/", undefined, { timeout: 5000 });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "dashboard link reaches the dashboard",
+  );
+  assertEqual(await page.locator(".kpi-row .kpi").count(), 5, "dashboard actually rendered");
+});
+
+test("not-found back arrow mirrors in Arabic (RTL)", async (page) => {
+  await open(page, "/cette-page-nexiste-pas");
+  const arrow = page.locator(".stub-actions .btn--ghost .app-icon");
+
+  // Baseline: French, LTR, arrow drawn as authored.
+  assertEqual(await page.locator("html").getAttribute("dir"), "ltr", "baseline dir is ltr");
+  assertEqual(
+    await arrow.evaluate((el) => getComputedStyle(el).transform),
+    "none",
+    "arrow is not flipped in LTR",
+  );
+
+  await page.locator(".lang-btn").click();
+  await page.locator(".lang-option", { hasText: "العربية" }).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute("dir") === "rtl",
+    undefined,
+    { timeout: 5000 },
+  );
+
+  assertEqual(
+    await page.locator(".stub h2").innerText(),
+    "الصفحة غير موجودة",
+    "not-found heading re-renders in Arabic",
+  );
+  // `.icon-flip` under [dir="rtl"] applies scaleX(-1) so "back" points right.
+  assertEqual(
+    await arrow.evaluate((el) => getComputedStyle(el).transform),
+    "matrix(-1, 0, 0, 1, 0, 0)",
+    "back arrow is mirrored in RTL",
+  );
+});
+
+test("a deleted record's detail page offers a mirrored way back", async (page) => {
+  // Same recovery affordance on the in-page missing-record state, which is a
+  // valid route (client-detail) rather than the router's catch-all.
+  await open(page, "/clients/999999");
+  await page.locator(".back-link").waitFor({ timeout: 10000 });
+
+  assertEqual(
+    await page.locator(".empty .empty-title").innerText(),
+    "Ce client n'existe pas ou a été supprimé.",
+    "missing client renders a recoverable message, not a blank page",
+  );
+  await page.locator(".back-link").click();
+  await page.waitForFunction(() => window.location.pathname === "/clients", undefined, {
+    timeout: 5000,
+  });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.clients,
+    "back from a missing client falls back to the clients list",
+  );
+});
+
+test("a rejected payment shows a localized message, never a raw backend error", async (page) => {
+  // The regression this pins: the modal used to render `String(e)` verbatim, so
+  // a backend rejection put an unlocalized machine string (and, against the real
+  // Rust backend, raw SQL text) in front of the user.
+  //
+  // Seed purchase A-000001: 2400 over 6 monthly tranches of 400, tranche 1 paid.
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 2 is worth 400 — try to record more collected than that.
+  await page.locator(".inst-table tbody tr").nth(1).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  await page.locator("#inst-paid").fill("1000");
+
+  // The modal stays open and reports the problem inline.
+  const error = dialog.locator(".field-error").first();
+  await error.waitFor({ state: "visible", timeout: 5000 });
+  const text = (await error.innerText()).trim();
+
+  assert(text.length > 0, "a rejected payment must show a message");
+  assert(
+    !/OVERPAYMENT|PAID_ABOVE_AMOUNT|INVALID_|SUM_MISMATCH|INTERNAL|CLIENT_/.test(text),
+    `message must be localized prose, not a machine code; got: ${text}`,
+  );
+  assert(
+    !/constraint failed|SELECT |INSERT |sqlite/i.test(text),
+    `message must not leak backend internals; got: ${text}`,
+  );
+  assert(/400/.test(text), `message should name the tranche amount (400); got: ${text}`);
+
+  // And nothing was recorded.
+  await dialog
+    .getByRole("button", { name: "Annuler" })
+    .click()
+    .catch(() => {});
+});
+
+test("settings exposes a database backup action", async (page) => {
+  await open(page, "/parametres");
+  await page.locator(".set-card").first().waitFor({ timeout: 10000 });
+
+  // The backup card is desktop-only — it needs a real database file, so it is
+  // hidden in the browser build this suite drives. Assert the guard holds
+  // rather than asserting a control that must not be here.
+  assertEqual(
+    await page.locator(".set-card", { hasText: "Sauvegarde" }).count(),
+    0,
+    "backup card must be hidden outside the Tauri runtime",
+  );
+});
+
+// --- table layout ------------------------------------------------------------
+// The regression these pin: no table had a scroll container, so a table wider
+// than its card painted straight through the card border (the dashboard's
+// Status column was the visible symptom) and turned `.app-content` into a
+// page-wide horizontal scroller. Tables now live in a `.table-scroll` box and
+// the dashboard's own table is tuned to fit the card outright.
+
+/** Geometry of the recent-purchases table relative to its card. */
+async function recentTableBox(page) {
+  return page.evaluate(() => {
+    const table = document.querySelector(".recent-table");
+    const scroll = table.closest(".table-scroll");
+    const card = table.closest(".card");
+    return {
+      wrapped: Boolean(scroll),
+      // How far the visible scroll box reaches past the card, in px.
+      spill: Math.round(scroll.getBoundingClientRect().right - card.getBoundingClientRect().right),
+      scrolls: scroll.scrollWidth > scroll.clientWidth,
+      pageScrollsX: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    };
+  });
+}
+
+test("dashboard: the recent-purchases table stays inside its card", async (page) => {
+  await open(page, "/");
+  await page.locator(".recent-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const box = await recentTableBox(page);
+  assert(box.wrapped, "the table must sit in a .table-scroll container");
+  assert(box.spill <= 1, `table box overflows the card by ${box.spill}px`);
+  assert(!box.scrolls, "at 1440px the six columns should fit without a scrollbar");
+  assert(!box.pageScrollsX, "the dashboard must not scroll horizontally");
+
+  // The status cell — the column that used to be cut off — is fully inside.
+  const inside = await page.evaluate(() => {
+    const badge = document.querySelector(".recent-table tbody tr .badge");
+    const card = badge.closest(".card");
+    return badge.getBoundingClientRect().right <= card.getBoundingClientRect().right;
+  });
+  assert(inside, "the status badge must render inside the card");
+});
+
+test("dashboard: a narrow window scrolls the table inside the card, not the page", async (page) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await open(page, "/");
+  await page.locator(".recent-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const box = await recentTableBox(page);
+  assert(box.spill <= 1, `table box overflows the card by ${box.spill}px when narrow`);
+  assert(box.scrolls, "below the fitting width the card itself should scroll");
+  assert(!box.pageScrollsX, "the page must never take the horizontal scroll");
+});
+
+test("every list page keeps its table inside the card at a narrow width", async (page) => {
+  await page.setViewportSize({ width: 1000, height: 800 });
+  for (const route of ["/achats", "/clients", "/paiements", "/echeances", "/alertes", "/impayes"]) {
+    await open(page, route);
+    await page.locator(".table-scroll table tbody tr").first().waitFor({ timeout: 10000 });
+
+    const bad = await page.evaluate(() => {
+      const offenders = [];
+      for (const scroll of document.querySelectorAll(".table-scroll")) {
+        const card = scroll.closest(".card");
+        if (!card) continue;
+        const over = scroll.getBoundingClientRect().right - card.getBoundingClientRect().right;
+        if (over > 1) offenders.push(Math.round(over));
+      }
+      return {
+        offenders,
+        pageScrollsX:
+          document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      };
+    });
+    assertEqual(bad.offenders.length, 0, `${route}: tables spilling past their card`);
+    assert(!bad.pageScrollsX, `${route}: page must not scroll horizontally`);
+  }
 });
 
 // --- runner ------------------------------------------------------------------
@@ -584,8 +1497,17 @@ async function main() {
       } catch (err) {
         const shot = path.join(ARTIFACTS, `${t.name.replace(/[^a-z0-9]+/gi, "-")}.png`);
         await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
-        results.push({ name: t.name, ok: false, ms: Date.now() - started, error: err.message, shot, consoleErrors });
-        console.log(`  \x1b[31mFAIL\x1b[0m ${t.name}\n       ${err.message.replace(/\n/g, "\n       ")}`);
+        results.push({
+          name: t.name,
+          ok: false,
+          ms: Date.now() - started,
+          error: err.message,
+          shot,
+          consoleErrors,
+        });
+        console.log(
+          `  \x1b[31mFAIL\x1b[0m ${t.name}\n       ${err.message.replace(/\n/g, "\n       ")}`,
+        );
         console.log(`       screenshot: ${shot}`);
       } finally {
         await context.close();

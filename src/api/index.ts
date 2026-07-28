@@ -6,14 +6,17 @@ import type {
   Client,
   ClientDetail,
   ClientInput,
+  ClientScope,
   ClientSummary,
   Dashboard,
   ImpayeClient,
   ImpayeFilter,
+  InstallmentEdit,
   Payment,
   PaymentInput,
   PurchaseDetail,
   PurchaseInput,
+  PurchaseScope,
   PurchaseSummary,
   ScheduleRow,
   Settings,
@@ -29,10 +32,22 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return invoke<T>(cmd, args);
 }
 
+async function openWithOs(url: string): Promise<void> {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  return openUrl(url);
+}
+
 export const api = {
   // -- clients --
-  listClients: (): Promise<ClientSummary[]> =>
-    isTauri() ? invoke("list_clients") : Promise.resolve(mockDb.listClients()),
+  /**
+   * List clients, active ones only unless a wider `scope` is asked for.
+   *
+   * The default is what makes archived clients disappear from every caller
+   * that does not opt in — notably the new-purchase client picker, so an
+   * archived client cannot take on new debt.
+   */
+  listClients: (scope: ClientScope = "active"): Promise<ClientSummary[]> =>
+    isTauri() ? invoke("list_clients", { scope }) : Promise.resolve(mockDb.listClients(scope)),
   getClientDetail: (id: number): Promise<ClientDetail> =>
     isTauri() ? invoke("get_client_detail", { id }) : Promise.resolve(mockDb.getClientDetail(id)),
   createClient: (input: ClientInput): Promise<Client> =>
@@ -41,16 +56,34 @@ export const api = {
     isTauri()
       ? invoke("update_client", { id, input })
       : Promise.resolve(mockDb.updateClient(id, input)),
-  deleteClient: (id: number, force: boolean): Promise<void> =>
-    isTauri()
-      ? invoke("delete_client", { id, force })
-      : Promise.resolve(mockDb.deleteClient(id, force)),
+  /**
+   * Hide a client from the active list, keeping every purchase, installment
+   * and payment. Rejects with `ARCHIVE_HAS_OUTSTANDING:{remaining}` while they
+   * still owe money.
+   */
+  archiveClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("archive_client", { id }) : Promise.resolve(mockDb.archiveClient(id)),
+  restoreClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("restore_client", { id }) : Promise.resolve(mockDb.restoreClient(id)),
+  /**
+   * Delete a client outright. Only ever succeeds for a client with no
+   * purchases; anyone with history rejects with `CLIENT_HAS_PURCHASES:{n}` and
+   * must be archived instead.
+   */
+  deleteClient: (id: number): Promise<void> =>
+    isTauri() ? invoke("delete_client", { id }) : Promise.resolve(mockDb.deleteClient(id)),
 
   // -- purchases --
-  listPurchases: (search?: string): Promise<PurchaseSummary[]> =>
+  /**
+   * List purchases, live ones only unless a wider `scope` is asked for.
+   *
+   * The default is what keeps archived purchases out of every caller that does
+   * not opt in — and, more importantly, out of every total.
+   */
+  listPurchases: (scope: PurchaseScope = "active", search?: string): Promise<PurchaseSummary[]> =>
     isTauri()
-      ? invoke("list_purchases", { search: search ?? null })
-      : Promise.resolve(mockDb.listPurchases(search)),
+      ? invoke("list_purchases", { scope, search: search ?? null })
+      : Promise.resolve(mockDb.listPurchases(scope, search)),
   getPurchaseDetail: (id: number): Promise<PurchaseDetail> =>
     isTauri()
       ? invoke("get_purchase_detail", { id })
@@ -59,20 +92,69 @@ export const api = {
     isTauri()
       ? invoke("create_purchase", { input })
       : Promise.resolve(mockDb.createPurchase(input)),
+  /**
+   * Edit a purchase. The product label is always accepted; changing anything
+   * the schedule derives from (total, count, interval, purchase date) rebuilds
+   * the installments and so rejects with `PURCHASE_HAS_PAYMENTS:{n}` once any
+   * payment exists. `clientId` is ignored — a purchase cannot change hands.
+   */
+  updatePurchase: (id: number, input: PurchaseInput): Promise<PurchaseDetail> =>
+    isTauri()
+      ? invoke("update_purchase", { id, input })
+      : Promise.resolve(mockDb.updatePurchase(id, input)),
+  /**
+   * Remove a purchase from every list and every total, reversibly. Rejects
+   * with `PURCHASE_HAS_PAYMENTS:{n}` once cash has been recorded against it.
+   */
+  archivePurchase: (id: number): Promise<void> =>
+    isTauri() ? invoke("archive_purchase", { id }) : Promise.resolve(mockDb.archivePurchase(id)),
+  restorePurchase: (id: number): Promise<void> =>
+    isTauri() ? invoke("restore_purchase", { id }) : Promise.resolve(mockDb.restorePurchase(id)),
+  /**
+   * Destroy an archived purchase for good. Only ever succeeds once it has been
+   * archived (`PURCHASE_NOT_ARCHIVED` otherwise), which makes the two-step real
+   * rather than something the UI could forget.
+   */
   deletePurchase: (id: number): Promise<void> =>
     isTauri() ? invoke("delete_purchase", { id }) : Promise.resolve(mockDb.deletePurchase(id)),
 
+  // -- installments --
+  /**
+   * Edit one installment in place. Unlike `updatePurchase`, this keeps working
+   * after payments have been recorded — it never regenerates the rows, so it
+   * never touches the payment ledger hanging off them.
+   *
+   * Omitted fields are left alone. The two halves follow opposite rules: the
+   * schedule (`amount`, `dueDate`) is editable until the installment settles
+   * (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`), while the money (`paidAmount`,
+   * `paymentDate`, `note`) is editable only once the previous installment is
+   * fully paid (`PREVIOUS_UNPAID:{index}`).
+   *
+   * Two totals are held: the purchase total never changes — a new `amount` is
+   * absorbed by the other unsettled installments or refused with
+   * `NO_REBALANCE_ROOM` — and the payment ledger stays in step with
+   * `paidAmount`, because a moved paid figure writes a correction entry.
+   *
+   * Also rejects `BELOW_PAID:{paidAmount}`, `PAID_ABOVE_AMOUNT:{amount}`,
+   * `DUE_DATE_OUT_OF_ORDER` (a due date must stay between its neighbours'),
+   * `NO_PAYMENT_TO_DATE` and `FUTURE_PAID_DATE`.
+   */
+  updateInstallment: (id: number, edit: InstallmentEdit): Promise<PurchaseDetail> =>
+    isTauri()
+      ? invoke("update_installment", { id, edit })
+      : Promise.resolve(mockDb.updateInstallment(id, edit)),
+
   // -- payments --
   recordPayment: (input: PaymentInput): Promise<PurchaseDetail> =>
-    isTauri()
-      ? invoke("record_payment", { input })
-      : Promise.resolve(mockDb.recordPayment(input)),
+    isTauri() ? invoke("record_payment", { input }) : Promise.resolve(mockDb.recordPayment(input)),
   listPaymentsForPurchase: (purchaseId: number): Promise<Payment[]> =>
     isTauri()
       ? invoke("list_payments_for_purchase", { purchaseId })
       : Promise.resolve(mockDb.listPaymentsForPurchase(purchaseId)),
   listAllPayments: (limit = 500): Promise<Payment[]> =>
-    isTauri() ? invoke("list_all_payments", { limit }) : Promise.resolve(mockDb.listAllPayments(limit)),
+    isTauri()
+      ? invoke("list_all_payments", { limit })
+      : Promise.resolve(mockDb.listAllPayments(limit)),
   listPaymentsForClient: (clientId: number): Promise<Payment[]> =>
     isTauri()
       ? invoke("list_payments_for_client", { clientId })
@@ -94,9 +176,34 @@ export const api = {
   getSettings: (): Promise<Settings> =>
     isTauri() ? invoke("get_settings") : Promise.resolve(mockDb.getSettings()),
   updateSettings: (patch: SettingsPatch): Promise<Settings> =>
-    isTauri() ? invoke("update_settings", { patch }) : Promise.resolve(mockDb.updateSettings(patch)),
+    isTauri()
+      ? invoke("update_settings", { patch })
+      : Promise.resolve(mockDb.updateSettings(patch)),
   setLogo: (sourcePath: string): Promise<Settings> =>
     isTauri() ? invoke("set_logo", { sourcePath }) : Promise.resolve(mockDb.setLogo(sourcePath)),
   clearLogo: (): Promise<Settings> =>
     isTauri() ? invoke("clear_logo") : Promise.resolve(mockDb.clearLogo()),
+
+  /**
+   * Write a consistent snapshot of the database to `dest`.
+   *
+   * Still the only recovery path the app has, but a much narrower one now:
+   * neither a client with history nor a purchase carrying a payment can be
+   * deleted at all, and a purchase must be archived before it can be
+   * destroyed. What a backup still protects is that final, deliberate step.
+   */
+  backupDatabase: (dest: string): Promise<void> =>
+    isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),
+
+  // -- system --
+  /**
+   * Hand a URI to the OS default handler (`tel:`, `sms:` — the capability scope
+   * in `src-tauri/capabilities/default.json` allows nothing else).
+   *
+   * Never navigate the WebView to these schemes directly: it cannot load them
+   * and replaces the whole SPA with its native error page. Rejects when the OS
+   * has no handler registered, which callers must surface to the user.
+   */
+  openExternal: (url: string): Promise<void> =>
+    isTauri() ? openWithOs(url) : Promise.resolve(mockDb.openExternal(url)),
 };

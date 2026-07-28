@@ -6,7 +6,9 @@ import StatusBadge from "@/components/ui/StatusBadge.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import ListFilterBar from "@/components/ui/ListFilterBar.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { api } from "@/api";
 import type { ScheduleRow } from "@/types/models";
@@ -18,7 +20,6 @@ const fmt = useFormat();
 type Filter = "all" | "overdue" | "upcoming" | "paid";
 const rows = ref<ScheduleRow[]>([]);
 const filter = ref<Filter>("all");
-const loading = ref(true);
 
 const search = ref("");
 const amountMin = ref("");
@@ -70,73 +71,93 @@ const { sort, sorted } = useSort(filtered, {
   status: (r) => r.status,
 });
 
-onMounted(async () => {
+const {
+  loading,
+  error: loadError,
+  run: load,
+} = useLoader(async () => {
   rows.value = await api.listSchedule();
-  loading.value = false;
 });
+onMounted(load);
 </script>
 
 <template>
   <div class="page">
-    <div class="card">
-      <div class="card-header">
-        <div>
-          <h2>{{ t("echeances.title") }}</h2>
-          <p class="subtitle">{{ t("echeances.subtitle") }}</p>
+    <LoadError v-if="loadError" :message="loadError" @retry="load" />
+
+    <template v-else>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>{{ t("echeances.title") }}</h2>
+            <p class="subtitle">{{ t("echeances.subtitle") }}</p>
+          </div>
+          <div class="tabs">
+            <button
+              v-for="f in FILTERS"
+              :key="f.key"
+              class="tab"
+              :class="{ 'tab--active': filter === f.key }"
+              type="button"
+              @click="filter = f.key"
+            >
+              {{ t(f.label) }}
+            </button>
+          </div>
         </div>
-        <div class="tabs">
-          <button
-            v-for="f in FILTERS"
-            :key="f.key"
-            class="tab"
-            :class="{ 'tab--active': filter === f.key }"
-            type="button"
-            @click="filter = f.key"
-          >
-            {{ t(f.label) }}
-          </button>
+
+        <ListFilterBar
+          v-model:search="search"
+          v-model:amount-min="amountMin"
+          v-model:amount-max="amountMax"
+          v-model:date-from="dateFrom"
+          v-model:date-to="dateTo"
+          show-amount
+        />
+
+        <EmptyState
+          v-if="!loading && filtered.length === 0"
+          icon="calendar"
+          :title="t('echeances.empty')"
+        />
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader
+                  :sort="sort"
+                  field="reference"
+                  :label="t('echeances.columns.reference')"
+                />
+                <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
+                <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+                <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+                <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+                <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="r in sorted"
+                :key="r.installmentId"
+                class="clickable"
+                :class="{ 'is-late': r.status === 'late' }"
+                @click="router.push({ name: 'achat-detail', params: { id: r.purchaseId } })"
+              >
+                <td>
+                  <span class="row-link">{{ r.reference }}</span>
+                </td>
+                <td>{{ r.clientName }}</td>
+                <td class="tabular">{{ r.index }}/{{ r.installmentCount }}</td>
+                <td class="tabular">{{ fmt.date(r.dueDate) }}</td>
+                <td class="tabular strong">{{ fmt.money(r.amount) }}</td>
+                <td><StatusBadge :status="r.status" feminine /></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
-
-      <ListFilterBar
-        v-model:search="search"
-        v-model:amount-min="amountMin"
-        v-model:amount-max="amountMax"
-        v-model:date-from="dateFrom"
-        v-model:date-to="dateTo"
-        show-amount
-      />
-
-      <EmptyState v-if="!loading && filtered.length === 0" icon="calendar" :title="t('echeances.empty')" />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="reference" :label="t('echeances.columns.reference')" />
-            <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
-            <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
-            <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
-            <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
-            <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="r in sorted"
-            :key="r.installmentId"
-            class="clickable"
-            :class="{ 'is-late': r.status === 'late' }"
-            @click="router.push({ name: 'achat-detail', params: { id: r.purchaseId } })"
-          >
-            <td><span class="row-link">{{ r.reference }}</span></td>
-            <td>{{ r.clientName }}</td>
-            <td class="tabular">{{ r.index }}/{{ r.installmentCount }}</td>
-            <td class="tabular">{{ fmt.date(r.dueDate) }}</td>
-            <td class="tabular strong">{{ fmt.money(r.amount) }}</td>
-            <td><StatusBadge :status="r.status" feminine /></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    </template>
   </div>
 </template>
 

@@ -26,8 +26,20 @@ const items: NavItem[] = [
   { name: "clients", route: "/clients", icon: "users" },
   { name: "paiements", route: "/paiements", icon: "card" },
   { name: "echeances", route: "/echeances", icon: "calendar" },
-  { name: "impayes", route: "/impayes", icon: "alert", badge: () => stats.overdueClients, badgeKind: "danger" },
-  { name: "alertes", route: "/alertes", icon: "bell", badge: () => stats.overdueInstallments, badgeKind: "warning" },
+  {
+    name: "impayes",
+    route: "/impayes",
+    icon: "alert",
+    badge: () => stats.overdueClients,
+    badgeKind: "danger",
+  },
+  {
+    name: "alertes",
+    route: "/alertes",
+    icon: "bell",
+    badge: () => stats.overdueInstallments,
+    badgeKind: "warning",
+  },
   { name: "rapports", route: "/rapports", icon: "report" },
   { name: "parametres", route: "/parametres", icon: "settings" },
 ];
@@ -172,7 +184,9 @@ function newPurchase() {
   font-size: 14.5px;
   font-weight: 500;
   text-decoration: none;
-  transition: background 0.13s ease, color 0.13s ease;
+  transition:
+    background 0.13s ease,
+    color 0.13s ease;
 }
 .nav-item:hover {
   background: var(--navy-hover);

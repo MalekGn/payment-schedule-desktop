@@ -92,9 +92,27 @@ describe("sortRows with the Overdue page's installment accessors", () => {
   });
 
   const rows: OverdueInstallment[] = [
-    make({ purchaseReference: "A-000003", index: 2, dueDate: "2026-03-10", remaining: 150, daysLate: 30 }),
-    make({ purchaseReference: "A-000001", index: 5, dueDate: "2026-01-05", remaining: 900, daysLate: 5 }),
-    make({ purchaseReference: "A-000002", index: 1, dueDate: "2026-02-20", remaining: 400, daysLate: 120 }),
+    make({
+      purchaseReference: "A-000003",
+      index: 2,
+      dueDate: "2026-03-10",
+      remaining: 150,
+      daysLate: 30,
+    }),
+    make({
+      purchaseReference: "A-000001",
+      index: 5,
+      dueDate: "2026-01-05",
+      remaining: 900,
+      daysLate: 5,
+    }),
+    make({
+      purchaseReference: "A-000002",
+      index: 1,
+      dueDate: "2026-02-20",
+      remaining: 400,
+      daysLate: 120,
+    }),
   ];
 
   function sortedBy(field: string, dir: "asc" | "desc") {

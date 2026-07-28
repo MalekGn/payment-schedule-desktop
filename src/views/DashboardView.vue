@@ -6,8 +6,10 @@ import RecentPurchasesCard from "@/components/dashboard/RecentPurchasesCard.vue"
 import PurchaseDetailCard from "@/components/dashboard/PurchaseDetailCard.vue";
 import DueAlertsCard from "@/components/dashboard/DueAlertsCard.vue";
 import ImpayesPanelCard from "@/components/dashboard/ImpayesPanelCard.vue";
-import PaymentModal from "@/components/PaymentModal.vue";
+import EditInstallmentModal from "@/components/EditInstallmentModal.vue";
+import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
+import { useLoader } from "@/composables/useLoader";
 import { api } from "@/api";
 import type { Dashboard, Installment } from "@/types/models";
 
@@ -15,37 +17,65 @@ const { t } = useI18n();
 const fmt = useFormat();
 
 const data = ref<Dashboard | null>(null);
-const loading = ref(true);
-const payTarget = ref<Installment | null>(null);
+const editTarget = ref<Installment | null>(null);
 
-async function load() {
-  loading.value = true;
+const { error: loadError, run: load } = useLoader(async () => {
   data.value = await api.getDashboard();
-  loading.value = false;
-}
+});
 onMounted(load);
 
 const kpis = computed(() => {
   const s = data.value?.stats;
   if (!s) return [];
   return [
-    { icon: "cart", tone: "blue" as const, label: t("dashboard.kpi.totalPurchases"), value: fmt.number(s.totalPurchases), sub: t("dashboard.thisMonth") },
-    { icon: "banknote", tone: "green" as const, label: t("dashboard.kpi.totalSales"), value: fmt.money(s.totalSales), sub: t("dashboard.thisMonth") },
-    { icon: "card", tone: "purple" as const, label: t("dashboard.kpi.collected"), value: fmt.money(s.totalCollected), sub: t("dashboard.thisMonth") },
-    { icon: "alert", tone: "orange" as const, label: t("dashboard.kpi.outstanding"), value: fmt.money(s.totalOutstanding), sub: t("dashboard.thisMonth") },
-    { icon: "calendar", tone: "red" as const, label: t("dashboard.kpi.latePayments"), value: fmt.number(s.overdueCount), sub: t("dashboard.clientsConcerned") },
+    {
+      icon: "cart",
+      tone: "blue" as const,
+      label: t("dashboard.kpi.totalPurchases"),
+      value: fmt.number(s.totalPurchases),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "banknote",
+      tone: "green" as const,
+      label: t("dashboard.kpi.totalSales"),
+      value: fmt.money(s.totalSales),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "card",
+      tone: "purple" as const,
+      label: t("dashboard.kpi.collected"),
+      value: fmt.money(s.totalCollected),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "alert",
+      tone: "orange" as const,
+      label: t("dashboard.kpi.outstanding"),
+      value: fmt.money(s.totalOutstanding),
+      sub: t("dashboard.thisMonth"),
+    },
+    {
+      icon: "calendar",
+      tone: "red" as const,
+      label: t("dashboard.kpi.latePayments"),
+      value: fmt.number(s.overdueCount),
+      sub: t("dashboard.clientsConcerned"),
+    },
   ];
 });
 
 function onSaved(detail: Dashboard["featuredPurchase"]) {
-  payTarget.value = null;
+  editTarget.value = null;
   if (detail && data.value) data.value.featuredPurchase = detail;
   load();
 }
 </script>
 
 <template>
-  <div v-if="data" class="dashboard">
+  <LoadError v-if="loadError" :message="loadError" @retry="load" />
+  <div v-else-if="data" class="dashboard">
     <div class="kpi-row">
       <KpiCard
         v-for="(k, i) in kpis"
@@ -64,7 +94,7 @@ function onSaved(detail: Dashboard["featuredPurchase"]) {
         <PurchaseDetailCard
           v-if="data.featuredPurchase"
           :detail="data.featuredPurchase"
-          @pay="payTarget = $event"
+          @update-installment="editTarget = $event"
         />
       </div>
       <div class="dash-col dash-col--side">
@@ -73,12 +103,13 @@ function onSaved(detail: Dashboard["featuredPurchase"]) {
       </div>
     </div>
 
-    <PaymentModal
-      v-if="payTarget && data.featuredPurchase"
-      :installment="payTarget"
+    <EditInstallmentModal
+      v-if="editTarget && data.featuredPurchase"
+      :installment="editTarget"
+      :siblings="data.featuredPurchase.installments"
       :installment-count="data.featuredPurchase.purchase.installmentCount"
       :purchase-reference="data.featuredPurchase.purchase.reference"
-      @close="payTarget = null"
+      @close="editTarget = null"
       @saved="onSaved"
     />
   </div>

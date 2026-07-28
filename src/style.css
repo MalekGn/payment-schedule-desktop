@@ -65,8 +65,9 @@
   --sidebar-w: 232px;
   --header-h: 68px;
 
-  --font: "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic",
-    "Helvetica Neue", Arial, sans-serif;
+  --font:
+    "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans Arabic", "Helvetica Neue", Arial,
+    sans-serif;
 
   font-family: var(--font);
   color: var(--text);
@@ -197,7 +198,10 @@ textarea {
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
   white-space: nowrap;
 }
 .btn--primary {
@@ -253,7 +257,9 @@ textarea {
   background: var(--surface);
   color: var(--text);
   outline: none;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
 }
 .input:focus,
 .select:focus,
@@ -307,6 +313,18 @@ textarea {
   color: var(--primary);
   font-weight: 600;
 }
+/* Wide tables scroll inside their card instead of spilling past its border and
+   pushing the whole page into horizontal scroll (`.app-content` in App.vue). */
+.table-scroll {
+  overflow-x: auto;
+}
+/* The scroll box clips at square corners. When the table ends the card, follow
+   the card's rounded bottom so a highlighted last row (.is-late) doesn't show
+   corner artifacts; mid-card tables keep square corners, as they should. */
+.table-scroll:last-child {
+  border-end-start-radius: var(--radius-lg);
+  border-end-end-radius: var(--radius-lg);
+}
 
 /* ------- Utility ------- */
 .muted {
@@ -353,4 +371,10 @@ textarea {
 /* RTL: mirror the drop shadow that visually separates content from sidebar */
 [dir="rtl"] .card-header .card-link {
   /* keep link on the inline-end automatically via flex */
+}
+
+/* Directional icons must mirror in RTL — "back" points right in Arabic. Opt-in
+   per usage so non-directional icons (clock, check, alert) are never flipped. */
+[dir="rtl"] .icon-flip {
+  transform: scaleX(-1);
 }

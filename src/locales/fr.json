@@ -21,7 +21,8 @@
     "helpText": "Consultez notre guide ou contactez le support."
   },
   "header": {
-    "admin": "Admin"
+    "admin": "Admin",
+    "notifications": "Notifications"
   },
   "common": {
     "viewAll": "Voir tous",
@@ -54,7 +55,8 @@
     "note": "Note",
     "all": "Tous",
     "currency": "{amount} {code}",
-    "none": "—"
+    "none": "—",
+    "retry": "Réessayer"
   },
   "dashboard": {
     "title": "Tableau de bord",
@@ -91,7 +93,8 @@
       "paymentDate": "Date paiement",
       "paymentHistory": "Historique des paiements",
       "register": "Enregistrer",
-      "view": "Voir"
+      "view": "Voir",
+      "updatePayment": "Mettre à jour le paiement"
     },
     "alert": {
       "tranche": "Tranche {index}/{count}",
@@ -118,12 +121,20 @@
     "allClients": "Tous les clients",
     "call": "Appeler",
     "message": "Message",
-    "since": "En retard depuis"
+    "since": "En retard depuis",
+    "callFailed": "Impossible de lancer l'appel vers {phone} — aucune application téléphone sur cet ordinateur.",
+    "messageFailed": "Impossible d'envoyer un SMS au {phone} — aucune application de messagerie sur cet ordinateur.",
+    "invalidPhone": "Numéro de téléphone inutilisable : {phone}"
   },
   "achats": {
     "title": "Achats",
     "new": "Nouvel achat",
     "searchPlaceholder": "Rechercher un achat, un client, un produit…",
+    "scope": {
+      "active": "Actifs",
+      "archived": "Archivés",
+      "all": "Tous"
+    },
     "columns": {
       "reference": "N° Achat",
       "client": "Client",
@@ -151,19 +162,61 @@
       "sumOk": "La somme des tranches correspond au total.",
       "sumMismatch": "La somme des tranches ({sum}) ne correspond pas au total ({total}).",
       "recompute": "Recalculer automatiquement",
-      "submit": "Enregistrer l'achat"
+      "submit": "Enregistrer l'achat",
+      "editTitle": "Modifier l'achat",
+      "saveEdit": "Enregistrer les modifications",
+      "lockedByPayments": "{count} paiement(s) déjà enregistré(s) : le montant, les échéances et la date ne sont plus modifiables. Seul le libellé du produit peut changer."
+    },
+    "installmentEdit": {
+      "title": "Mettre à jour le paiement — Tranche {index}/{count}",
+      "saved": "Tranche mise à jour.",
+      "scheduleSection": "Ce qui est dû",
+      "moneySection": "Ce qui a été encaissé",
+      "negativeAmount": "Le montant ne peut pas être négatif.",
+      "paidAmountHint": "Le total encaissé sur cette tranche à ce jour. La différence est enregistrée comme un paiement.",
+      "settledNote": "Cette tranche est soldée : ni son montant ni son échéance ne peuvent plus changer.",
+      "lockedByPrevious": "La tranche {index} doit être soldée avant d'enregistrer un paiement ici.",
+      "rebalanceTitle": "Les autres tranches deviennent",
+      "rebalanceNote": "Le total de l'achat reste identique.",
+      "confirmTitle": "Modifier une tranche payée",
+      "confirmText": "La tranche {index} est déjà payée. Vous êtes sur le point de modifier ce qui a été encaissé. Continuer ?"
     },
     "interval": {
       "weekly": "Hebdomadaire",
       "monthly": "Mensuelle",
       "custom": "Personnalisée"
     },
-    "empty": "Aucun achat enregistré. Créez votre premier achat."
+    "empty": "Aucun achat enregistré. Créez votre premier achat.",
+    "emptyArchived": "Aucun achat archivé.",
+    "archivedBadge": "Archivé",
+    "archivedOn": "Archivé le {date}",
+    "archivedSection": "Achats archivés",
+    "archive": {
+      "action": "Archiver",
+      "confirmTitle": "Archiver l'achat",
+      "confirmText": "Cet achat sera retiré des listes et de tous les totaux. Rien n'est perdu : vous pourrez le restaurer à tout moment.",
+      "hasPayments": "{count} paiement(s) ont déjà été encaissés sur cet achat. Il ne peut pas être archivé."
+    },
+    "restore": {
+      "action": "Restaurer",
+      "confirmTitle": "Restaurer l'achat",
+      "confirmText": "Cet achat réapparaîtra dans les listes et sera de nouveau compté dans les totaux."
+    },
+    "delete": {
+      "action": "Supprimer définitivement",
+      "confirmTitle": "Supprimer définitivement l'achat",
+      "confirmText": "Cet achat et ses échéances seront effacés pour de bon. Cette action est irréversible."
+    }
   },
   "clients": {
     "title": "Clients",
     "new": "Nouveau client",
     "searchPlaceholder": "Rechercher un client…",
+    "scope": {
+      "active": "Actifs",
+      "archived": "Archivés",
+      "all": "Tous"
+    },
     "columns": {
       "name": "Nom",
       "phone": "Téléphone",
@@ -194,9 +247,24 @@
     "delete": {
       "confirmTitle": "Supprimer le client",
       "confirmText": "Voulez-vous vraiment supprimer ce client ?",
-      "hasPurchases": "Ce client possède {n} achat(s). La suppression effacera aussi tous ses achats, échéances et paiements. Continuer ?"
+      "hasPurchases": "Ce client possède {n} achat(s) et ne peut pas être supprimé. Archivez-le pour le masquer sans perdre son historique."
     },
-    "empty": "Aucun client. Ajoutez votre premier client."
+    "archive": {
+      "action": "Archiver",
+      "confirmTitle": "Archiver le client",
+      "confirmText": "Ce client sera masqué de la liste active et ne pourra plus recevoir de nouvel achat. Son historique est conservé et vous pourrez le restaurer à tout moment.",
+      "hasOutstanding": "Ce client doit encore {amount}. Soldez ses échéances avant de l'archiver.",
+      "viewInstallments": "Voir ses échéances"
+    },
+    "restore": {
+      "action": "Restaurer",
+      "confirmTitle": "Restaurer le client",
+      "confirmText": "Ce client réapparaîtra dans la liste active et pourra de nouveau recevoir des achats."
+    },
+    "archivedBadge": "Archivé",
+    "archivedOn": "Archivé le {date}",
+    "empty": "Aucun client. Ajoutez votre premier client.",
+    "emptyArchived": "Aucun client archivé."
   },
   "paiements": {
     "title": "Paiements",
@@ -303,7 +371,11 @@
     "noLogo": "Aucun logo",
     "shopName": "Nom de la boutique",
     "shopInfo": "Coordonnées / informations",
-    "shopInfoPlaceholder": "Adresse, téléphone, matricule fiscal…"
+    "shopInfoPlaceholder": "Adresse, téléphone, matricule fiscal…",
+    "backup": "Sauvegarde",
+    "backupHint": "Enregistrez une copie de votre base de données. Supprimer un client supprime aussi ses achats et paiements, sans retour possible.",
+    "backupAction": "Sauvegarder la base",
+    "backupDone": "Sauvegarde enregistrée."
   },
   "validation": {
     "required": "Ce champ est requis.",
@@ -316,8 +388,37 @@
   },
   "errors": {
     "generic": "Une erreur s'est produite.",
-    "clientHasPurchases": "Ce client possède des achats.",
-    "loadFailed": "Échec du chargement des données."
+    "internal": "Une erreur s'est produite. Veuillez réessayer.",
+    "loadFailed": "Échec du chargement des données.",
+    "clientHasPurchases": "Ce client possède {count} achat(s) et ne peut pas être supprimé.",
+    "archiveHasOutstanding": "Ce client a encore un solde impayé de {remaining}. Un client qui doit de l'argent ne peut pas être archivé.",
+    "clientArchived": "Ce client est archivé. Restaurez-le avant de lui enregistrer un nouvel achat.",
+    "clientNotFound": "Ce client n'existe plus.",
+    "purchaseNotFound": "Cet achat n'existe plus.",
+    "purchaseHasPayments": "{count} paiement(s) ont déjà été encaissés sur cet achat.",
+    "purchaseArchived": "Cet achat est archivé. Restaurez-le avant de le modifier ou d'y enregistrer un paiement.",
+    "purchaseNotArchived": "Archivez cet achat avant de le supprimer définitivement.",
+    "installmentNotFound": "Cette tranche n'existe plus.",
+    "invalidDate": "Veuillez saisir une date valide.",
+    "invalidTotalPrice": "Le prix total doit être supérieur à zéro.",
+    "invalidInstallmentCount": "Le nombre de tranches doit être compris entre 1 et 120.",
+    "invalidIntervalKind": "Intervalle de paiement inconnu.",
+    "invalidIntervalDays": "L'intervalle personnalisé doit être compris entre 1 et 365 jours.",
+    "invalidAmount": "Le montant doit être supérieur à zéro.",
+    "sumMismatch": "Le total des tranches est {sum}, mais le montant total est {total}.",
+    "overpayment": "Ce montant dépasse le solde restant de cette tranche ({remaining}).",
+    "invalidLogoType": "Choisissez une image PNG, JPG, WEBP ou GIF.",
+    "logoTooLarge": "L'image est trop volumineuse (5 Mo maximum).",
+    "backupFailed": "La sauvegarde n'a pas pu être enregistrée.",
+    "dueDateLocked": "Cette tranche est soldée — son échéance ne peut plus être modifiée.",
+    "futurePaidDate": "La date de paiement ne peut pas être dans le futur.",
+    "previousUnpaid": "La tranche {index} doit être soldée avant d'enregistrer un paiement ici.",
+    "belowPaid": "{paidAmount} ont déjà été encaissés sur cette tranche ; le montant ne peut pas descendre en dessous.",
+    "noRebalanceRoom": "Les autres tranches ne peuvent pas absorber cette modification, et le total de l'achat doit rester identique.",
+    "amountLocked": "Cette tranche est soldée — son montant ne peut plus être modifié.",
+    "dueDateOutOfOrder": "L'échéance doit rester entre celle de la tranche précédente et celle de la suivante.",
+    "paidAboveAmount": "Supérieur au montant de cette tranche ({amount}).",
+    "noPaymentToDate": "Aucun paiement n'a encore été encaissé sur cette tranche : il n'y a pas de date à modifier."
   },
   "filters": {
     "date": "Filtrer par date",

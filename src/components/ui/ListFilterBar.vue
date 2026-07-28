@@ -23,9 +23,7 @@ const dateTo = defineModel<string>("dateTo", { default: "" });
 const { t } = useI18n();
 
 const isActive = computed(() =>
-  Boolean(
-    search.value || amountMin.value || amountMax.value || dateFrom.value || dateTo.value,
-  ),
+  Boolean(search.value || amountMin.value || amountMax.value || dateFrom.value || dateTo.value),
 );
 
 function reset() {
@@ -53,16 +51,32 @@ function reset() {
     <div v-if="showAmount" class="field">
       <label>{{ t("common.amount") }}</label>
       <div class="range-inputs">
-        <input v-model="amountMin" type="number" min="0" class="input input--num" :placeholder="t('filters.min')" />
+        <input
+          v-model="amountMin"
+          type="number"
+          min="0"
+          class="input input--num"
+          :placeholder="t('filters.min')"
+        />
         <span class="range-sep">–</span>
-        <input v-model="amountMax" type="number" min="0" class="input input--num" :placeholder="t('filters.max')" />
+        <input
+          v-model="amountMax"
+          type="number"
+          min="0"
+          class="input input--num"
+          :placeholder="t('filters.max')"
+        />
       </div>
     </div>
 
     <div class="field">
       <label>{{ t("filters.date") }}</label>
       <div class="range-inputs">
-        <DatePicker v-model="dateFrom" :max="dateTo || undefined" :placeholder="t('filters.from')" />
+        <DatePicker
+          v-model="dateFrom"
+          :max="dateTo || undefined"
+          :placeholder="t('filters.from')"
+        />
         <span class="range-sep">–</span>
         <DatePicker v-model="dateTo" :min="dateFrom || undefined" :placeholder="t('filters.to')" />
       </div>

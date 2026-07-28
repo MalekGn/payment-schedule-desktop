@@ -58,7 +58,8 @@ describe("creating a purchase wires the finance split into the backend", () => {
 
     // It is the 9th purchase and is immediately listable + searchable.
     expect(detail.purchase.reference).toBe("A-000009");
-    const list = await api.listPurchases("A-000009");
+    // `listPurchases` takes the scope first now, then the search.
+    const list = await api.listPurchases("active", "A-000009");
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe(detail.purchase.id);
   });
@@ -100,7 +101,9 @@ describe("creating a purchase wires the finance split into the backend", () => {
 
 describe("recording payments drives installment and purchase status transitions", () => {
   it("moves an installment pending → partial → paid and the purchase to in_progress", async () => {
-    const created = await api.createPurchase(newPurchase({ totalPrice: 1000, installmentCount: 3 }));
+    const created = await api.createPurchase(
+      newPurchase({ totalPrice: 1000, installmentCount: 3 }),
+    );
     const first = created.installments[0]; // 333 due today, pending
     const today = todayIso();
 
@@ -129,7 +132,9 @@ describe("recording payments drives installment and purchase status transitions"
   });
 
   it("marks the purchase paid once every installment is settled", async () => {
-    const created = await api.createPurchase(newPurchase({ totalPrice: 1000, installmentCount: 3 }));
+    const created = await api.createPurchase(
+      newPurchase({ totalPrice: 1000, installmentCount: 3 }),
+    );
     const today = todayIso();
     for (const inst of created.installments) {
       await api.recordPayment({
@@ -173,7 +178,9 @@ describe("a new purchase and its payments propagate into the dashboard aggregate
     const before = await api.getDashboard();
     expect(before.stats.totalPurchases).toBe(8); // seed baseline
 
-    const created = await api.createPurchase(newPurchase({ totalPrice: 1000, installmentCount: 3 }));
+    const created = await api.createPurchase(
+      newPurchase({ totalPrice: 1000, installmentCount: 3 }),
+    );
     const afterCreate = await api.getDashboard();
     expect(afterCreate.stats.totalPurchases).toBe(before.stats.totalPurchases + 1);
     expect(afterCreate.stats.totalSales).toBe(before.stats.totalSales + 1000);

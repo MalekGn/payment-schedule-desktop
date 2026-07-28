@@ -23,11 +23,7 @@ function open(id: number) {
       <RouterLink class="card-link" to="/echeances">{{ t("common.viewAllF") }}</RouterLink>
     </div>
 
-    <EmptyState
-      v-if="alerts.length === 0"
-      icon="calendar"
-      :title="t('dashboard.empty.alerts')"
-    />
+    <EmptyState v-if="alerts.length === 0" icon="calendar" :title="t('dashboard.empty.alerts')" />
 
     <ul v-else class="alert-list">
       <li v-for="a in alerts" :key="`${a.purchaseId}-${a.index}`" class="alert-row">
