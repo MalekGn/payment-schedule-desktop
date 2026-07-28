@@ -99,10 +99,16 @@ const alertCount = computed(() => stats.overdueInstallments);
       </ul>
     </div>
 
-    <button class="icon-btn bell" type="button" aria-label="notifications">
+    <!-- The badge counts overdue installments, which is exactly what the alerts
+         centre lists — so the bell is a shortcut to it, not its own surface. -->
+    <RouterLink
+      class="icon-btn bell"
+      :to="{ name: 'alertes' }"
+      :aria-label="t('header.notifications')"
+    >
       <AppIcon name="bell" :size="21" />
       <span v-if="alertCount > 0" class="bell-badge">{{ alertCount }}</span>
-    </button>
+    </RouterLink>
 
     <div class="user">
       <div class="avatar">A</div>
@@ -133,6 +139,8 @@ const alertCount = computed(() => stats.overdueInstallments);
   border-radius: 10px;
   background: transparent;
   color: var(--text-secondary);
+  /* The bell is a RouterLink, so opt out of the global `a:hover` underline. */
+  text-decoration: none;
   transition:
     background 0.13s ease,
     color 0.13s ease;

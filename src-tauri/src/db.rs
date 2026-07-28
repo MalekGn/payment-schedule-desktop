@@ -308,6 +308,15 @@ pub const PURCHASE_HAS_PAYMENTS: &str = "PURCHASE_HAS_PAYMENTS";
 pub const PURCHASE_ARCHIVED: &str = "PURCHASE_ARCHIVED";
 pub const PURCHASE_NOT_ARCHIVED: &str = "PURCHASE_NOT_ARCHIVED";
 pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
+pub const AMOUNT_LOCKED: &str = "AMOUNT_LOCKED";
+pub const DUE_DATE_LOCKED: &str = "DUE_DATE_LOCKED";
+pub const DUE_DATE_OUT_OF_ORDER: &str = "DUE_DATE_OUT_OF_ORDER";
+pub const PAID_ABOVE_AMOUNT: &str = "PAID_ABOVE_AMOUNT";
+pub const NO_PAYMENT_TO_DATE: &str = "NO_PAYMENT_TO_DATE";
+pub const FUTURE_PAID_DATE: &str = "FUTURE_PAID_DATE";
+pub const PREVIOUS_UNPAID: &str = "PREVIOUS_UNPAID";
+pub const BELOW_PAID: &str = "BELOW_PAID";
+pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
 pub const BACKUP_FAILED: &str = "BACKUP_FAILED";
@@ -385,6 +394,76 @@ pub fn split_amounts(total: i64, n: i64) -> Vec<i64> {
     (0..n)
         .map(|i| if i == n - 1 { base + remainder } else { base })
         .collect()
+}
+
+/// Re-split `pool` across the installments at `absorbers` (indices into
+/// `amounts`), refusing any distribution that would push a row below what has
+/// already been collected on it.
+///
+/// `None` means this absorber set cannot take the change: either the pool went
+/// negative, or an even split lands under someone's `paid_amount` — which would
+/// break the `paid_amount <= amount` invariant the outstanding aggregates rely
+/// on.
+fn apply_pool(
+    amounts: &[i64],
+    paid_amounts: &[i64],
+    absorbers: &[usize],
+    pool: i64,
+) -> Option<Vec<i64>> {
+    if absorbers.is_empty() || pool < 0 {
+        return None;
+    }
+    let parts = split_amounts(pool, absorbers.len() as i64);
+    let mut next = amounts.to_vec();
+    for (part, &i) in parts.iter().zip(absorbers) {
+        if *part < paid_amounts[i] {
+            return None;
+        }
+        next[i] = *part;
+    }
+    Some(next)
+}
+
+/// The new amount vector after setting installment `index` (0-based) to
+/// `new_amount`, holding the purchase total fixed.
+///
+/// `SUM(amount) == purchase.total_price` is assumed by every read model in the
+/// app, so a single-installment edit has to move the difference somewhere rather
+/// than change the total. The delta lands on the installments *after* the edited
+/// one first — those are the ones still ahead of the client — and only falls
+/// back to the earlier unsettled ones when there is nothing later to absorb it,
+/// which is what makes the final installment editable at all.
+///
+/// Fully-paid installments are never absorbers: their amount is settled history.
+///
+/// Returns `None` when neither absorber set can take the change; the caller
+/// turns that into `NO_REBALANCE_ROOM`. Mirrors `rebalanceAmounts` in
+/// `src/lib/finance.ts`, and is covered by the shared parity fixture.
+pub fn rebalance_amounts(
+    amounts: &[i64],
+    paid_amounts: &[i64],
+    index: usize,
+    new_amount: i64,
+) -> Option<Vec<i64>> {
+    if index >= amounts.len() || new_amount < 0 || new_amount < paid_amounts[index] {
+        return None;
+    }
+
+    let delta = new_amount - amounts[index];
+    let mut base = amounts.to_vec();
+    base[index] = new_amount;
+    if delta == 0 {
+        return Some(base);
+    }
+
+    let all: Vec<usize> = (0..amounts.len())
+        .filter(|&i| i != index && paid_amounts[i] < amounts[i])
+        .collect();
+    let later: Vec<usize> = all.iter().copied().filter(|&i| i > index).collect();
+
+    let sum_of = |set: &[usize]| -> i64 { set.iter().map(|&i| amounts[i]).sum() };
+    apply_pool(&base, paid_amounts, &later, sum_of(&later) - delta)
+        .or_else(|| apply_pool(&base, paid_amounts, &all, sum_of(&all) - delta))
 }
 
 #[cfg(test)]
@@ -502,6 +581,105 @@ mod tests {
                 "installment_status({amount}, {paid}, {due}) diverges from finance.ts"
             );
         }
+
+        let cases = fixture["rebalanceAmounts"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let nums = |key: &str| -> Vec<i64> {
+                case[key]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_i64().unwrap())
+                    .collect()
+            };
+            let amounts = nums("amounts");
+            let paid_amounts = nums("paidAmounts");
+            let index = case["index"].as_u64().unwrap() as usize;
+            let new_amount = case["newAmount"].as_i64().unwrap();
+            let expected: Option<Vec<i64>> = if case["expected"].is_null() {
+                None
+            } else {
+                Some(nums("expected"))
+            };
+            let got = rebalance_amounts(&amounts, &paid_amounts, index, new_amount);
+            assert_eq!(
+                got, expected,
+                "rebalance_amounts({amounts:?}, {paid_amounts:?}, {index}, {new_amount}) \
+                 diverges from finance.ts"
+            );
+            // The whole point of rebalancing: the purchase total never moves,
+            // and no row ends up owing less than it has already collected.
+            if let Some(next) = got {
+                assert_eq!(next.iter().sum::<i64>(), amounts.iter().sum::<i64>());
+                assert!(next.iter().zip(&paid_amounts).all(|(a, p)| a >= p));
+            }
+        }
+    }
+
+    /// The rebalance prefers the installments *after* the edited one, because
+    /// those are the ones still ahead of the client.
+    #[test]
+    fn rebalance_spends_the_later_installments_first() {
+        let amounts = [200, 200, 200, 200, 200];
+        let paid = [0; 5];
+        assert_eq!(
+            rebalance_amounts(&amounts, &paid, 2, 350),
+            Some(vec![200, 200, 350, 125, 125])
+        );
+    }
+
+    /// Editing the *last* installment has nothing after it, so the earlier
+    /// unsettled ones absorb backwards. Without this fallback the final
+    /// installment — the one carrying the rounding remainder, and the one a
+    /// shopkeeper most often renegotiates — could never be edited at all.
+    #[test]
+    fn rebalance_falls_back_to_the_earlier_installments() {
+        let amounts = [200, 200, 200, 200, 200];
+        let paid = [200, 200, 0, 0, 0];
+        assert_eq!(
+            rebalance_amounts(&amounts, &paid, 4, 100),
+            Some(vec![200, 200, 250, 250, 100])
+        );
+    }
+
+    /// A settled installment is history: it is never asked to give anything up,
+    /// which is also what keeps `paid_amount <= amount` true for it.
+    #[test]
+    fn rebalance_never_touches_a_settled_installment() {
+        let amounts = [200, 200, 200];
+        let paid = [0, 0, 200];
+        let next = rebalance_amounts(&amounts, &paid, 0, 100).unwrap();
+        assert_eq!(next, vec![100, 300, 200]);
+    }
+
+    /// With every other installment settled there is nowhere for the delta to
+    /// go, and the total is not allowed to move — so the edit is refused.
+    #[test]
+    fn rebalance_refuses_when_nothing_can_absorb() {
+        assert_eq!(rebalance_amounts(&[200, 200], &[0, 200], 0, 100), None);
+        // Raising past what the others can give up is refused too.
+        assert_eq!(
+            rebalance_amounts(&[200, 200, 200], &[0, 50, 0], 0, 600),
+            None
+        );
+        // As is dropping below what this row has already collected.
+        assert_eq!(rebalance_amounts(&[200, 200], &[150, 0], 0, 100), None);
+    }
+
+    /// A no-op edit still resolves, so a caller that resubmits an unchanged
+    /// amount is not refused for it.
+    #[test]
+    fn rebalance_accepts_an_unchanged_amount() {
+        assert_eq!(
+            rebalance_amounts(&[200, 300], &[0, 0], 1, 300),
+            Some(vec![200, 300])
+        );
+        // Even when nothing else could have absorbed a real change.
+        assert_eq!(
+            rebalance_amounts(&[200, 200], &[0, 200], 0, 200),
+            Some(vec![200, 200])
+        );
     }
 
     /// `migrate` is version-tracked and idempotent.

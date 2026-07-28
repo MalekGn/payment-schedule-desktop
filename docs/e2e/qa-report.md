@@ -6,6 +6,337 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-28 (d) — Header notification bell navigates to the alerts page
+
+### Summary
+
+Bug fix. The bell in `AppHeader` rendered a live red badge sourced from
+`stats.overdueInstallments` but was a bare `<button>` with no click handler — it
+advertised a destination it never reached.
+
+The bell is now a `<RouterLink>` to `{ name: "alertes" }`, matching the project's
+convention of `RouterLink` for static nav destinations (`AppSidebar.vue`,
+`DueAlertsCard.vue`). It lands on the Alerts page in its default **Toutes** tab —
+no pre-applied filter — because the sidebar's own bell entry behaves the same way.
+
+Two supporting changes: the hardcoded `aria-label="notifications"` became
+`t("header.notifications")`, added to all three locale files; and `.icon-btn` gained
+`text-decoration: none` so the now-anchor bell doesn't pick up the global
+`a:hover { text-decoration: underline }` from `src/style.css`.
+
+No new route, no new view, no Tauri command, no change to the api gateway/mock pair
+or to the installment math.
+
+### Test cases — E2E written, NOT run (awaiting confirmation)
+
+Per the QA workflow, E2E is not executed automatically. Run it with `npm run test:e2e`.
+
+`tests/e2e/run.mjs` — new scenario `"header bell navigates to the alerts page"`:
+
+- The bell badge renders on first load with a count ≥ 1 from the seeded mock data.
+- Clicking the bell pushes `window.location.pathname` to `/alertes`.
+- The header title updates to `NAV.alertes` ("Alertes") via the existing `NAV_KEY` map.
+- The Alerts page opens on the **Toutes** tab — the click does not pre-filter to overdue.
+- The badge survives the navigation and is still visible on the destination page.
+
+Gates run and passing for this change: `npm run lint` (clean, including
+`eslint-plugin-security`), `npm test` (129 unit tests, 7 files), `npm run build`
+(`vue-tsc --noEmit` typecheck + Vite build).
+
+### Issues found
+
+None beyond the reported defect, which is fixed.
+
+### Edge cases and risks not covered by the automated test
+
+- **Zero-alert state.** With no overdue installments the badge is hidden (`v-if`),
+  but the bell remains clickable and still routes to an empty Alerts page. The
+  seeded mock always has overdue rows, so the E2E case cannot reach this branch;
+  it is exercised manually.
+- **Arabic / RTL.** `.bell-badge` uses the logical `inset-inline-end`, so it should
+  mirror without extra work, and the label now resolves to "التنبيهات". Not asserted
+  by the new test — the existing RTL coverage in `run.mjs` targets the not-found
+  page only. Verify visually when switching locale.
+- **Clicking the bell while already on `/alertes`.** vue-router treats this as a
+  duplicate navigation and no-ops; it does not reset the page's active tab or
+  filters. Intentional, but worth knowing it is not a "refresh" affordance.
+- **`RouterLink` adds `router-link-active`** to the bell when on `/alertes`. No
+  style is defined for it in `AppHeader`'s scoped CSS, so there is no visual
+  change today — a future rule on that class would affect the bell.
+
+### Recommendations
+
+- Run `npm run test:e2e` to confirm the new scenario passes before shipping.
+- The `.user` block in `AppHeader` (avatar + "Admin" + chevron) has the same defect:
+  `cursor: pointer` with no handler and no menu. Out of scope here; worth either
+  wiring to Settings or dropping the pointer cue.
+
+---
+
+## 2026-07-28 (c) — Installment management: inverted rules, remaining column, ledger corrections
+
+### Summary
+
+A revision of the (b) pass. Two of its rules were the wrong way round, and the
+table was missing the number a shopkeeper looks at first.
+
+The editor now splits cleanly in two, with each half's rule blind to the other's:
+
+- **The schedule** (installment amount, due date) is editable until the tranche
+  settles, after which it is history (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`).
+  Nothing about the neighbouring tranches gates it — this is the **inversion** of
+  the previous pass, where the amount was gated on the previous tranche.
+- **The money** (paid amount, payment date, note) is editable only once tranche
+  `N-1` is settled (`PREVIOUS_UNPAID:{index}`) — cash is collected in order.
+  Nothing about this tranche's own status gates it. Also an inversion: these
+  fields were previously gated on the tranche being settled.
+
+Alongside: a **Remaining** column (`amount − paidAmount`) in the installment
+table; the paid amount kept out of the list but editable in the form; the row
+action relabelled **"Update payment"**; and `PaymentModal` merged away, so one
+form is the single editor of an installment.
+
+Two decisions carry the money safety, both flagged as spec/model
+inconsistencies before implementing:
+
+1. **`paid_amount` is a denormalised cache of the `payment` ledger**, not a plain
+   field. The dashboard's "Amount collected" is `SUM(payment.amount)`; every
+   other paid/remaining/outstanding figure is `SUM(installment.paid_amount)`.
+   Moving one alone would make that tile contradict every other total. So a
+   changed paid amount now writes a **correction entry** — one payment row for
+   the difference, carrying the date and note, negative when the figure comes
+   down.
+2. **Ordering.** The spec states installments are ordered chronologically by due
+   date; the schema orders by `idx`. With due dates editable the two could
+   diverge. Resolved by **clamping a due date to `[prev, next]`**
+   (`DUE_DATE_OUT_OF_ORDER`), which makes position order and chronological order
+   provably identical, so "the previous installment" means one thing either way.
+
+### Test cases run
+
+| Suite                                    | Result                    |
+| ---------------------------------------- | ------------------------- |
+| Rust `cargo test`                        | **79 passed** (was 72)    |
+| TS unit (`npm test`)                     | 129 passed                |
+| Integration (`npm run test:integration`) | **183 passed** (was 168)  |
+| E2E (`npm run test:e2e`)                 | **43/43 passed** (was 42) |
+
+**Gates:** eslint · vue-tsc · vite build · cargo fmt · cargo clippy
+(`--all-targets -D warnings`) — all clean.
+
+New coverage:
+
+- **A ledger invariant, asserted rather than assumed.** `MoneySnapshot` gained
+  `assert_ledger_matches_installments`, checking
+  `SUM(payment.amount) == SUM(installment.paid_amount)` (and that no row owes
+  less than it collected). Every Rust test that touches collected money calls it;
+  the integration suite's `expectConsistent` does the same per purchase. This is
+  the single assertion that stops the dashboard's "Amount collected" drifting
+  away from every other total.
+- **Rust (rewritten + 7 net new).** Both inverted gates, `AMOUNT_LOCKED`,
+  `PAID_ABOVE_AMOUNT`, the due-date interval at both bounds and the unbounded
+  outer tranches, correction entries in both directions, the zero-out reversal,
+  payment-date re-dating, note-only amendment, `NO_PAYMENT_TO_DATE`, and the
+  combined amount+paid-amount edit that must _not_ trip a false `BELOW_PAID`.
+- **Integration (rewritten, 20 → 24 cases)**, including the dashboard's collected
+  total moving up _and back down_ with a paid-amount edit.
+- **E2E (5 scenarios).** Recording a payment through the merged modal and seeing
+  the correction entry in the history; the rebalance preview and save; a tranche
+  with an unpaid predecessor locking _only_ its money fields; a paid tranche
+  locking its schedule and warning before a change; the remaining column.
+- **Manual, driven with Playwright against the built app**: the full flow, the
+  correction entry appearing as `-100 TND` in the payment history, the
+  confirmation dialog, the success toast, and the Arabic RTL rendering.
+
+### Issues found
+
+1. **A note-only edit was silently dropped.** The re-dating branch was gated on a
+   payment date being present, so typing a note without touching the amount or
+   the date wrote nothing and still reported success. Fixed in both backends: a
+   date _or_ a note amends the row's latest ledger entry, and either with no
+   entry at all is refused with `NO_PAYMENT_TO_DATE` rather than discarded.
+   Covered by new Rust and integration tests.
+2. **The payment-date picker stayed enabled with nothing collected**, where the
+   frontend then declined to send it — a silent no-op. It is now disabled unless
+   the installment has a payment or this edit is creating one, which matches the
+   backend guard instead of quietly working around it.
+3. **Both lock notes rendered against the wrong section.** "Installment 2 has to
+   be settled…" sat between the due-date field and the money legend, reading as
+   if it explained the due date. Moved inside their own `<fieldset>`, which is
+   also what makes one `disabled` cover a whole half of the form rather than each
+   input opting in.
+4. **The guards had to key off resolved values, not stored ones.** Lowering the
+   amount and the collected figure together is a request that resolves its own
+   conflict; comparing against the stored `paid_amount` refused it. `finalPaid`
+   and `finalAmount` are computed first, and `rebalance_amounts` is called with
+   `finalPaid` at the edited position for the same reason.
+5. **The amount column was the only money column in the app using `fmt.number`.**
+   Adding a `fmt.money` Remaining column beside it would have read as "400" next
+   to "400 TND"; switched to `fmt.money`.
+6. **`errors.paidDateNotPaid` was left behind** by the rule inversion — the code
+   no longer exists. Removed from all three locales; the error-contract suite's
+   code list was updated in the same pass.
+
+### Recommendations
+
+- **A downward correction shows as a negative line in the Paiements log** and
+  inside its amount-range filter. This is the honest reading — the money came
+  back — but the log has no visual treatment distinguishing a correction from a
+  collection. Worth a badge or a filter if operators find it confusing.
+- **`record_payment` now has no caller in `src/`.** It remains the incremental
+  payment path, is fully tested, and both test suites use it to set up state, so
+  it was deliberately left in place rather than deleted alongside `PaymentModal`.
+  If it is not going to come back, the gateway entry and the command are dead
+  surface worth removing on purpose.
+- The paid amount is **absolute**, so recording a second collection means typing
+  the running total rather than the increment. That is the direct consequence of
+  merging the two modals; if the daily flow suffers, the fix is a separate
+  "add a payment" action rather than reverting the merge.
+- The confirmation popup fires only for a **fully paid** installment, the literal
+  reading of the requirement. A partially-paid one is edited without it, even
+  though that also touches collected money.
+- `installment.idx` still has no `UNIQUE(purchase_id, idx)` constraint backing
+  the ordering the sequential rule depends on. Pre-existing, and unchanged here.
+
+---
+
+## 2026-07-28 (b) — Editing a single installment
+
+### Summary
+
+`update_purchase` goes hard-locked at the first payment (`PURCHASE_HAS_PAYMENTS`)
+because saving there deletes and reinserts the installment rows, and those rows
+own the payments through an `ON DELETE CASCADE`. That left a real gap: pushing
+one due date back a week, or re-cutting the tranches a client renegotiated, only
+ever happens _after_ payments have started. `update_installment` fills it by
+updating rows in place — nothing is regenerated, so the payment ledger is never
+at risk and the command stays available for the whole life of a live purchase.
+
+Three rules were specified and implemented:
+
+1. **The due date is editable** — until the installment is settled, after which
+   it is history (`DUE_DATE_LOCKED`). In exchange the **payment date** becomes
+   editable on a settled installment (`PAID_DATE_NOT_PAID`), capped at today
+   (`FUTURE_PAID_DATE`).
+2. **The amount is gated on the previous installment** being fully paid
+   (`PREVIOUS_UNPAID:{index}`).
+3. **The amount is editable even on a collected installment, behind a
+   confirmation popup**, and `0` is a legal value.
+
+Two decisions carry the money safety. **`purchase.total_price` is never
+written**: a changed amount is absorbed by the other unsettled installments
+(`rebalance_amounts` / `rebalanceAmounts`, later-first with a backwards
+fallback), so `SUM(amount) == total_price` holds by construction rather than by
+a check, and `NO_REBALANCE_ROOM` is returned when no absorber set can take it.
+And **the amount floors at `paid_amount`** (`BELOW_PAID:{paid}`) — so 0 is
+reachable on an untouched row but never below what was collected. That is the
+`OVERPAYMENT` invariant approached from the other side:
+`SUM(i.amount - i.paid_amount)` feeds the outstanding and overdue aggregates, and
+one negative row cancels out another client's real debt.
+
+`status` is never written (it is derived), but `paid_date` is: `sync_paid_date`
+re-derives it for every row whose amount moved, so zeroing an untouched tranche
+reads as paid with no date, and raising a settled one puts it back in debt and
+clears the date it no longer has.
+
+### Test cases run
+
+| Suite                                    | Result                    |
+| ---------------------------------------- | ------------------------- |
+| Rust `cargo test`                        | **72 passed** (was 57)    |
+| TS unit (`npm test`)                     | **129 passed** (was 110)  |
+| Integration (`npm run test:integration`) | **168 passed** (was 145)  |
+| E2E (`npm run test:e2e`)                 | **42/42 passed** (was 39) |
+
+**Gates:** eslint · vue-tsc · vite build · cargo fmt · cargo clippy
+(`--all-targets -D warnings`) — all clean.
+
+New coverage:
+
+- **Shared math.** `rebalanceAmounts` / `rebalance_amounts` as a pure function in
+  both languages, with 10 cases added to `tests/fixtures/finance-parity.json` so
+  the two cannot drift. Every non-null fixture case is additionally asserted to
+  preserve the total and respect each row's `paidAmount` floor.
+- **Rust (15 cases).** Later-first rebalance, backwards fallback, the
+  previous-tranche gate, the `paid_amount` floor from both sides, `paid_date`
+  clearing on un-settle and filling on settle, the due-date/payment-date swap,
+  archived refusal, bad arguments, and a rollback case proving a refused edit
+  writes nothing (compared against the seven-figure `MoneySnapshot`).
+- **Integration (20 cases).** The same behaviour through the real `api` facade
+  against the browser mock, with an `expectConsistent` helper re-asserting both
+  invariants after every successful edit, plus two cases checking the dashboard
+  and the schedule follow an edit.
+- **E2E (3 scenarios).** The rebalance preview and save on the purchase page, the
+  locked amount field with its on-screen reason, and the below-collected refusal
+  plus the confirmation dialog.
+- **Manual, driven with Playwright against the built app**: the full edit flow,
+  the live rebalance preview, the confirmation dialog, and the Arabic RTL
+  rendering of the modal.
+
+### Issues found
+
+1. **`NO_REBALANCE_ROOM` was going to carry a `{max}` parameter, and could not.**
+   The obvious ceiling — everything the other rows could give up — is not
+   actually reachable, because the pool is re-split _evenly_ rather than to each
+   row's floor. With `[200,200,200]` and 50 collected on the second, the naive
+   ceiling of 550 is refused: an even split of the remaining pool lands both
+   absorbers at 25, under that 50. Shipping the parameter would have told the
+   user a number that fails when they type it. Dropped it; the code is now
+   param-less and the modal's live preview shows the refusal as the amount is
+   typed, which is better than a number in a toast anyway.
+2. **The date rules had to key off the state the row _ends_ in, not the one it
+   starts in.** Raising a settled installment's amount un-settles it, so locking
+   its due date against the pre-edit state would refuse a due-date move that is
+   legitimate by the time the edit lands. `final_amount` is computed from the
+   resolved rebalance before either date guard runs;
+   `un_settling_a_tranche_unlocks_its_due_date_in_the_same_edit` pins it.
+3. **"Absorb backwards" is narrower than it looks.** Reaching the last tranche at
+   all requires the one before it to be settled (rule 2), so the backwards
+   fallback only has room while an _earlier_ tranche is still open — a client who
+   paid out of order. In the ordinary case where tranches are paid in sequence,
+   editing the final tranche is refused with `NO_REBALANCE_ROOM`. This is a
+   direct consequence of holding the total fixed and is working as specified, but
+   it is the most likely source of a "why can't I edit this?" question.
+4. **The `→` in the rebalance preview is not auto-mirrored by bidi.** U+2192 kept
+   pointing at the _old_ value in Arabic. Fixed with the project's existing
+   `.icon-flip` convention plus `display: inline-block` (a transform is a no-op
+   on an inline box).
+5. **The error-contract suite's `CODES` list was already incomplete.**
+   `PURCHASE_HAS_PAYMENTS`, `PURCHASE_ARCHIVED` and `PURCHASE_NOT_ARCHIVED` were
+   in `error.rs` but not in the test that exists to prove every code resolves to
+   a localized sentence. Added alongside the six new ones. The list is hand-kept,
+   so it will drift again.
+6. **The purchase-detail page offered actions an archived purchase always
+   refuses.** The card rendered a "Record" button on every unpaid tranche
+   regardless of `archivedAt`, so the only possible outcome was an error toast
+   from `PURCHASE_ARCHIVED`. `canPay` now checks it, and the new Edit action does
+   the same.
+7. **The detail page's action button was labelled "Edit" but opened the _payment_
+   modal.** With a real edit action alongside it there would have been two
+   buttons labelled "Edit", so the pay button is now "Record"
+   (`dashboard.detail.register`) on both the dashboard and the detail page.
+
+### Recommendations
+
+- **Derive the error-contract `CODES` list instead of hand-writing it** (issue
+  5). Parsing the `pub const` block in `db.rs`, or the doc table in `error.rs`,
+  would make an unlocalized code a test failure by construction rather than by
+  someone remembering.
+- **`errors.invalidAmount` reads "must be greater than zero"**, which is right
+  for `record_payment` but imprecise for an edit, where 0 is legal and the code
+  only fires on a negative. Unreachable through the UI (the field has `min="0"`
+  and its own message), but worth splitting if a second caller ever needs it.
+- If issue 3 turns out to bite in practice, the fix is the alternative that was
+  considered and not taken: let an edit with no absorber move
+  `purchase.total_price` by the delta. That is a deliberate policy change, not a
+  bug fix — it would make this the one command that can change what a client owes
+  in total.
+- `installment.idx` still has no `UNIQUE(purchase_id, idx)` constraint backing
+  it; the ordering this command relies on comes from `insert_installments` alone.
+  Pre-existing, and unchanged here.
+
+---
+
 ## 2026-07-28 — Editing and archiving purchases
 
 ### Summary

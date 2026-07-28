@@ -37,7 +37,7 @@ direct database or filesystem access.
   Rapports, NotFound — the router's catch-all).
 - **`components/`** — reusable UI (`ui/`: buttons via CSS, `BaseModal`,
   `StatusBadge`, `KpiCard`, `EmptyState`, `ConfirmDialog`, `AppIcon`,
-  `SortHeader`) and feature components (`dashboard/*`, `PaymentModal`,
+  `SortHeader`) and feature components (`dashboard/*`, `EditInstallmentModal`,
   `NewPurchaseModal`, `ClientForm`).
 - **`stores/`** — Pinia: `settings` (language/currency/date/logo, OS-locale
   detection), `stats` (sidebar badge counters), `ui` (toasts, sidebar toggle,
@@ -215,6 +215,79 @@ the installment rows — and those rows own the payments through an
 rather than trusting the presence of `input.installments`, because the editor
 always sends the rows it is displaying. `client_id` is ignored: a purchase
 cannot change hands.
+
+### Editing one installment: the path that survives a payment
+
+`update_purchase` going hard-locked at the first payment leaves a real gap —
+pushing one due date back a week, or re-cutting the tranches a client
+renegotiated, only ever happens _after_ payments have started.
+`update_installment` fills it by updating rows in place. It regenerates nothing,
+so it never destroys the payments hanging off those rows, and it is the **only**
+installment editor: it absorbed the payment modal, so both what is owed and what
+has been collected move through it.
+
+Its fields split into two halves under opposite rules, and neither half's rule
+looks at the other's:
+
+- **The schedule** — `amount` and `due_date` — is editable until the installment
+  settles, after which it is history (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`).
+  Nothing about the neighbouring installments gates it.
+- **The money** — `paid_amount`, `payment_date`, `note` — is editable only once
+  installment `N-1` is fully paid (`PREVIOUS_UNPAID:{index}`). Cash is collected
+  in order, so it cannot be recorded out of order. Nothing about _this_
+  installment's own status gates it.
+
+Two invariants survive it, and each is the reason for one of the guards.
+
+**`SUM(amount) == purchase.total_price`.** The total is never written; a changed
+amount is absorbed by the other unsettled installments (`rebalance_amounts` in
+`db.rs`, mirrored by `rebalanceAmounts` in `finance.ts` and covered by the shared
+parity fixture). The delta lands on the installments _after_ the edited one and
+falls back to the earlier unsettled ones only when there is nothing later; a
+fully-paid installment is never an absorber, since its amount is settled history.
+When no absorber set can take the change the edit is refused with
+`NO_REBALANCE_ROOM` rather than the total quietly moving. The deliberate
+consequence: once every _other_ installment is settled, this one's amount is
+locked.
+
+**`SUM(payment.amount) == SUM(installment.paid_amount)`.** `paid_amount` is a
+denormalised cache of the ledger — `record_payment` only ever increments it, in
+the same transaction as its `INSERT INTO payment`. The dashboard's
+`total_collected` is the single money figure in the app read from the ledger
+itself; every other paid/remaining/outstanding figure reads `paid_amount`. So an
+edit that moved `paid_amount` alone would make that one tile disagree with every
+purchase and client total. Instead the editor writes a **correction entry**: one
+`payment` row for the difference, carrying the caller's date and note, negative
+when the figure comes down. `paid_date` then stays derived (`sync_paid_date`,
+`MAX(payment_date)`), re-run for the edited row and for every absorber a
+rebalance pushed across its settled threshold. A date or a note with no
+correction to carry it amends the row's latest entry instead, and is refused with
+`NO_PAYMENT_TO_DATE` when there is no entry at all — never silently dropped.
+
+The visible cost is that a downward correction shows as a **negative line in the
+Paiements log** and inside its amount-range filter. That is the honest reading:
+the money came back.
+
+`paid_amount` is additionally capped at the installment's amount
+(`PAID_ABOVE_AMOUNT:{amount}` / `BELOW_PAID:{paid}` — the same constraint from
+either side, reported against whichever field the user moved). Both are checked
+against the values the edit _lands_ on, not the stored ones, so lowering the
+amount and the collected figure together is not refused for a conflict the
+request itself resolves. It is the same invariant `record_payment`'s
+`OVERPAYMENT` guard protects: `SUM(i.amount - i.paid_amount)` feeds the
+outstanding and overdue aggregates, and one negative row cancels out another
+client's real debt.
+
+Finally, a due date is clamped to `[prev.due_date, next.due_date]`
+(`DUE_DATE_OUT_OF_ORDER`; the outer installments are unbounded on their missing
+side). `idx` is what orders installments, but the sequential money rule is
+naturally stated in terms of due dates — the clamp makes position order and
+chronological order provably the same thing, so "the previous installment" means
+one thing however the dates are edited.
+
+Nothing writes `status`: it is derived on read, so zeroing an untouched
+installment reads as "paid" and lowering a settled one's collected figure puts it
+back in debt with no extra bookkeeping.
 
 - **Queries name their columns.** No `SELECT *`: the payment queries join four
   tables and `map_payment` resolves columns by name, so a star would let a new

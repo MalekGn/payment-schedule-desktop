@@ -191,6 +191,30 @@ pub struct Installment {
     pub status: String,
 }
 
+/// A partial edit of one existing installment.
+///
+/// Every field is optional and an absent one means "leave it alone", so the
+/// editor can send only what the user actually touched.
+///
+/// The two halves are governed by opposite rules. `amount` and `due_date` are
+/// the *schedule* — what is owed and when — and stay editable until the
+/// installment settles. `paid_amount`, `payment_date` and `note` are the
+/// *money*, and are editable only in payment order.
+///
+/// `paid_amount` is absolute, not an increment: it is the new cumulative total
+/// collected on the row. The backend turns the difference into a `payment`
+/// ledger entry, so `payment_date` and `note` describe that entry rather than
+/// writing `installment.paid_date` directly — that column stays derived.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallmentEdit {
+    pub amount: Option<i64>,
+    pub due_date: Option<String>,
+    pub paid_amount: Option<i64>,
+    pub payment_date: Option<String>,
+    pub note: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Payment
 // ---------------------------------------------------------------------------

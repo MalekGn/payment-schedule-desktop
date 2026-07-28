@@ -24,6 +24,9 @@ const CODE_PARAMS: Record<string, readonly string[]> = {
   PURCHASE_HAS_PAYMENTS: ["count"],
   SUM_MISMATCH: ["sum", "total"],
   OVERPAYMENT: ["remaining"],
+  PREVIOUS_UNPAID: ["index"],
+  BELOW_PAID: ["paidAmount"],
+  PAID_ABOVE_AMOUNT: ["amount"],
 };
 
 /** A code is `SCREAMING_SNAKE_CASE`; anything else is not one of ours. */

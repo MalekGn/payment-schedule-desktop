@@ -8,6 +8,7 @@ import {
   dayDiff,
   installmentStatus,
   purchaseStatus,
+  rebalanceAmounts,
   splitAmounts,
   todayIso,
 } from "@/lib/finance";
@@ -22,6 +23,7 @@ import type {
   ImpayeClient,
   ImpayeFilter,
   Installment,
+  InstallmentEdit,
   Payment,
   PaymentInput,
   PurchaseDetail,
@@ -679,6 +681,141 @@ class MockDb {
     this.payments = this.payments.filter((p) => !instIds.includes(p.installmentId));
     this.installments = this.installments.filter((i) => i.purchaseId !== id);
     this.purchases = this.purchases.filter((p) => p.id !== id);
+  }
+
+  /**
+   * Edit one installment in place — the only write path that still works after
+   * a payment has been recorded. Mirrors `update_installment_impl` in
+   * `src-tauri/src/commands.rs` guard for guard and code for code; the
+   * integration suite asserts against these strings.
+   *
+   * The fields split in two: the *schedule* (amount, due date) unlocks while
+   * the installment is unsettled and ignores its neighbours; the *money* (paid
+   * amount, payment date, note) is gated on the previous installment and
+   * ignores this one's own status. A moved paid amount writes a correction row
+   * into the ledger, so `SUM(payments) === SUM(paidAmount)` survives the edit.
+   */
+  updateInstallment(id: number, edit: InstallmentEdit): PurchaseDetail {
+    if (edit.dueDate !== undefined) assertIsoDate(edit.dueDate);
+    if (edit.paymentDate !== undefined) {
+      assertIsoDate(edit.paymentDate);
+      if (dayDiff(edit.paymentDate, todayIso()) > 0) throw new Error("FUTURE_PAID_DATE");
+    }
+    if ((edit.amount !== undefined && edit.amount < 0) || (edit.paidAmount ?? 0) < 0) {
+      throw new Error("INVALID_AMOUNT");
+    }
+
+    const target = this.installments.find((i) => i.id === id);
+    if (!target) throw new Error("INSTALLMENT_NOT_FOUND");
+    const owner = this.purchases.find((p) => p.id === target.purchaseId);
+    if (owner?.archivedAt != null) throw new Error("PURCHASE_ARCHIVED");
+
+    const rows = this.installments
+      .filter((i) => i.purchaseId === target.purchaseId)
+      .sort((a, b) => a.index - b.index);
+    const pos = rows.findIndex((i) => i.id === id);
+    const settled = target.paidAmount >= target.amount;
+
+    // -- the schedule half: gated on this installment being unsettled --------
+    const amountChanged = edit.amount !== undefined && edit.amount !== target.amount;
+    const dueChanged = edit.dueDate !== undefined && edit.dueDate !== target.dueDate;
+    if (settled) {
+      if (amountChanged) throw new Error("AMOUNT_LOCKED");
+      if (dueChanged) throw new Error("DUE_DATE_LOCKED");
+    }
+    if (dueChanged) {
+      const due = edit.dueDate!;
+      const below = pos > 0 && due < rows[pos - 1].dueDate;
+      const above = pos + 1 < rows.length && due > rows[pos + 1].dueDate;
+      if (below || above) throw new Error("DUE_DATE_OUT_OF_ORDER");
+    }
+
+    // -- the money half: gated on the previous installment being settled -----
+    const paidChanged = edit.paidAmount !== undefined && edit.paidAmount !== target.paidAmount;
+    if (paidChanged || edit.paymentDate !== undefined || edit.note !== undefined) {
+      const prev = pos > 0 ? rows[pos - 1] : null;
+      if (prev && prev.paidAmount < prev.amount) throw new Error(`PREVIOUS_UNPAID:${prev.index}`);
+    }
+
+    // -- resolve everything before mutating anything --------------------------
+    const finalPaid = edit.paidAmount ?? target.paidAmount;
+    const finalAmount = edit.amount ?? target.amount;
+    if (finalPaid > finalAmount) {
+      throw new Error(
+        paidChanged ? `PAID_ABOVE_AMOUNT:${finalAmount}` : `BELOW_PAID:${target.paidAmount}`,
+      );
+    }
+
+    let nextAmounts: number[] | null = null;
+    if (amountChanged) {
+      const paidAmounts = rows.map((i) => i.paidAmount);
+      // The edited row's own floor is what this edit lands on, not what is
+      // stored, so lowering the amount and the collected figure together is not
+      // refused for a conflict the request itself resolves.
+      paidAmounts[pos] = finalPaid;
+      nextAmounts = rebalanceAmounts(
+        rows.map((i) => i.amount),
+        paidAmounts,
+        pos,
+        finalAmount,
+      );
+      if (nextAmounts === null) throw new Error("NO_REBALANCE_ROOM");
+    }
+
+    const latest = this.latestPayment(id);
+    if ((edit.paymentDate !== undefined || edit.note !== undefined) && !paidChanged && !latest) {
+      throw new Error("NO_PAYMENT_TO_DATE");
+    }
+
+    // -- writes ---------------------------------------------------------------
+    if (edit.dueDate !== undefined) target.dueDate = edit.dueDate;
+    if (nextAmounts) {
+      rows.forEach((row, i) => {
+        row.amount = nextAmounts![i];
+      });
+    }
+
+    const note = edit.note?.trim() || null;
+    if (paidChanged) {
+      this.payments.push({
+        id: this.nextId("payment"),
+        installmentId: id,
+        amount: finalPaid - target.paidAmount,
+        paymentDate: edit.paymentDate ?? todayIso(),
+        note,
+        createdAt: todayIso(),
+      });
+      target.paidAmount = finalPaid;
+    } else if (latest) {
+      // Nothing to correct, so a date or a note amends the entry already there.
+      if (edit.paymentDate !== undefined) latest.paymentDate = edit.paymentDate;
+      if (note !== null) latest.note = note;
+    }
+
+    // `paidDate` is derived, so re-run it for every row whose numbers moved.
+    this.syncPaidDate(target);
+    if (nextAmounts) rows.forEach((row) => this.syncPaidDate(row));
+
+    return this.buildPurchaseDetail(target.purchaseId);
+  }
+
+  /** Re-derive an installment's `paidDate`: its last payment, or null. */
+  private syncPaidDate(inst: InstallmentRow): void {
+    inst.paidDate =
+      inst.paidAmount >= inst.amount ? (this.latestPayment(inst.id)?.paymentDate ?? null) : null;
+  }
+
+  /**
+   * The installment's most recent ledger entry. Ties break on insertion id, so
+   * this matches the Rust `ORDER BY payment_date DESC, id DESC LIMIT 1`.
+   */
+  private latestPayment(installmentId: number): PaymentRow | undefined {
+    return this.payments
+      .filter((p) => p.installmentId === installmentId)
+      .sort((a, b) =>
+        a.paymentDate === b.paymentDate ? a.id - b.id : a.paymentDate < b.paymentDate ? -1 : 1,
+      )
+      .pop();
   }
 
   recordPayment(input: PaymentInput): PurchaseDetail {

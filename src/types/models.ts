@@ -106,6 +106,30 @@ export interface InstallmentInput {
   dueDate: string;
 }
 
+/**
+ * A partial edit of one existing installment.
+ *
+ * Every field is optional and an omitted one means "leave it alone", so the
+ * editor sends only what the user actually touched.
+ *
+ * The two halves are governed by opposite rules. `amount` and `dueDate` are the
+ * *schedule* — what is owed and when — and stay editable until the installment
+ * settles. `paidAmount`, `paymentDate` and `note` are the *money*, editable
+ * only in payment order.
+ *
+ * `paidAmount` is absolute, not an increment: it is the new cumulative total
+ * collected on the row. The backend turns the difference into a `payment`
+ * ledger entry, so `paymentDate` and `note` describe that entry rather than
+ * writing `installment.paidDate`, which stays derived.
+ */
+export interface InstallmentEdit {
+  amount?: number;
+  dueDate?: string;
+  paidAmount?: number;
+  paymentDate?: string;
+  note?: string;
+}
+
 export interface PurchaseInput {
   clientId: number;
   productLabel: string;

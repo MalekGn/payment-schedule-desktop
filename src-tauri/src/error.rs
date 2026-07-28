@@ -48,6 +48,15 @@
 //! | `PURCHASE_ARCHIVED`           | Payment on, or edit of, an archived purchase   |
 //! | `PURCHASE_NOT_ARCHIVED`       | Permanent delete before archiving              |
 //! | `INSTALLMENT_NOT_FOUND`       | No such installment                            |
+//! | `AMOUNT_LOCKED`               | Amount edit on a settled installment           |
+//! | `DUE_DATE_LOCKED`             | Due-date edit on a settled installment         |
+//! | `DUE_DATE_OUT_OF_ORDER`       | Due date outside its neighbours' dates         |
+//! | `FUTURE_PAID_DATE`            | Payment date later than today                  |
+//! | `PREVIOUS_UNPAID:{index}`     | Money edit while installment `index` is owing  |
+//! | `BELOW_PAID:{paid}`           | Amount below what that row already collected   |
+//! | `PAID_ABOVE_AMOUNT:{amount}`  | Collected more than the installment is worth   |
+//! | `NO_PAYMENT_TO_DATE`          | Payment date with no ledger entry to carry it  |
+//! | `NO_REBALANCE_ROOM`           | No other installment can absorb the change     |
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |
 //! | `BACKUP_FAILED`               | Database snapshot could not be written         |

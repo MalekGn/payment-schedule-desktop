@@ -11,6 +11,7 @@ import type {
   Dashboard,
   ImpayeClient,
   ImpayeFilter,
+  InstallmentEdit,
   Payment,
   PaymentInput,
   PurchaseDetail,
@@ -116,6 +117,32 @@ export const api = {
    */
   deletePurchase: (id: number): Promise<void> =>
     isTauri() ? invoke("delete_purchase", { id }) : Promise.resolve(mockDb.deletePurchase(id)),
+
+  // -- installments --
+  /**
+   * Edit one installment in place. Unlike `updatePurchase`, this keeps working
+   * after payments have been recorded — it never regenerates the rows, so it
+   * never touches the payment ledger hanging off them.
+   *
+   * Omitted fields are left alone. The two halves follow opposite rules: the
+   * schedule (`amount`, `dueDate`) is editable until the installment settles
+   * (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`), while the money (`paidAmount`,
+   * `paymentDate`, `note`) is editable only once the previous installment is
+   * fully paid (`PREVIOUS_UNPAID:{index}`).
+   *
+   * Two totals are held: the purchase total never changes — a new `amount` is
+   * absorbed by the other unsettled installments or refused with
+   * `NO_REBALANCE_ROOM` — and the payment ledger stays in step with
+   * `paidAmount`, because a moved paid figure writes a correction entry.
+   *
+   * Also rejects `BELOW_PAID:{paidAmount}`, `PAID_ABOVE_AMOUNT:{amount}`,
+   * `DUE_DATE_OUT_OF_ORDER` (a due date must stay between its neighbours'),
+   * `NO_PAYMENT_TO_DATE` and `FUTURE_PAID_DATE`.
+   */
+  updateInstallment: (id: number, edit: InstallmentEdit): Promise<PurchaseDetail> =>
+    isTauri()
+      ? invoke("update_installment", { id, edit })
+      : Promise.resolve(mockDb.updateInstallment(id, edit)),
 
   // -- payments --
   recordPayment: (input: PaymentInput): Promise<PurchaseDetail> =>

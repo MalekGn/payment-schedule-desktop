@@ -6,7 +6,7 @@ import RecentPurchasesCard from "@/components/dashboard/RecentPurchasesCard.vue"
 import PurchaseDetailCard from "@/components/dashboard/PurchaseDetailCard.vue";
 import DueAlertsCard from "@/components/dashboard/DueAlertsCard.vue";
 import ImpayesPanelCard from "@/components/dashboard/ImpayesPanelCard.vue";
-import PaymentModal from "@/components/PaymentModal.vue";
+import EditInstallmentModal from "@/components/EditInstallmentModal.vue";
 import LoadError from "@/components/ui/LoadError.vue";
 import { useFormat } from "@/composables/useFormat";
 import { useLoader } from "@/composables/useLoader";
@@ -17,7 +17,7 @@ const { t } = useI18n();
 const fmt = useFormat();
 
 const data = ref<Dashboard | null>(null);
-const payTarget = ref<Installment | null>(null);
+const editTarget = ref<Installment | null>(null);
 
 const { error: loadError, run: load } = useLoader(async () => {
   data.value = await api.getDashboard();
@@ -67,7 +67,7 @@ const kpis = computed(() => {
 });
 
 function onSaved(detail: Dashboard["featuredPurchase"]) {
-  payTarget.value = null;
+  editTarget.value = null;
   if (detail && data.value) data.value.featuredPurchase = detail;
   load();
 }
@@ -94,7 +94,7 @@ function onSaved(detail: Dashboard["featuredPurchase"]) {
         <PurchaseDetailCard
           v-if="data.featuredPurchase"
           :detail="data.featuredPurchase"
-          @pay="payTarget = $event"
+          @update-installment="editTarget = $event"
         />
       </div>
       <div class="dash-col dash-col--side">
@@ -103,12 +103,13 @@ function onSaved(detail: Dashboard["featuredPurchase"]) {
       </div>
     </div>
 
-    <PaymentModal
-      v-if="payTarget && data.featuredPurchase"
-      :installment="payTarget"
+    <EditInstallmentModal
+      v-if="editTarget && data.featuredPurchase"
+      :installment="editTarget"
+      :siblings="data.featuredPurchase.installments"
       :installment-count="data.featuredPurchase.purchase.installmentCount"
       :purchase-reference="data.featuredPurchase.purchase.reference"
-      @close="payTarget = null"
+      @close="editTarget = null"
       @saved="onSaved"
     />
   </div>

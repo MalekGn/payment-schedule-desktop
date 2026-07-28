@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixture from "../../tests/fixtures/finance-parity.json";
-import { addInterval, installmentStatus, splitAmounts } from "./finance";
+import { addInterval, installmentStatus, rebalanceAmounts, splitAmounts } from "./finance";
 import type { InstallmentStatus, IntervalKind } from "@/types/models";
 
 describe("finance.ts ↔ db.rs parity", () => {
@@ -22,6 +22,7 @@ describe("finance.ts ↔ db.rs parity", () => {
     expect(fixture.splitAmounts.length).toBeGreaterThan(0);
     expect(fixture.addInterval.length).toBeGreaterThan(0);
     expect(fixture.installmentStatus.length).toBeGreaterThan(0);
+    expect(fixture.rebalanceAmounts.length).toBeGreaterThan(0);
   });
 
   it.each(fixture.splitAmounts)("splitAmounts($total, $n)", ({ total, n, expected }) => {
@@ -45,6 +46,20 @@ describe("finance.ts ↔ db.rs parity", () => {
     "installmentStatus($amount, $paid, $dueDate @ $today)",
     ({ amount, paid, dueDate, today, expected }) => {
       expect(installmentStatus(amount, paid, dueDate, today)).toBe(expected as InstallmentStatus);
+    },
+  );
+
+  it.each(fixture.rebalanceAmounts)(
+    "rebalanceAmounts($amounts, #$index -> $newAmount)",
+    ({ amounts, paidAmounts, index, newAmount, expected }) => {
+      const got = rebalanceAmounts(amounts, paidAmounts, index, newAmount);
+      expect(got).toEqual(expected);
+      if (expected !== null) {
+        // The whole point of rebalancing: the purchase total never moves, and
+        // no row ends up owing less than it has already collected.
+        expect(expected.reduce((s, v) => s + v, 0)).toBe(amounts.reduce((s, v) => s + v, 0));
+        expect(expected.every((v, i) => Number.isInteger(v) && v >= paidAmounts[i])).toBe(true);
+      }
     },
   );
 });

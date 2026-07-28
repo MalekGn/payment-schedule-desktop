@@ -132,6 +132,37 @@ test("sidebar navigates to every page and header title updates", async (page) =>
   }
 });
 
+// --- Header notification bell ------------------------------------------------
+// The bell badge counts overdue installments (`stats.overdueInstallments`), the
+// same signal the Alerts page lists, so the bell is a shortcut to `/alertes`.
+
+test("header bell navigates to the alerts page", async (page) => {
+  await open(page, "/");
+
+  const badge = page.locator(".header .bell .bell-badge");
+  await badge.waitFor({ timeout: 10000 });
+  const count = parseInt((await badge.innerText()).trim(), 10);
+  assert(count >= 1, `seeded data should produce a bell badge >= 1, got ${count}`);
+
+  await page.locator(".header .bell").click();
+  await page.waitForFunction(() => window.location.pathname === "/alertes", undefined, {
+    timeout: 5000,
+  });
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.alertes,
+    "header title after clicking the bell",
+  );
+  // Landed on the default "Toutes" tab, not a pre-filtered subset.
+  assertEqual(
+    (await page.locator(".tabs .tab--active").innerText()).trim(),
+    "Toutes",
+    "alerts page opens on the All tab",
+  );
+  // The badge survives the navigation and still points back at the same page.
+  assert(await badge.isVisible(), "bell badge still rendered on the alerts page");
+});
+
 test("clients list renders the 6 seeded clients", async (page) => {
   await open(page, "/clients");
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
@@ -360,13 +391,12 @@ test("impayés page lists overdue clients and sidebar shows a danger badge", asy
   assert(count >= 1, `danger badge should be >= 1, got ${count}`);
 });
 
-test("record a partial payment on a purchase (PaymentModal)", async (page) => {
+test("record a payment on a tranche through the update modal", async (page) => {
   // Seed purchase A-000001: 2400 over 6 monthly tranches of 400, tranche 1 paid.
   await open(page, "/achats/1");
   await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
 
   // Payment history starts with the single seeded payment (tranche 1).
-  const history = page.locator("table.table").last();
   await page.waitForFunction(
     () => {
       const tables = document.querySelectorAll("table.table");
@@ -376,29 +406,25 @@ test("record a partial payment on a purchase (PaymentModal)", async (page) => {
     undefined,
     { timeout: 5000 },
   );
+  const history = page.locator("table.table").last();
 
-  // The first "Enregistrer" action in the schedule is tranche 2 (400 remaining).
-  await page.locator(".inst-table .btn--primary").first().click();
+  // Tranche 2: its predecessor is settled, so the money fields are open.
+  await page.locator(".inst-table tbody tr").nth(1).locator(".btn--primary").click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
   assertEqual(
     await dialog.locator(".modal-head h2").innerText(),
-    "Enregistrer un paiement — Tranche 2/6",
-    "payment modal title (tranche 2 of 6)",
+    "Mettre à jour le paiement — Tranche 2/6",
+    "update modal title",
   );
 
-  // Amount pre-fills with the full remaining (400); pay a partial 150 instead.
-  assertEqual(
-    await page.locator("#pay-amount").inputValue(),
-    "400",
-    "amount pre-filled with remaining",
-  );
-  await page.locator("#pay-amount").fill("150");
+  // The paid amount is absolute: 0 collected so far, set it to a partial 150.
+  assertEqual(await page.locator("#inst-paid").inputValue(), "0", "paid amount starts at 0");
+  await page.locator("#inst-paid").fill("150");
   await dialog.getByRole("button", { name: "Enregistrer" }).click();
-
   await dialog.waitFor({ state: "hidden", timeout: 5000 });
 
-  // History now has two rows; the newest (dated today) is the 150 partial payment.
+  // The ledger gained a correction entry for the difference, not the total.
   await page.waitForFunction(
     () => {
       const tables = document.querySelectorAll("table.table");
@@ -408,8 +434,113 @@ test("record a partial payment on a purchase (PaymentModal)", async (page) => {
     undefined,
     { timeout: 5000 },
   );
-  const newest = await history.locator("tbody tr").first().innerText();
-  assert(/150/.test(newest), `newest payment row should show the 150 partial, got: ${newest}`);
+  const rows = await history.locator("tbody tr").allInnerTexts();
+  assert(
+    rows.some((r) => /150/.test(r)),
+    `payment history should show the 150 correction entry, got: ${rows.join(" / ")}`,
+  );
+
+  // And the tranche now reports 250 remaining of its 400.
+  const remaining = await page
+    .locator(".inst-table tbody tr")
+    .nth(1)
+    .locator("td:nth-child(4)")
+    .innerText();
+  assert(/250/.test(remaining), `remaining column should read 250, got: ${remaining}`);
+});
+
+test("editing a tranche rebalances the others and holds the purchase total", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const amounts = async () =>
+    (await page.locator(".inst-table tbody tr td:nth-child(3)").allInnerTexts()).map((s) =>
+      s.trim(),
+    );
+  assertEqual((await amounts()).join("|"), Array(6).fill("400 TND").join("|"), "6 x 400");
+
+  // Tranche 3, whose predecessor is unpaid — the schedule ignores that gate.
+  await page.locator(".inst-table tbody tr").nth(2).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  assert(!(await page.locator("#inst-amount").isDisabled()), "the amount must stay editable");
+
+  await page.locator("#inst-amount").fill("600");
+  // The preview names every tranche the change moves, before it is saved.
+  const preview = page.locator(".rebalance");
+  await preview.waitFor({ state: "visible", timeout: 5000 });
+  assertEqual(await preview.locator("li").count(), 3, "tranches 4-6 absorb the change");
+
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+  await dialog.waitFor({ state: "hidden", timeout: 5000 });
+
+  const after = await amounts();
+  const total = after.reduce((s, v) => s + parseInt(v.replace(/\D/g, ""), 10), 0);
+  assertEqual(after[2], "600 TND", "the edited tranche took the new amount");
+  assertEqual(total, 2400, "purchase total unchanged");
+});
+
+test("a tranche whose predecessor is unpaid locks only its money fields", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 3: tranche 2 is still owing, so a payment cannot be recorded here —
+  // but what tranche 3 owes, and when, is still the shopkeeper's to change.
+  await page.locator(".inst-table tbody tr").nth(2).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  assert(await page.locator("#inst-paid").isDisabled(), "paid amount must be disabled");
+  assert(!(await page.locator("#inst-amount").isDisabled()), "amount must stay enabled");
+  const note = await dialog.locator(".lock-note").first().innerText();
+  assert(/tranche 2/i.test(note), `the reason should name tranche 2, got: ${note}`);
+});
+
+test("a paid tranche locks its schedule and warns before changing collected money", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Tranche 1 is paid: what it owes is history, what was collected is not.
+  await page.locator(".inst-table tbody tr").nth(0).locator(".btn--primary").click();
+  const dialog = page.locator('[role="dialog"]');
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+
+  assert(await page.locator("#inst-amount").isDisabled(), "amount must be disabled once paid");
+  assert(!(await page.locator("#inst-paid").isDisabled()), "paid amount must stay editable");
+
+  // Collecting more than the tranche is worth is refused as it is typed.
+  await page.locator("#inst-paid").fill("900");
+  await dialog.locator(".field-error").first().waitFor({ state: "visible", timeout: 5000 });
+  assert(
+    await dialog.getByRole("button", { name: "Enregistrer" }).isDisabled(),
+    "save must be disabled above the tranche amount",
+  );
+
+  // A legal change still needs an explicit confirmation.
+  await page.locator("#inst-paid").fill("300");
+  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+  const confirm = page.locator(".confirm-msg");
+  await confirm.waitFor({ state: "visible", timeout: 5000 });
+  const text = await confirm.innerText();
+  assert(/tranche 1/i.test(text), `confirmation should name the tranche, got: ${text}`);
+});
+
+test("the installment table carries a remaining column", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const headers = (await page.locator(".inst-table thead th").allInnerTexts()).map((h) => h.trim());
+  assert(
+    headers.some((h) => /Reste/i.test(h)),
+    `expected a Reste column, got: ${headers.join(" | ")}`,
+  );
+
+  // Tranche 1 is fully paid, so it owes nothing; tranche 2 owes its full 400.
+  const remaining = (
+    await page.locator(".inst-table tbody tr td:nth-child(4)").allInnerTexts()
+  ).map((s) => s.trim());
+  assertEqual(remaining[0], "0 TND", "a settled tranche has nothing remaining");
+  assertEqual(remaining[1], "400 TND", "an untouched tranche remains its full amount");
 });
 
 test("new purchase: auto-split installments and sum-mismatch validation", async (page) => {
@@ -1214,13 +1345,12 @@ test("a rejected payment shows a localized message, never a raw backend error", 
   await open(page, "/achats/1");
   await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
 
-  // Tranche 2 has 400 outstanding — try to pay more than that.
-  await page.locator(".inst-table .btn--primary").first().click();
+  // Tranche 2 is worth 400 — try to record more collected than that.
+  await page.locator(".inst-table tbody tr").nth(1).locator(".btn--primary").click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
 
-  await page.locator("#pay-amount").fill("1000");
-  await dialog.getByRole("button", { name: "Enregistrer" }).click();
+  await page.locator("#inst-paid").fill("1000");
 
   // The modal stays open and reports the problem inline.
   const error = dialog.locator(".field-error").first();
@@ -1229,14 +1359,14 @@ test("a rejected payment shows a localized message, never a raw backend error", 
 
   assert(text.length > 0, "a rejected payment must show a message");
   assert(
-    !/OVERPAYMENT|INVALID_|SUM_MISMATCH|INTERNAL|ARCHIVE_HAS_OUTSTANDING|CLIENT_/.test(text),
+    !/OVERPAYMENT|PAID_ABOVE_AMOUNT|INVALID_|SUM_MISMATCH|INTERNAL|CLIENT_/.test(text),
     `message must be localized prose, not a machine code; got: ${text}`,
   );
   assert(
     !/constraint failed|SELECT |INSERT |sqlite/i.test(text),
     `message must not leak backend internals; got: ${text}`,
   );
-  assert(/400/.test(text), `message should name the remaining balance (400); got: ${text}`);
+  assert(/400/.test(text), `message should name the tranche amount (400); got: ${text}`);
 
   // And nothing was recorded.
   await dialog

@@ -84,6 +84,8 @@ pub fn run() {
             commands::archive_purchase,
             commands::restore_purchase,
             commands::delete_purchase,
+            // installments
+            commands::update_installment,
             // payments
             commands::record_payment,
             commands::list_payments_for_purchase,

@@ -196,7 +196,19 @@ describe("every code maps to a localized sentence", () => {
     "CLIENT_ARCHIVED",
     "CLIENT_NOT_FOUND",
     "PURCHASE_NOT_FOUND",
+    "PURCHASE_HAS_PAYMENTS:2",
+    "PURCHASE_ARCHIVED",
+    "PURCHASE_NOT_ARCHIVED",
     "INSTALLMENT_NOT_FOUND",
+    "AMOUNT_LOCKED",
+    "DUE_DATE_LOCKED",
+    "DUE_DATE_OUT_OF_ORDER",
+    "FUTURE_PAID_DATE",
+    "PREVIOUS_UNPAID:2",
+    "BELOW_PAID:100",
+    "PAID_ABOVE_AMOUNT:250",
+    "NO_PAYMENT_TO_DATE",
+    "NO_REBALANCE_ROOM",
     "INVALID_DATE",
     "INVALID_TOTAL_PRICE",
     "INVALID_INSTALLMENT_COUNT",
@@ -242,6 +254,9 @@ describe("every code maps to a localized sentence", () => {
     expect(toUserMessage("OVERPAYMENT:200", t)).toContain("200");
     expect(toUserMessage("CLIENT_HAS_PURCHASES:3", t)).toContain("3");
     expect(toUserMessage("ARCHIVE_HAS_OUTSTANDING:750", t)).toContain("750");
+    expect(toUserMessage("PREVIOUS_UNPAID:2", t)).toContain("2");
+    expect(toUserMessage("BELOW_PAID:100", t)).toContain("100");
+    expect(toUserMessage("PAID_ABOVE_AMOUNT:250", t)).toContain("250");
   });
 
   it("falls back to the generic message for anything unrecognised", () => {

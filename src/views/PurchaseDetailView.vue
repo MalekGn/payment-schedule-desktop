@@ -3,7 +3,7 @@ import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import PurchaseDetailCard from "@/components/dashboard/PurchaseDetailCard.vue";
-import PaymentModal from "@/components/PaymentModal.vue";
+import EditInstallmentModal from "@/components/EditInstallmentModal.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import SortHeader from "@/components/ui/SortHeader.vue";
 import { useFormat } from "@/composables/useFormat";
@@ -21,7 +21,7 @@ const goBack = useBack("/achats");
 
 const detail = ref<PurchaseDetail | null>(null);
 const payments = ref<Payment[]>([]);
-const payTarget = ref<Installment | null>(null);
+const editTarget = ref<Installment | null>(null);
 const notFound = ref(false);
 
 const { sort, sorted: sortedPayments } = useSort(payments, {
@@ -44,7 +44,7 @@ async function load() {
 onMounted(load);
 
 async function onSaved(updated: PurchaseDetail) {
-  payTarget.value = null;
+  editTarget.value = null;
   detail.value = updated;
   payments.value = await api.listPaymentsForPurchase(updated.purchase.id);
 }
@@ -71,7 +71,7 @@ async function onSaved(updated: PurchaseDetail) {
       <AppIcon name="archive" :size="18" />
       <span>{{ t("achats.archivedOn", { date: fmt.date(detail.purchase.archivedAt) }) }}</span>
     </div>
-    <PurchaseDetailCard :detail="detail" full-actions @pay="payTarget = $event" />
+    <PurchaseDetailCard :detail="detail" full-actions @update-installment="editTarget = $event" />
 
     <section class="card">
       <div class="card-header">
@@ -100,12 +100,13 @@ async function onSaved(updated: PurchaseDetail) {
       </table>
     </section>
 
-    <PaymentModal
-      v-if="payTarget"
-      :installment="payTarget"
+    <EditInstallmentModal
+      v-if="editTarget"
+      :installment="editTarget"
+      :siblings="detail.installments"
       :installment-count="detail.purchase.installmentCount"
       :purchase-reference="detail.purchase.reference"
-      @close="payTarget = null"
+      @close="editTarget = null"
       @saved="onSaved"
     />
   </div>

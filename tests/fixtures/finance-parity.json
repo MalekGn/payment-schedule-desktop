@@ -189,5 +189,77 @@
       "today": "2024-06-01",
       "expected": "pending"
     }
+  ],
+  "rebalanceAmounts": [
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [0, 0, 0, 0, 0],
+      "index": 2,
+      "newAmount": 350,
+      "expected": [200, 200, 350, 125, 125]
+    },
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [0, 0, 0, 0, 0],
+      "index": 0,
+      "newAmount": 0,
+      "expected": [0, 250, 250, 250, 250]
+    },
+    {
+      "amounts": [334, 333, 333],
+      "paidAmounts": [0, 0, 0],
+      "index": 0,
+      "newAmount": 0,
+      "expected": [0, 500, 500]
+    },
+    {
+      "amounts": [200, 200, 200, 200, 200],
+      "paidAmounts": [200, 200, 0, 0, 0],
+      "index": 4,
+      "newAmount": 100,
+      "expected": [200, 200, 250, 250, 100]
+    },
+    {
+      "amounts": [200, 200, 200],
+      "paidAmounts": [0, 0, 200],
+      "index": 0,
+      "newAmount": 100,
+      "expected": [100, 300, 200]
+    },
+    {
+      "amounts": [400, 300, 200],
+      "paidAmounts": [0, 0, 180],
+      "index": 1,
+      "newAmount": 400,
+      "expected": [250, 400, 250]
+    },
+    {
+      "amounts": [200, 300],
+      "paidAmounts": [0, 0],
+      "index": 1,
+      "newAmount": 300,
+      "expected": [200, 300]
+    },
+    {
+      "amounts": [200, 200],
+      "paidAmounts": [0, 200],
+      "index": 0,
+      "newAmount": 100,
+      "expected": null
+    },
+    {
+      "amounts": [200, 200, 200],
+      "paidAmounts": [0, 50, 0],
+      "index": 0,
+      "newAmount": 600,
+      "expected": null
+    },
+    {
+      "amounts": [200, 200],
+      "paidAmounts": [150, 0],
+      "index": 0,
+      "newAmount": 100,
+      "expected": null
+    }
   ]
 }

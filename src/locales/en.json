@@ -21,7 +21,8 @@
     "helpText": "Read our guide or contact support."
   },
   "header": {
-    "admin": "Admin"
+    "admin": "Admin",
+    "notifications": "Notifications"
   },
   "common": {
     "viewAll": "View all",
@@ -92,7 +93,8 @@
       "paymentDate": "Payment date",
       "paymentHistory": "Payment history",
       "register": "Record",
-      "view": "View"
+      "view": "View",
+      "updatePayment": "Update payment"
     },
     "alert": {
       "tranche": "Installment {index}/{count}",
@@ -164,6 +166,20 @@
       "editTitle": "Edit purchase",
       "saveEdit": "Save changes",
       "lockedByPayments": "{count} payment(s) already recorded: the amount, the schedule and the date can no longer change. Only the product label can be edited."
+    },
+    "installmentEdit": {
+      "title": "Update payment — Installment {index}/{count}",
+      "saved": "Installment updated.",
+      "scheduleSection": "What is owed",
+      "moneySection": "What was collected",
+      "negativeAmount": "The amount cannot be negative.",
+      "paidAmountHint": "The total collected on this installment so far. The difference is recorded as a payment.",
+      "settledNote": "This installment is settled, so what it owes and when can no longer change.",
+      "lockedByPrevious": "Installment {index} has to be settled before a payment can be recorded here.",
+      "rebalanceTitle": "The other installments become",
+      "rebalanceNote": "The purchase total stays the same.",
+      "confirmTitle": "Modify a paid installment",
+      "confirmText": "Installment {index} is already paid. You are about to change what was collected on it. Continue?"
     },
     "interval": {
       "weekly": "Weekly",
@@ -393,7 +409,16 @@
     "overpayment": "That is more than this installment still owes ({remaining}).",
     "invalidLogoType": "Choose a PNG, JPG, WEBP or GIF image.",
     "logoTooLarge": "The image is too large (5 MB maximum).",
-    "backupFailed": "The backup could not be saved."
+    "backupFailed": "The backup could not be saved.",
+    "dueDateLocked": "This installment is settled — its due date can no longer be changed.",
+    "futurePaidDate": "The payment date cannot be in the future.",
+    "previousUnpaid": "Installment {index} has to be settled before a payment can be recorded here.",
+    "belowPaid": "{paidAmount} has already been collected on this installment; the amount cannot go below that.",
+    "noRebalanceRoom": "The other installments cannot absorb this change, and the purchase total has to stay the same.",
+    "amountLocked": "This installment is settled — its amount can no longer be changed.",
+    "dueDateOutOfOrder": "The due date has to stay between the installment before it and the one after it.",
+    "paidAboveAmount": "More than this installment is worth ({amount}).",
+    "noPaymentToDate": "There is no payment on this installment yet, so there is no payment date to change."
   },
   "filters": {
     "date": "Filter by date",

@@ -21,7 +21,8 @@
     "helpText": "Consultez notre guide ou contactez le support."
   },
   "header": {
-    "admin": "Admin"
+    "admin": "Admin",
+    "notifications": "Notifications"
   },
   "common": {
     "viewAll": "Voir tous",
@@ -92,7 +93,8 @@
       "paymentDate": "Date paiement",
       "paymentHistory": "Historique des paiements",
       "register": "Enregistrer",
-      "view": "Voir"
+      "view": "Voir",
+      "updatePayment": "Mettre à jour le paiement"
     },
     "alert": {
       "tranche": "Tranche {index}/{count}",
@@ -164,6 +166,20 @@
       "editTitle": "Modifier l'achat",
       "saveEdit": "Enregistrer les modifications",
       "lockedByPayments": "{count} paiement(s) déjà enregistré(s) : le montant, les échéances et la date ne sont plus modifiables. Seul le libellé du produit peut changer."
+    },
+    "installmentEdit": {
+      "title": "Mettre à jour le paiement — Tranche {index}/{count}",
+      "saved": "Tranche mise à jour.",
+      "scheduleSection": "Ce qui est dû",
+      "moneySection": "Ce qui a été encaissé",
+      "negativeAmount": "Le montant ne peut pas être négatif.",
+      "paidAmountHint": "Le total encaissé sur cette tranche à ce jour. La différence est enregistrée comme un paiement.",
+      "settledNote": "Cette tranche est soldée : ni son montant ni son échéance ne peuvent plus changer.",
+      "lockedByPrevious": "La tranche {index} doit être soldée avant d'enregistrer un paiement ici.",
+      "rebalanceTitle": "Les autres tranches deviennent",
+      "rebalanceNote": "Le total de l'achat reste identique.",
+      "confirmTitle": "Modifier une tranche payée",
+      "confirmText": "La tranche {index} est déjà payée. Vous êtes sur le point de modifier ce qui a été encaissé. Continuer ?"
     },
     "interval": {
       "weekly": "Hebdomadaire",
@@ -393,7 +409,16 @@
     "overpayment": "Ce montant dépasse le solde restant de cette tranche ({remaining}).",
     "invalidLogoType": "Choisissez une image PNG, JPG, WEBP ou GIF.",
     "logoTooLarge": "L'image est trop volumineuse (5 Mo maximum).",
-    "backupFailed": "La sauvegarde n'a pas pu être enregistrée."
+    "backupFailed": "La sauvegarde n'a pas pu être enregistrée.",
+    "dueDateLocked": "Cette tranche est soldée — son échéance ne peut plus être modifiée.",
+    "futurePaidDate": "La date de paiement ne peut pas être dans le futur.",
+    "previousUnpaid": "La tranche {index} doit être soldée avant d'enregistrer un paiement ici.",
+    "belowPaid": "{paidAmount} ont déjà été encaissés sur cette tranche ; le montant ne peut pas descendre en dessous.",
+    "noRebalanceRoom": "Les autres tranches ne peuvent pas absorber cette modification, et le total de l'achat doit rester identique.",
+    "amountLocked": "Cette tranche est soldée — son montant ne peut plus être modifié.",
+    "dueDateOutOfOrder": "L'échéance doit rester entre celle de la tranche précédente et celle de la suivante.",
+    "paidAboveAmount": "Supérieur au montant de cette tranche ({amount}).",
+    "noPaymentToDate": "Aucun paiement n'a encore été encaissé sur cette tranche : il n'y a pas de date à modifier."
   },
   "filters": {
     "date": "Filtrer par date",
