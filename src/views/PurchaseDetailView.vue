@@ -78,26 +78,28 @@ async function onSaved(updated: PurchaseDetail) {
         <h2>{{ t("dashboard.detail.paymentHistory") }}</h2>
       </div>
       <EmptyState v-if="payments.length === 0" icon="card" :title="t('paiements.empty')" />
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <SortHeader :sort="sort" field="date" :label="t('paiements.columns.date')" />
-            <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
-            <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
-            <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="pay in sortedPayments" :key="pay.id">
-            <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
-            <td class="tabular">
-              {{ pay.installmentIndex }}/{{ detail.purchase.installmentCount }}
-            </td>
-            <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
-            <td class="muted">{{ pay.note || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <SortHeader :sort="sort" field="date" :label="t('paiements.columns.date')" />
+              <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
+              <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
+              <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="pay in sortedPayments" :key="pay.id">
+              <td class="tabular">{{ fmt.date(pay.paymentDate) }}</td>
+              <td class="tabular">
+                {{ pay.installmentIndex }}/{{ detail.purchase.installmentCount }}
+              </td>
+              <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
+              <td class="muted">{{ pay.note || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <EditInstallmentModal

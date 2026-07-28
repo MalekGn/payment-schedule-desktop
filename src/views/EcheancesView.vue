@@ -120,40 +120,42 @@ onMounted(load);
           icon="calendar"
           :title="t('echeances.empty')"
         />
-        <table v-else class="table">
-          <thead>
-            <tr>
-              <SortHeader
-                :sort="sort"
-                field="reference"
-                :label="t('echeances.columns.reference')"
-              />
-              <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
-              <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
-              <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
-              <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
-              <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="r in sorted"
-              :key="r.installmentId"
-              class="clickable"
-              :class="{ 'is-late': r.status === 'late' }"
-              @click="router.push({ name: 'achat-detail', params: { id: r.purchaseId } })"
-            >
-              <td>
-                <span class="row-link">{{ r.reference }}</span>
-              </td>
-              <td>{{ r.clientName }}</td>
-              <td class="tabular">{{ r.index }}/{{ r.installmentCount }}</td>
-              <td class="tabular">{{ fmt.date(r.dueDate) }}</td>
-              <td class="tabular strong">{{ fmt.money(r.amount) }}</td>
-              <td><StatusBadge :status="r.status" feminine /></td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader
+                  :sort="sort"
+                  field="reference"
+                  :label="t('echeances.columns.reference')"
+                />
+                <SortHeader :sort="sort" field="client" :label="t('echeances.columns.client')" />
+                <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
+                <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
+                <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+                <SortHeader :sort="sort" field="status" :label="t('echeances.columns.status')" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="r in sorted"
+                :key="r.installmentId"
+                class="clickable"
+                :class="{ 'is-late': r.status === 'late' }"
+                @click="router.push({ name: 'achat-detail', params: { id: r.purchaseId } })"
+              >
+                <td>
+                  <span class="row-link">{{ r.reference }}</span>
+                </td>
+                <td>{{ r.clientName }}</td>
+                <td class="tabular">{{ r.index }}/{{ r.installmentCount }}</td>
+                <td class="tabular">{{ fmt.date(r.dueDate) }}</td>
+                <td class="tabular strong">{{ fmt.money(r.amount) }}</td>
+                <td><StatusBadge :status="r.status" feminine /></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </template>
   </div>

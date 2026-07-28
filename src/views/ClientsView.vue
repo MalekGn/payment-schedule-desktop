@@ -278,87 +278,93 @@ function openDetail(id: number) {
           icon="users"
           :title="scope === 'archived' ? t('clients.emptyArchived') : t('clients.empty')"
         />
-        <table v-else class="table">
-          <thead>
-            <tr>
-              <SortHeader :sort="sort" field="name" :label="t('clients.columns.name')" />
-              <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
-              <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
-              <SortHeader :sort="sort" field="purchases" :label="t('clients.columns.purchases')" />
-              <SortHeader
-                :sort="sort"
-                field="outstanding"
-                :label="t('clients.columns.outstanding')"
-              />
-              <th class="col-action">{{ t("common.actions") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in sorted" :key="c.id" class="clickable" @click="openDetail(c.id)">
-              <td>
-                <div class="client-name">
-                  <span class="strong">{{ c.firstName }} {{ c.lastName }}</span>
-                  <span
-                    v-if="c.archivedAt"
-                    class="badge badge--pending overdue-pill"
-                    :title="t('clients.archivedOn', { date: fmt.date(c.archivedAt) })"
-                  >
-                    {{ t("clients.archivedBadge") }}
-                  </span>
-                  <span v-if="c.overdueCount > 0" class="badge badge--late overdue-pill">
-                    {{ t("impaye.trancheLate", c.overdueCount) }}
-                  </span>
-                </div>
-              </td>
-              <td class="tabular">{{ c.phone || "—" }}</td>
-              <td class="ellipsis">{{ c.address || "—" }}</td>
-              <td class="tabular">{{ c.purchaseCount }}</td>
-              <td class="tabular strong">{{ fmt.money(c.totalOutstanding) }}</td>
-              <td class="col-action" @click.stop>
-                <template v-if="c.archivedAt">
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader :sort="sort" field="name" :label="t('clients.columns.name')" />
+                <SortHeader :sort="sort" field="phone" :label="t('clients.columns.phone')" />
+                <SortHeader :sort="sort" field="address" :label="t('clients.columns.address')" />
+                <SortHeader
+                  :sort="sort"
+                  field="purchases"
+                  :label="t('clients.columns.purchases')"
+                />
+                <SortHeader
+                  :sort="sort"
+                  field="outstanding"
+                  :label="t('clients.columns.outstanding')"
+                />
+                <th class="col-action">{{ t("common.actions") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in sorted" :key="c.id" class="clickable" @click="openDetail(c.id)">
+                <td>
+                  <div class="client-name">
+                    <span class="strong">{{ c.firstName }} {{ c.lastName }}</span>
+                    <span
+                      v-if="c.archivedAt"
+                      class="badge badge--pending overdue-pill"
+                      :title="t('clients.archivedOn', { date: fmt.date(c.archivedAt) })"
+                    >
+                      {{ t("clients.archivedBadge") }}
+                    </span>
+                    <span v-if="c.overdueCount > 0" class="badge badge--late overdue-pill">
+                      {{ t("impaye.trancheLate", c.overdueCount) }}
+                    </span>
+                  </div>
+                </td>
+                <td class="tabular">{{ c.phone || "—" }}</td>
+                <td class="ellipsis">{{ c.address || "—" }}</td>
+                <td class="tabular">{{ c.purchaseCount }}</td>
+                <td class="tabular strong">{{ fmt.money(c.totalOutstanding) }}</td>
+                <td class="col-action" @click.stop>
+                  <template v-if="c.archivedAt">
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('clients.restore.action')"
+                      @click="pending = { kind: 'restore', client: c }"
+                    >
+                      <AppIcon name="rotate-ccw" :size="17" />
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('common.edit')"
+                      @click="openEdit(c)"
+                    >
+                      <AppIcon name="edit" :size="17" />
+                    </button>
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('clients.archive.action')"
+                      @click="pending = { kind: 'archive', client: c }"
+                    >
+                      <AppIcon name="archive" :size="17" />
+                    </button>
+                  </template>
+                  <!-- The only hard delete left. Hidden once the client has any
+                       history, so the policy is visible rather than something the
+                       user discovers by being refused. -->
                   <button
-                    class="icon-action"
+                    v-if="c.purchaseCount === 0"
+                    class="icon-action icon-action--danger"
                     type="button"
-                    :title="t('clients.restore.action')"
-                    @click="pending = { kind: 'restore', client: c }"
+                    :title="t('common.delete')"
+                    @click="pending = { kind: 'delete', client: c }"
                   >
-                    <AppIcon name="rotate-ccw" :size="17" />
+                    <AppIcon name="trash" :size="17" />
                   </button>
-                </template>
-                <template v-else>
-                  <button
-                    class="icon-action"
-                    type="button"
-                    :title="t('common.edit')"
-                    @click="openEdit(c)"
-                  >
-                    <AppIcon name="edit" :size="17" />
-                  </button>
-                  <button
-                    class="icon-action"
-                    type="button"
-                    :title="t('clients.archive.action')"
-                    @click="pending = { kind: 'archive', client: c }"
-                  >
-                    <AppIcon name="archive" :size="17" />
-                  </button>
-                </template>
-                <!-- The only hard delete left. Hidden once the client has any
-                     history, so the policy is visible rather than something the
-                     user discovers by being refused. -->
-                <button
-                  v-if="c.purchaseCount === 0"
-                  class="icon-action icon-action--danger"
-                  type="button"
-                  :title="t('common.delete')"
-                  @click="pending = { kind: 'delete', client: c }"
-                >
-                  <AppIcon name="trash" :size="17" />
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <ClientForm v-if="showForm" :client="editing" @close="showForm = false" @saved="onSaved" />

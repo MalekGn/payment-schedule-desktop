@@ -6,6 +6,107 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-28 (e) — Bug: tables paint outside their card when the window is not maximized
+
+### Summary
+
+Bug fix, reported against the dashboard: at a non-maximized window (~1435px) the
+**Status** column of _Recent purchases_ rendered past the card's right border, its
+badges cut off mid-pill.
+
+Root cause was structural, not local to that card. No table in the app had a scroll
+container — a repo-wide grep for `overflow-x` / `table-layout` in `src/` returned
+nothing — and `.card` sets no `overflow`. So any table wider than its card simply
+painted through the border, and because `.app-content` sets `overflow-y: auto`
+(which makes `overflow-x` compute to `auto`), the spill became a **page-wide**
+horizontal scrollbar rather than a local one. All 12 table call sites shared the
+defect; the dashboard was only where it showed first, since its card lives in a
+`minmax(0, 1.8fr)` grid track (723px of usable width) while the table needed 751px.
+
+Two changes:
+
+- **`.table-scroll`** in `src/style.css` — a shared `overflow-x: auto` box, now
+  wrapping every table (11 views/components, 12 sites). Overflow is contained in
+  the card; the page never scrolls sideways. It also rounds its bottom corners, but
+  only via `:last-child`, so mid-card tables (`PurchaseDetailCard`, the paginated
+  lists) keep square corners and a highlighted `.is-late` last row is not clipped.
+- **`RecentPurchasesCard`** — tighter gutters (`padding-inline: 10px` vs the global
+  16px, outer edges keeping the card inset) and the product column made the flexible
+  one (`max-width: 0; width: 100%`) instead of a fixed 170px cap. Measured: the table
+  now needs 723px in a 723px card — it fits without a scrollbar and the product
+  column absorbs slack as the window widens. The full label moved to a `title`
+  attribute so truncation costs no information.
+
+No new user-facing string, so the three locale files are untouched. Presentation
+only: no Rust, no api gateway/mock change, no installment math.
+
+### Test cases
+
+**Unit — run, passing.** New `src/components/dashboard/RecentPurchasesCard.test.ts`
+(4 cases; suite now 8 files / 133 tests): the table is inside `.table-scroll`; the
+product cell is the `.ellipsis` column and carries the full label in `title`; one row
+per purchase; the empty state renders with neither table nor wrapper.
+
+**E2E — run at the user's request, 47/47 passing** (44 existing + 3 new, no
+regressions). `tests/e2e/run.mjs`, three new scenarios under "table layout":
+
+- _dashboard: the recent-purchases table stays inside its card_ — at the suite's
+  1440×900 context the wrapper exists, does not overflow the card, does **not**
+  scroll, the page has no horizontal scroll, and the status badge (the reported
+  symptom) is inside the card.
+- _dashboard: a narrow window scrolls the table inside the card, not the page_ — at
+  900px the wrapper still fits the card, now scrolls itself, and the page does not.
+- _every list page keeps its table inside the card at a narrow width_ — 1000px across
+  `/achats`, `/clients`, `/paiements`, `/echeances`, `/alertes`, `/impayes`: no
+  `.table-scroll` extends past its card, no page-level horizontal scroll.
+
+**Manual verification (headless Chromium, mock backend).** Measured geometry rather
+than eyeballed: at 1435px the table is 984px vs a card edge at 985px with no
+scrollbar (was 751px of table in a 723px box); at 1100px it fits with the product
+column at 194px; at 820px it scrolls inside the card with the page still fixed. In
+Arabic the layout mirrors and the product truncates from the logical end. All six
+list routes checked at 1435px and 1000px: zero tables past their card, zero pages
+scrolling sideways.
+
+Gates run and passing: `npm test` (133 unit tests, 8 files), `npm run lint` (clean,
+incl. `eslint-plugin-security`), `npm run build` (`vue-tsc --noEmit` + Vite build),
+`prettier --check` on every touched file.
+
+### Issues found
+
+None beyond the reported defect. One pre-existing behaviour was confirmed unchanged
+rather than fixed — see below.
+
+### Edge cases and risks not covered by the automated tests
+
+- **The featured purchase's installment table** (`PurchaseDetailCard`, 7 columns
+  incl. an action cell) needs 868px in the same 723px card, so it is contained but
+  still scrolls at every window size. That is a legitimate use of the scroll box, not
+  a regression — before this change it was spilling outside the card instead. Tighter
+  gutters would save ~84px and still not make it fit; dropping or narrowing a column
+  is the only real fix, and it was out of scope here.
+- **Cells wrap before they scroll.** With `width: 100%` and auto layout, a squeezed
+  table wraps whatever text can wrap (on `/achats` at 1000px, "A-000007" breaks
+  across two lines) and only scrolls once the un-wrappable minimum is exceeded. This
+  is pre-existing behaviour, now merely visible without the spill. Adding
+  `white-space: nowrap` to the reference column would read better; not done here.
+- **`overflow-x: auto` makes `overflow-y` compute to `auto`**, so a popover rendered
+  inside a table would be clipped. Verified safe today — no table in `src/` contains
+  a dropdown, menu or tooltip; row actions are plain buttons and modals render at the
+  view root. A future in-row menu must render in a portal, not inside the cell.
+- **Scrollbar appearance is platform-dependent.** Verified on Linux/Chromium; the
+  overlay scrollbars on macOS and the WebView2 rendering on Windows were not checked.
+- The RTL pass was manual. The new E2E scenarios run in French only.
+
+### Recommendations
+
+- Use `.table-scroll` for any table added from here on; it is the reason a wide table
+  can no longer break the page layout.
+- Consider revisiting the installment table's action column so the featured-purchase
+  card can fit without a permanent scrollbar.
+
+---
+
 ## 2026-07-28 (d) — Header notification bell navigates to the alerts page
 
 ### Summary

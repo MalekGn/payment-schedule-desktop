@@ -313,6 +313,18 @@ textarea {
   color: var(--primary);
   font-weight: 600;
 }
+/* Wide tables scroll inside their card instead of spilling past its border and
+   pushing the whole page into horizontal scroll (`.app-content` in App.vue). */
+.table-scroll {
+  overflow-x: auto;
+}
+/* The scroll box clips at square corners. When the table ends the card, follow
+   the card's rounded bottom so a highlighted last row (.is-late) doesn't show
+   corner artifacts; mid-card tables keep square corners, as they should. */
+.table-scroll:last-child {
+  border-end-start-radius: var(--radius-lg);
+  border-end-end-radius: var(--radius-lg);
+}
 
 /* ------- Utility ------- */
 .muted {

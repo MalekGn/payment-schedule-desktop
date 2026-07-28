@@ -183,40 +183,46 @@ onMounted(load);
           icon="bell"
           :title="t('alertes.empty')"
         />
-        <table v-else class="table">
-          <thead>
-            <tr>
-              <SortHeader :sort="sort" field="reference" :label="t('alertes.columns.reference')" />
-              <SortHeader :sort="sort" field="client" :label="t('alertes.columns.client')" />
-              <SortHeader :sort="sort" field="tranche" :label="t('alertes.columns.tranche')" />
-              <SortHeader :sort="sort" field="dueDate" :label="t('alertes.columns.dueDate')" />
-              <SortHeader :sort="sort" field="amount" :label="t('alertes.columns.amount')" />
-              <SortHeader :sort="sort" field="timing" :label="t('alertes.columns.timing')" />
-              <th>{{ t("common.status") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="a in sorted"
-              :key="a.installmentId"
-              class="clickable"
-              :class="{ 'is-late': a.kind === 'overdue' }"
-              @click="router.push({ name: 'achat-detail', params: { id: a.purchaseId } })"
-            >
-              <td>
-                <span class="row-link">{{ a.reference }}</span>
-              </td>
-              <td>{{ a.clientName }}</td>
-              <td class="tabular">{{ a.index }}/{{ a.installmentCount }}</td>
-              <td class="tabular">{{ fmt.date(a.dueDate) }}</td>
-              <td class="tabular strong">{{ fmt.money(a.remaining) }}</td>
-              <td>
-                <span class="timing" :class="`timing--${a.kind}`">{{ timingLabel(a) }}</span>
-              </td>
-              <td><StatusBadge :status="a.status" feminine /></td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader
+                  :sort="sort"
+                  field="reference"
+                  :label="t('alertes.columns.reference')"
+                />
+                <SortHeader :sort="sort" field="client" :label="t('alertes.columns.client')" />
+                <SortHeader :sort="sort" field="tranche" :label="t('alertes.columns.tranche')" />
+                <SortHeader :sort="sort" field="dueDate" :label="t('alertes.columns.dueDate')" />
+                <SortHeader :sort="sort" field="amount" :label="t('alertes.columns.amount')" />
+                <SortHeader :sort="sort" field="timing" :label="t('alertes.columns.timing')" />
+                <th>{{ t("common.status") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="a in sorted"
+                :key="a.installmentId"
+                class="clickable"
+                :class="{ 'is-late': a.kind === 'overdue' }"
+                @click="router.push({ name: 'achat-detail', params: { id: a.purchaseId } })"
+              >
+                <td>
+                  <span class="row-link">{{ a.reference }}</span>
+                </td>
+                <td>{{ a.clientName }}</td>
+                <td class="tabular">{{ a.index }}/{{ a.installmentCount }}</td>
+                <td class="tabular">{{ fmt.date(a.dueDate) }}</td>
+                <td class="tabular strong">{{ fmt.money(a.remaining) }}</td>
+                <td>
+                  <span class="timing" :class="`timing--${a.kind}`">{{ timingLabel(a) }}</span>
+                </td>
+                <td><StatusBadge :status="a.status" feminine /></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </template>
   </div>

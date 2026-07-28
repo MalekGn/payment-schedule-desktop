@@ -195,44 +195,54 @@ function exportCsv() {
             </div>
           </div>
 
-          <table class="table inner-table">
-            <thead>
-              <tr>
-                <SortHeader
-                  :sort="sort"
-                  field="reference"
-                  :label="t('echeances.columns.reference')"
-                />
-                <SortHeader :sort="sort" field="tranche" :label="t('echeances.columns.tranche')" />
-                <SortHeader :sort="sort" field="dueDate" :label="t('echeances.columns.dueDate')" />
-                <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
-                <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="i in sortedInstallments(c.installments)"
-                :key="i.installmentId"
-                class="is-late"
-              >
-                <td>
-                  <a
-                    class="row-link"
-                    href="#"
-                    @click.prevent="
-                      router.push({ name: 'achat-detail', params: { id: i.purchaseId } })
-                    "
-                  >
-                    {{ i.purchaseReference }}
-                  </a>
-                </td>
-                <td class="tabular">{{ i.index }}/{{ i.installmentCount }}</td>
-                <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
-                <td class="tabular strong">{{ fmt.money(i.remaining) }}</td>
-                <td class="late-cell">{{ t("dashboard.alert.daysLate", i.daysLate) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="table inner-table">
+              <thead>
+                <tr>
+                  <SortHeader
+                    :sort="sort"
+                    field="reference"
+                    :label="t('echeances.columns.reference')"
+                  />
+                  <SortHeader
+                    :sort="sort"
+                    field="tranche"
+                    :label="t('echeances.columns.tranche')"
+                  />
+                  <SortHeader
+                    :sort="sort"
+                    field="dueDate"
+                    :label="t('echeances.columns.dueDate')"
+                  />
+                  <SortHeader :sort="sort" field="amount" :label="t('echeances.columns.amount')" />
+                  <SortHeader :sort="sort" field="since" :label="t('impaye.since')" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="i in sortedInstallments(c.installments)"
+                  :key="i.installmentId"
+                  class="is-late"
+                >
+                  <td>
+                    <a
+                      class="row-link"
+                      href="#"
+                      @click.prevent="
+                        router.push({ name: 'achat-detail', params: { id: i.purchaseId } })
+                      "
+                    >
+                      {{ i.purchaseReference }}
+                    </a>
+                  </td>
+                  <td class="tabular">{{ i.index }}/{{ i.installmentCount }}</td>
+                  <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
+                  <td class="tabular strong">{{ fmt.money(i.remaining) }}</td>
+                  <td class="late-cell">{{ t("dashboard.alert.daysLate", i.daysLate) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
       </div>
     </template>

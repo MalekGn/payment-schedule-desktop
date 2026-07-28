@@ -1389,6 +1389,84 @@ test("settings exposes a database backup action", async (page) => {
   );
 });
 
+// --- table layout ------------------------------------------------------------
+// The regression these pin: no table had a scroll container, so a table wider
+// than its card painted straight through the card border (the dashboard's
+// Status column was the visible symptom) and turned `.app-content` into a
+// page-wide horizontal scroller. Tables now live in a `.table-scroll` box and
+// the dashboard's own table is tuned to fit the card outright.
+
+/** Geometry of the recent-purchases table relative to its card. */
+async function recentTableBox(page) {
+  return page.evaluate(() => {
+    const table = document.querySelector(".recent-table");
+    const scroll = table.closest(".table-scroll");
+    const card = table.closest(".card");
+    return {
+      wrapped: Boolean(scroll),
+      // How far the visible scroll box reaches past the card, in px.
+      spill: Math.round(scroll.getBoundingClientRect().right - card.getBoundingClientRect().right),
+      scrolls: scroll.scrollWidth > scroll.clientWidth,
+      pageScrollsX: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    };
+  });
+}
+
+test("dashboard: the recent-purchases table stays inside its card", async (page) => {
+  await open(page, "/");
+  await page.locator(".recent-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const box = await recentTableBox(page);
+  assert(box.wrapped, "the table must sit in a .table-scroll container");
+  assert(box.spill <= 1, `table box overflows the card by ${box.spill}px`);
+  assert(!box.scrolls, "at 1440px the six columns should fit without a scrollbar");
+  assert(!box.pageScrollsX, "the dashboard must not scroll horizontally");
+
+  // The status cell — the column that used to be cut off — is fully inside.
+  const inside = await page.evaluate(() => {
+    const badge = document.querySelector(".recent-table tbody tr .badge");
+    const card = badge.closest(".card");
+    return badge.getBoundingClientRect().right <= card.getBoundingClientRect().right;
+  });
+  assert(inside, "the status badge must render inside the card");
+});
+
+test("dashboard: a narrow window scrolls the table inside the card, not the page", async (page) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await open(page, "/");
+  await page.locator(".recent-table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const box = await recentTableBox(page);
+  assert(box.spill <= 1, `table box overflows the card by ${box.spill}px when narrow`);
+  assert(box.scrolls, "below the fitting width the card itself should scroll");
+  assert(!box.pageScrollsX, "the page must never take the horizontal scroll");
+});
+
+test("every list page keeps its table inside the card at a narrow width", async (page) => {
+  await page.setViewportSize({ width: 1000, height: 800 });
+  for (const route of ["/achats", "/clients", "/paiements", "/echeances", "/alertes", "/impayes"]) {
+    await open(page, route);
+    await page.locator(".table-scroll table tbody tr").first().waitFor({ timeout: 10000 });
+
+    const bad = await page.evaluate(() => {
+      const offenders = [];
+      for (const scroll of document.querySelectorAll(".table-scroll")) {
+        const card = scroll.closest(".card");
+        if (!card) continue;
+        const over = scroll.getBoundingClientRect().right - card.getBoundingClientRect().right;
+        if (over > 1) offenders.push(Math.round(over));
+      }
+      return {
+        offenders,
+        pageScrollsX:
+          document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      };
+    });
+    assertEqual(bad.offenders.length, 0, `${route}: tables spilling past their card`);
+    assert(!bad.pageScrollsX, `${route}: page must not scroll horizontally`);
+  }
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {

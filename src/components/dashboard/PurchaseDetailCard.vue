@@ -108,50 +108,60 @@ function goToPurchase() {
       </div>
     </div>
 
-    <table class="table inst-table">
-      <thead>
-        <tr>
-          <SortHeader :sort="sort" field="tranche" :label="t('dashboard.detail.tranche')" />
-          <SortHeader :sort="sort" field="dueDate" :label="t('dashboard.detail.dueDate')" />
-          <SortHeader :sort="sort" field="amount" :label="t('dashboard.detail.amount')" />
-          <SortHeader :sort="sort" field="remaining" :label="t('common.remaining')" />
-          <SortHeader :sort="sort" field="status" :label="t('common.status')" />
-          <SortHeader :sort="sort" field="paymentDate" :label="t('dashboard.detail.paymentDate')" />
-          <th class="col-action">{{ t("common.actions") }}</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="i in sortedInstallments" :key="i.id" :class="{ 'is-late': i.status === 'late' }">
-          <td class="tabular">{{ i.index }}/{{ detail.purchase.installmentCount }}</td>
-          <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
-          <td class="tabular">{{ fmt.money(i.amount) }}</td>
-          <td class="tabular strong">{{ fmt.money(i.amount - i.paidAmount) }}</td>
-          <td><StatusBadge :status="i.status" feminine /></td>
-          <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
-          <td class="col-action">
-            <div class="row-actions">
-              <button
-                v-if="canUpdate(i)"
-                class="btn btn--primary btn--sm"
-                type="button"
-                @click="emit('updateInstallment', i)"
-              >
-                {{ t("dashboard.detail.updatePayment") }}
-              </button>
-              <a
-                v-else-if="i.status === 'paid'"
-                class="row-link"
-                href="#"
-                @click.prevent="goToPurchase"
-              >
-                {{ t("dashboard.detail.view") }}
-              </a>
-              <span v-else class="muted">—</span>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="table inst-table">
+        <thead>
+          <tr>
+            <SortHeader :sort="sort" field="tranche" :label="t('dashboard.detail.tranche')" />
+            <SortHeader :sort="sort" field="dueDate" :label="t('dashboard.detail.dueDate')" />
+            <SortHeader :sort="sort" field="amount" :label="t('dashboard.detail.amount')" />
+            <SortHeader :sort="sort" field="remaining" :label="t('common.remaining')" />
+            <SortHeader :sort="sort" field="status" :label="t('common.status')" />
+            <SortHeader
+              :sort="sort"
+              field="paymentDate"
+              :label="t('dashboard.detail.paymentDate')"
+            />
+            <th class="col-action">{{ t("common.actions") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="i in sortedInstallments"
+            :key="i.id"
+            :class="{ 'is-late': i.status === 'late' }"
+          >
+            <td class="tabular">{{ i.index }}/{{ detail.purchase.installmentCount }}</td>
+            <td class="tabular">{{ fmt.date(i.dueDate) }}</td>
+            <td class="tabular">{{ fmt.money(i.amount) }}</td>
+            <td class="tabular strong">{{ fmt.money(i.amount - i.paidAmount) }}</td>
+            <td><StatusBadge :status="i.status" feminine /></td>
+            <td class="tabular muted">{{ i.paidDate ? fmt.date(i.paidDate) : "—" }}</td>
+            <td class="col-action">
+              <div class="row-actions">
+                <button
+                  v-if="canUpdate(i)"
+                  class="btn btn--primary btn--sm"
+                  type="button"
+                  @click="emit('updateInstallment', i)"
+                >
+                  {{ t("dashboard.detail.updatePayment") }}
+                </button>
+                <a
+                  v-else-if="i.status === 'paid'"
+                  class="row-link"
+                  href="#"
+                  @click.prevent="goToPurchase"
+                >
+                  {{ t("dashboard.detail.view") }}
+                </a>
+                <span v-else class="muted">—</span>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div class="detail-foot">
       <button class="btn btn--ghost btn--sm" type="button" @click="goToPurchase">

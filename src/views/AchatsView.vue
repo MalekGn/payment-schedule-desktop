@@ -260,86 +260,88 @@ async function confirmPending() {
           icon="cart"
           :title="scope === 'archived' ? t('achats.emptyArchived') : t('achats.empty')"
         />
-        <table v-else class="table">
-          <thead>
-            <tr>
-              <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
-              <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
-              <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
-              <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
-              <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
-              <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
-              <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
-              <th class="col-action">{{ t("common.actions") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="p in sorted"
-              :key="p.id"
-              class="clickable"
-              @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
-            >
-              <td>
-                <div class="ref-cell">
-                  <span class="row-link">{{ p.reference }}</span>
-                  <span
-                    v-if="p.archivedAt"
-                    class="badge badge--pending archived-pill"
-                    :title="t('achats.archivedOn', { date: fmt.date(p.archivedAt) })"
-                  >
-                    {{ t("achats.archivedBadge") }}
-                  </span>
-                </div>
-              </td>
-              <td>{{ p.clientName }}</td>
-              <td class="ellipsis">{{ p.productLabel }}</td>
-              <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
-              <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
-              <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
-              <td><StatusBadge :status="p.status" /></td>
-              <td class="col-action" @click.stop>
-                <template v-if="p.archivedAt">
-                  <button
-                    class="icon-action"
-                    type="button"
-                    :title="t('achats.restore.action')"
-                    @click="pending = { kind: 'restore', purchase: p }"
-                  >
-                    <AppIcon name="rotate-ccw" :size="17" />
-                  </button>
-                  <!-- Permanent delete lives only here, behind the archive. -->
-                  <button
-                    class="icon-action icon-action--danger"
-                    type="button"
-                    :title="t('achats.delete.action')"
-                    @click="pending = { kind: 'delete', purchase: p }"
-                  >
-                    <AppIcon name="trash" :size="17" />
-                  </button>
-                </template>
-                <template v-else>
-                  <button
-                    class="icon-action"
-                    type="button"
-                    :title="t('common.edit')"
-                    @click="openEdit(p)"
-                  >
-                    <AppIcon name="edit" :size="17" />
-                  </button>
-                  <button
-                    class="icon-action"
-                    type="button"
-                    :title="t('achats.archive.action')"
-                    @click="pending = { kind: 'archive', purchase: p }"
-                  >
-                    <AppIcon name="archive" :size="17" />
-                  </button>
-                </template>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-else class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <SortHeader :sort="sort" field="reference" :label="t('achats.columns.reference')" />
+                <SortHeader :sort="sort" field="client" :label="t('achats.columns.client')" />
+                <SortHeader :sort="sort" field="product" :label="t('achats.columns.product')" />
+                <SortHeader :sort="sort" field="date" :label="t('achats.columns.date')" />
+                <SortHeader :sort="sort" field="total" :label="t('achats.columns.total')" />
+                <SortHeader :sort="sort" field="remaining" :label="t('achats.columns.remaining')" />
+                <SortHeader :sort="sort" field="status" :label="t('achats.columns.status')" />
+                <th class="col-action">{{ t("common.actions") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in sorted"
+                :key="p.id"
+                class="clickable"
+                @click="router.push({ name: 'achat-detail', params: { id: p.id } })"
+              >
+                <td>
+                  <div class="ref-cell">
+                    <span class="row-link">{{ p.reference }}</span>
+                    <span
+                      v-if="p.archivedAt"
+                      class="badge badge--pending archived-pill"
+                      :title="t('achats.archivedOn', { date: fmt.date(p.archivedAt) })"
+                    >
+                      {{ t("achats.archivedBadge") }}
+                    </span>
+                  </div>
+                </td>
+                <td>{{ p.clientName }}</td>
+                <td class="ellipsis">{{ p.productLabel }}</td>
+                <td class="tabular">{{ fmt.date(p.purchaseDate) }}</td>
+                <td class="tabular">{{ fmt.money(p.totalPrice) }}</td>
+                <td class="tabular strong">{{ fmt.money(p.remaining) }}</td>
+                <td><StatusBadge :status="p.status" /></td>
+                <td class="col-action" @click.stop>
+                  <template v-if="p.archivedAt">
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('achats.restore.action')"
+                      @click="pending = { kind: 'restore', purchase: p }"
+                    >
+                      <AppIcon name="rotate-ccw" :size="17" />
+                    </button>
+                    <!-- Permanent delete lives only here, behind the archive. -->
+                    <button
+                      class="icon-action icon-action--danger"
+                      type="button"
+                      :title="t('achats.delete.action')"
+                      @click="pending = { kind: 'delete', purchase: p }"
+                    >
+                      <AppIcon name="trash" :size="17" />
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('common.edit')"
+                      @click="openEdit(p)"
+                    >
+                      <AppIcon name="edit" :size="17" />
+                    </button>
+                    <button
+                      class="icon-action"
+                      type="button"
+                      :title="t('achats.archive.action')"
+                      @click="pending = { kind: 'archive', purchase: p }"
+                    >
+                      <AppIcon name="archive" :size="17" />
+                    </button>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <NewPurchaseModal v-if="showModal" :purchase="editing" @close="closeModal" @saved="onSaved" />

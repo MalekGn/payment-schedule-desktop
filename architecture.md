@@ -343,3 +343,8 @@ purchases, installments and payments and cannot be undone.
 - **Design tokens** (`src/style.css` CSS variables) extracted from the reference
   mockup drive every screen — including the mirrored Arabic RTL layout — for
   visual consistency.
+- **Tables are wrapped in `.table-scroll`** (`src/style.css`). `.card` sets no
+  `overflow` and `.app-content` scrolls the whole page, so an unwrapped table
+  wider than its card paints through the card border and drags the page into
+  horizontal scroll. The wrapper keeps the overflow local; every new table needs
+  it.
