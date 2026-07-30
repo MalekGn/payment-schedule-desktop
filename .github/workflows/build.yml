@@ -209,7 +209,7 @@ jobs:
       # Both matrix runners target the same tagName, so they attach to one shared Release.
       # --bundles overrides tauri.conf.json targets so each OS emits only its own installers.
       - name: Build & publish to GitHub Release
-        uses: tauri-apps/tauri-action@42e9df6c59070d114bf90dcd3943a1b8f138b113 # v0.5.20
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PAYMENT_SCHEDULE_LICENSE_PUBKEY: ${{ vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY }}
