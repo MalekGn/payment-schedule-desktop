@@ -6,6 +6,79 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-30 (c) — The sidebar's new-purchase shortcut steps aside on Achats
+
+### Summary
+
+The sidebar's **Nouvel achat** button is now hidden on the Achats page, which
+carries its own primary button for the same action. `AppSidebar.vue` gained
+`showNewPurchase = computed(() => route.name !== "achats")`; the purchase
+_detail_ page keeps the shortcut, having no button of its own.
+
+Reading `AchatsView.vue` while planning turned up a second reason: `?new=1` is
+read in `onMounted` only (`AchatsView.vue:103-109`). Pushing `{ name: "achats",
+query: { new: "1" } }` **from the Achats page itself** does not remount the view,
+so the modal never opened. The shortcut was not merely redundant there — it was
+dead. Hiding it removes the duplicate and the dead control together.
+
+Presentational only: `create_purchase` stays licence-gated in Rust.
+
+### Test cases
+
+**Executed.** Frontend unit **147 passed** (10 files), `npm run lint`,
+`npm run build` (`vue-tsc --noEmit`), E2E **49/49 passed** — run at the user's
+explicit request. No `cargo`: `src-tauri/` is not touched.
+
+Two unit cases added to `src/components/layout/AppSidebar.test.ts` (hidden on
+`achats`; shown on `dashboard` and `achat-detail`). The `vue-router` mock there
+now exposes `useRoute` through a `vi.hoisted` route object, so each test picks
+its route before mounting.
+
+One E2E test added: shortcut present on the dashboard → absent on Achats → the
+page's own button still opens the modal → present again on `/achats/1`.
+
+### Issues found
+
+1. **The new E2E test failed on its first run — the test was wrong, not the
+   feature.** It waited on `table.table tbody tr` after clicking the nav item,
+   but the dashboard renders `table.table` too (`RecentPurchasesCard.vue:41`,
+   `PurchaseDetailCard.vue:112`). The wait resolved instantly, before the route
+   changed, and the assertion ran against the dashboard: expected 0, got 1.
+   Fixed by waiting on `h1.page-title` — a route-driven value — as the
+   neighbouring navigation test does. Re-run: 49/49.
+   **Reproduction, for the record:** replace the `waitForFunction` with
+   `await page.locator("table.table tbody tr").first().waitFor()` and re-run.
+2. Found during review: the comment at `run.mjs:576` justified scoping a role
+   query with "the sidebar also carries a permanent Nouvel achat button", which
+   this change makes false. The scoping is kept (it guards against the rule
+   changing back); the comment now says so.
+
+The stale failure screenshot written by issue 1 was deleted from
+`tests/e2e/artifacts/` once the test passed.
+
+### Risks and edge cases
+
+1. **A stale wait can make an E2E assertion vacuous rather than red.** Issue 1
+   failed loudly only because the control it checked was still present. Had the
+   assertion been "the shortcut is visible", it would have passed on the wrong
+   page and tested nothing. Worth remembering: `table.table` is not unique to a
+   list page.
+2. **The hide is keyed on the route name `achats`.** Renaming that route in
+   `src/router/index.ts` silently brings the duplicate button back; nothing links
+   the two beyond the unit test.
+3. **The `?new=1`-on-remount limitation is untouched**, only routed around. A
+   future entry point that pushes that query from the Achats page will hit the
+   same dead end.
+
+### Recommendations
+
+1. If the shortcut is ever wanted on Achats again, fix the root cause first:
+   `watch` the route query in `AchatsView` instead of reading it in `onMounted`.
+2. Consider asserting the route name in the unit test alongside the class, so
+   risk 2 fails a test rather than reaching a user.
+
+---
+
 ## 2026-07-30 (b) — The shop name comes from the licence, and shows beside the logo
 
 ### Summary

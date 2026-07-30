@@ -1,10 +1,12 @@
-// Unit tests for the brand block beside the sidebar logo.
+// Unit tests for the two parts of the sidebar that depend on outside state:
+// the brand block beside the logo, and the "new purchase" shortcut.
 //
-// The name shown there is the licence's `licensee`, not a user-typed setting:
-// it is only populated once the signature has verified, so it is attested. The
-// three branches below (licence → stored setting → generic app title) are the
-// whole contract, and the expired case pins down that a shop whose licence has
-// lapsed still sees its own name rather than being demoted to the app title.
+// The name in the brand block is the licence's `licensee`, not a user-typed
+// setting: it is only populated once the signature has verified, so it is
+// attested. The three branches below (licence → stored setting → generic app
+// title) are the whole contract, and the expired case pins down that a shop
+// whose licence has lapsed still sees its own name rather than being demoted to
+// the app title.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -15,8 +17,13 @@ import { useLicenseStore } from "@/stores/license";
 import { useSettingsStore } from "@/stores/settings";
 import type { License, LicenseStatusTag } from "@/types/models";
 
+// Hoisted so the `vi.mock` factory can close over it: each test sets the route
+// name before mounting, the way the real reactive route would read at setup.
+const { currentRoute } = vi.hoisted(() => ({ currentRoute: { name: "dashboard" } }));
+
 vi.mock("vue-router", () => ({
   useRouter: () => ({ push: vi.fn() }),
+  useRoute: () => currentRoute,
 }));
 
 const LICENCE: License = {
@@ -28,8 +35,17 @@ const LICENCE: License = {
   features: ["*"],
 };
 
-/** Seed the two stores the brand block reads, then mount. */
-function render(opts: { status?: LicenseStatusTag; license?: License | null; shopName?: string }) {
+/** Seed the route and the two stores the sidebar reads, then mount. */
+function render(
+  opts: {
+    status?: LicenseStatusTag;
+    license?: License | null;
+    shopName?: string;
+    routeName?: string;
+  } = {},
+) {
+  currentRoute.name = opts.routeName ?? "dashboard";
+
   const license = useLicenseStore();
   license.info = {
     status: opts.status ?? "missing",
@@ -78,5 +94,20 @@ describe("AppSidebar brand", () => {
     expect(wrapper.find(".brand-name").exists()).toBe(false);
     expect(wrapper.find(".brand-line1").text()).toBe(i18n.global.t("app.title"));
     expect(wrapper.find(".brand-line2").text()).toBe(i18n.global.t("app.titleLine2"));
+  });
+});
+
+describe("AppSidebar new-purchase shortcut", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("is hidden on the Achats page, which has its own button", () => {
+    expect(render({ routeName: "achats" }).find(".new-purchase").exists()).toBe(false);
+  });
+
+  it("is shown everywhere else, including a purchase's detail page", () => {
+    expect(render({ routeName: "dashboard" }).find(".new-purchase").exists()).toBe(true);
+    expect(render({ routeName: "achat-detail" }).find(".new-purchase").exists()).toBe(true);
   });
 });

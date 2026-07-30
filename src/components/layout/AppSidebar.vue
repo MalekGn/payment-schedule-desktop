@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import { useStatsStore } from "@/stores/stats";
@@ -10,6 +10,7 @@ import { resolveLogoSrc } from "@/lib/assets";
 
 const { t } = useI18n();
 const router = useRouter();
+const route = useRoute();
 const stats = useStatsStore();
 const settings = useSettingsStore();
 const license = useLicenseStore();
@@ -69,6 +70,16 @@ const logoSrc = computed(() => resolveLogoSrc(settings.logoPath));
  */
 const shopName = computed(() => license.license?.licensee.trim() || settings.shopName.trim());
 
+/**
+ * The Achats page carries its own primary "new purchase" button, so the sidebar
+ * shortcut is a duplicate there — and a broken one: `AchatsView` reads `?new=1`
+ * in `onMounted` only, so pushing the same route from the page itself never
+ * remounts it and the modal never opens. The purchase *detail* page keeps the
+ * shortcut: it has no button of its own, and navigating away and back does
+ * remount the list.
+ */
+const showNewPurchase = computed(() => route.name !== "achats");
+
 function newPurchase() {
   router.push({ name: "achats", query: { new: "1" } });
 }
@@ -90,7 +101,7 @@ function newPurchase() {
       </div>
     </div>
 
-    <button class="new-purchase" type="button" @click="newPurchase">
+    <button v-if="showNewPurchase" class="new-purchase" type="button" @click="newPurchase">
       <AppIcon name="plus" :size="18" />
       <span>{{ t("sidebar.newPurchase") }}</span>
     </button>

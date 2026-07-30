@@ -136,6 +136,35 @@ test("sidebar navigates to every page and header title updates", async (page) =>
   }
 });
 
+test("the sidebar new-purchase shortcut steps aside on the Achats page", async (page) => {
+  await open(page, "/");
+  assertEqual(await page.locator(".new-purchase").count(), 1, "shortcut present on the dashboard");
+
+  // On Achats the page's own primary button owns the action, so the sidebar
+  // shortcut would be a second control for the same thing — and a dead one,
+  // since `AchatsView` only reads `?new=1` when it mounts.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  // Wait on the header title, not on a table: the dashboard renders `table.table`
+  // too, so waiting for a row here would resolve before the route had changed and
+  // the assertion below would silently run against the dashboard.
+  await page.waitForFunction(
+    (expected) => document.querySelector("h1.page-title")?.textContent?.trim() === expected,
+    NAV.achats,
+    { timeout: 10000 },
+  );
+  assertEqual(await page.locator(".new-purchase").count(), 0, "shortcut hidden on Achats");
+
+  // The page's own button still opens the modal, so nothing was lost.
+  await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
+  await page.locator('[role="dialog"]').waitFor({ state: "visible", timeout: 5000 });
+
+  // Off Achats it comes back — including on a purchase's detail page, which has
+  // no new-purchase button of its own.
+  await open(page, "/achats/1");
+  await page.locator(".new-purchase").waitFor({ timeout: 10000 });
+  assertEqual(await page.locator(".new-purchase").count(), 1, "shortcut returns off Achats");
+});
+
 // --- Header notification bell ------------------------------------------------
 // The bell badge counts overdue installments (`stats.overdueInstallments`), the
 // same signal the Alerts page lists, so the bell is a shortcut to `/alertes`.
@@ -552,8 +581,9 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
   assertEqual(await page.locator("table.table tbody tr").count(), 8, "precondition: 8 purchases");
 
-  // Scope to the main content: the sidebar also carries a permanent "Nouvel
-  // achat" button, so an unscoped role query would match two elements.
+  // Scope to the main content. The sidebar shortcut is hidden on this page, so
+  // an unscoped query would resolve today — but it would silently start matching
+  // two elements again the moment that rule changes.
   await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
