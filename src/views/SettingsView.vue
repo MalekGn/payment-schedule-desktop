@@ -38,7 +38,6 @@ const statusLabel = computed(() => {
   return t(`license.status${tag.charAt(0).toUpperCase()}${tag.slice(1)}`);
 });
 
-const shopName = ref(settings.settings.shopName);
 const shopInfo = ref(settings.settings.shopInfo);
 const alertSoonDays = ref(settings.settings.alertSoonDays);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -90,8 +89,13 @@ async function onAlertSoonDays() {
   await save(() => settings.update({ alertSoonDays: value }));
 }
 
-async function saveShop() {
-  await save(() => settings.update({ shopName: shopName.value, shopInfo: shopInfo.value }));
+/**
+ * The shop name is not edited here: it comes from the licence (`licensee`) and
+ * is shown beside the logo in the sidebar. Only the free-form shop info is
+ * user-owned, so it is the only field this writes.
+ */
+async function saveShopInfo() {
+  await save(() => settings.update({ shopInfo: shopInfo.value }));
 }
 
 async function pickLogo() {
@@ -328,16 +332,6 @@ async function pickLicense() {
         </div>
 
         <div class="field">
-          <label for="set-shop">{{ t("settings.shopName") }}</label>
-          <input
-            id="set-shop"
-            v-model="shopName"
-            class="input"
-            :disabled="locked"
-            @blur="saveShop"
-          />
-        </div>
-        <div class="field">
           <label for="set-info">{{ t("settings.shopInfo") }}</label>
           <textarea
             id="set-info"
@@ -346,10 +340,10 @@ async function pickLicense() {
             class="textarea"
             rows="3"
             :placeholder="t('settings.shopInfoPlaceholder')"
-            @blur="saveShop"
+            @blur="saveShopInfo"
           />
         </div>
-        <button class="btn btn--primary" type="button" :disabled="locked" @click="saveShop">
+        <button class="btn btn--primary" type="button" :disabled="locked" @click="saveShopInfo">
           {{ t("common.saveChanges") }}
         </button>
       </div>

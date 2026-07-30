@@ -98,8 +98,12 @@ async function open(page, route = "/") {
 
 test("app shell + sidebar render on first load", async (page) => {
   await open(page, "/");
-  assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "brand line 1");
-  assertEqual(await page.locator(".brand-line2").innerText(), "Échelonnés", "brand line 2");
+  // The brand block shows the licence holder; the mock ships a valid licence.
+  assertEqual(
+    await page.locator(".brand-name").innerText(),
+    "Boutique de démonstration",
+    "brand shows the licensee",
+  );
   assertEqual(await page.locator(".nav-item").count(), 9, "sidebar should have 9 nav items");
   assertEqual(
     await page.locator("h1.page-title").innerText(),
@@ -895,7 +899,13 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   // Baseline: French, left-to-right.
   assertEqual(await page.locator("html").getAttribute("dir"), "ltr", "baseline dir is ltr");
   assertEqual(await page.locator("html").getAttribute("lang"), "fr", "baseline lang is fr");
-  assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "baseline brand (fr)");
+  // The brand block is no longer a translation probe: it shows the licence
+  // holder's name, which is a proper noun and identical in every locale.
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "baseline page title (fr)",
+  );
 
   // Pick Arabic from the header language menu.
   await page.locator(".lang-btn").click();
@@ -910,9 +920,9 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   assertEqual(await page.locator("html").getAttribute("dir"), "rtl", "dir switches to rtl");
   assertEqual(await page.locator("html").getAttribute("lang"), "ar", "lang switches to ar");
   assertEqual(
-    await page.locator(".brand-line1").innerText(),
-    "الدفع",
-    "brand re-renders in Arabic",
+    await page.locator("h1.page-title").innerText(),
+    "لوحة التحكم",
+    "page title re-renders in Arabic",
   );
   assertEqual(
     await page.locator(".nav-item", { hasText: "لوحة التحكم" }).count(),
@@ -1386,6 +1396,26 @@ test("settings exposes a database backup action", async (page) => {
     await page.locator(".set-card", { hasText: "Sauvegarde" }).count(),
     0,
     "backup card must be hidden outside the Tauri runtime",
+  );
+});
+
+test("the shop name is licence-owned: no input for it in settings", async (page) => {
+  await open(page, "/parametres");
+  await page.locator(".set-card").first().waitFor({ timeout: 10000 });
+
+  // The name comes from the licence and is rendered in the sidebar brand block.
+  // Re-adding an editable field here would let branding and identity disagree,
+  // so the absence of the input is the assertion.
+  assertEqual(await page.locator("#set-shop").count(), 0, "no shop-name input in settings");
+  assertEqual(
+    await page.locator(".lic-row", { hasText: "Titulaire" }).innerText(),
+    "Titulaire\nBoutique de démonstration",
+    "the licence card still shows the holder",
+  );
+  assertEqual(
+    await page.locator(".brand-name").innerText(),
+    "Boutique de démonstration",
+    "and the sidebar brand shows the same name",
   );
 });
 

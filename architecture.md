@@ -123,6 +123,13 @@ Design points that constrain later work:
   `ClockTampered` instead of reviving an expired licence. It is deliberately kept
   out of `Settings`/`SettingsPatch`, which are serialized to and written by the
   renderer — the code it defends against.
+- **The shop name is licence-attested, not configuration.** `AppSidebar`'s brand
+  block shows `licensee`, falling back to the stored `shop_name` setting and then
+  to the generic app title. The setting stays in `Settings`/`SettingsPatch` as
+  that fallback but is no longer editable from Paramètres: a name the user can
+  type is branding, a name the vendor signs is identification. Note the fallback
+  chain covers `clockTampered`, `invalidSignature` and `missing` — the statuses
+  where no verified payload exists.
 - **`LicenseStatus` never crosses IPC**; `LicenseInfo` does. The projection drops
   `Malformed { reason }`, which is parser detail for the log, exactly as
   `AppError::Internal` collapses to an opaque code.

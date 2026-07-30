@@ -57,6 +57,18 @@ function isLocked(item: NavItem): boolean {
 
 const logoSrc = computed(() => resolveLogoSrc(settings.logoPath));
 
+/**
+ * The shop name shown beside the logo.
+ *
+ * The licence is the source of truth: `license.license` is populated only once
+ * the signature has verified — including for an expired or wrong-machine
+ * licence — so the name it carries is vendor-attested rather than user-typed.
+ * The stored setting is the fallback for an install with no readable licence,
+ * and an empty string falls back further to the generic app title in the
+ * template.
+ */
+const shopName = computed(() => license.license?.licensee.trim() || settings.shopName.trim());
+
 function newPurchase() {
   router.push({ name: "achats", query: { new: "1" } });
 }
@@ -70,8 +82,11 @@ function newPurchase() {
         <AppIcon v-else name="washer" :size="26" :stroke-width="1.8" />
       </div>
       <div class="brand-text">
-        <span class="brand-line1">{{ t("app.title") }}</span>
-        <span class="brand-line2">{{ t("app.titleLine2") }}</span>
+        <span v-if="shopName" class="brand-name" :title="shopName">{{ shopName }}</span>
+        <template v-else>
+          <span class="brand-line1">{{ t("app.title") }}</span>
+          <span class="brand-line2">{{ t("app.titleLine2") }}</span>
+        </template>
       </div>
     </div>
 
@@ -154,6 +169,9 @@ function newPurchase() {
   display: flex;
   flex-direction: column;
   line-height: 1.15;
+  /* Without this a flex item never shrinks below its content, so a long shop
+     name would widen the brand block past the fixed sidebar. */
+  min-width: 0;
 }
 .brand-line1,
 .brand-line2 {
@@ -161,6 +179,21 @@ function newPurchase() {
   font-weight: 700;
   font-size: 16px;
   letter-spacing: -0.01em;
+}
+/* A shop name is arbitrary text, unlike the two fixed title lines: wrap it,
+   cap it at two lines, and leave the full value in the `title` attribute. */
+.brand-name {
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-align: start;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .new-purchase {

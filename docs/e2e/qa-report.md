@@ -6,6 +6,96 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-30 (b) — The shop name comes from the licence, and shows beside the logo
+
+### Summary
+
+The shop name was in two places at once: a `shop_name` row in the `setting` table,
+editable in **Paramètres → Boutique** but rendered nowhere, and the `licensee`
+field of the signed licence, shown only in the licence card. The name now comes
+from the licence and is displayed in the sidebar brand block, beside the logo,
+replacing the generic "Paiements / Échelonnés" title. The editable field is gone
+from Paramètres.
+
+Fallback chain, in `AppSidebar.vue`: `license.license?.licensee` → the stored
+`shop_name` setting → the app title. The licence branch covers `valid`, `expired`
+and `machineMismatch`, the three statuses where a payload has actually verified;
+`missing`, `invalidSignature`, `malformed` and `clockTampered` carry no payload
+and fall through to the setting.
+
+No Rust change: `licensee` already crossed IPC on `LicenseInfo`. `shop_name`
+stays in `Settings`/`SettingsPatch` as the fallback, so `is_language_only`'s
+exhaustive destructure is untouched and the unlicensed write rule is unchanged.
+
+### Test cases
+
+**Executed.** Frontend unit **145 passed** (10 files), `npm run lint`,
+`npm run build` (`vue-tsc --noEmit`). E2E **48/48 passed** — run at the user's
+explicit request. No `cargo`: `src-tauri/` is not touched by this change.
+Integration suite not run (not requested, and it exercises no UI).
+
+New unit file `src/components/layout/AppSidebar.test.ts`, one case per branch:
+
+| Case                                            | Expectation                                          |
+| ----------------------------------------------- | ---------------------------------------------------- |
+| Valid licence, a stored `shopName` also present | `.brand-name` = licensee; the setting loses          |
+| `expired` with a verified payload               | Name still shown — a lapsed licence is not anonymous |
+| No licence, stored `shopName` set               | `.brand-name` = the setting                          |
+| No licence, `shopName` blank (whitespace only)  | Falls back to `.brand-line1` / `.brand-line2`        |
+
+E2E changes, all in `tests/e2e/run.mjs`:
+
+1. "app shell + sidebar render" now asserts `.brand-name` = "Boutique de
+   démonstration" (the mock's licensee) instead of the two title lines.
+2. "switching to Arabic mirrors the layout to RTL" no longer uses the brand block
+   as its i18n probe — a licence holder's name is a proper noun and identical in
+   every locale, so it would have silently stopped testing anything. Both the
+   French baseline and the Arabic assertion moved to `h1.page-title`.
+3. **New** — "the shop name is licence-owned: no input for it in settings":
+   asserts `#set-shop` is absent, and that the licence card and the sidebar show
+   the same name.
+
+### Issues found
+
+None. Two review findings were fixed during the work:
+
+1. `saveShop` in `SettingsView.vue` no longer wrote a shop name, making its name
+   misleading. Renamed `saveShopInfo`; it now patches `shopInfo` only.
+2. `features.md` still described the shop name as an editable setting, and the
+   "attested, not configured" decision was recorded nowhere. Updated
+   `features.md` and added the design point to `architecture.md` § Licensing.
+
+### Risks and edge cases
+
+1. **A long name is truncated, not fitted.** The sidebar is a fixed 232px and the
+   logo takes 42 of it. `.brand-name` clamps to two lines with the full value in
+   a `title` attribute. Covered by the markup, not by an automated test — jsdom
+   does not lay out CSS, and the E2E mock's licensee is short.
+2. **The fallback branches are unreachable in E2E.** The browser mock always
+   reports a valid licence, so only the unit tests exercise the setting and
+   app-title fallbacks. An install that loses its licence is not covered
+   end-to-end.
+3. **`shop_name` is now write-once-then-frozen.** Nothing in the UI can change
+   it, so an install seeded with "Électro Ménager" keeps that value forever as
+   its fallback. Harmless while a licence is present, but it means the fallback
+   name can be stale rather than merely generic.
+4. **The window title is still static.** `tauri.conf.json` sets it at build time,
+   so it cannot reflect the licence holder; only the in-app brand block does.
+5. **RTL was verified by construction, not by eye.** The brand block is a flex
+   row with `text-align: start`, and the E2E RTL test passes, but no test asserts
+   the mirrored position of the name relative to the logo.
+
+### Recommendations
+
+1. Look at the sidebar with a genuinely long licensee (a 60-character company
+   name) in both LTR and RTL before shipping — risk 1 and 5 are the two things
+   this pass could not verify automatically.
+2. If the shop name ever needs to appear on a printed receipt or export, read it
+   from the licence there too rather than from `shop_name`, or the two will
+   disagree exactly as they did before this change.
+
+---
+
 ## 2026-07-30 — Format-doc audit, and retiring the development key
 
 ### Summary
