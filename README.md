@@ -128,6 +128,72 @@ current.
 
 ## Building release binaries
 
+> **Every release build needs the licence public key.**
+>
+> ```bash
+> export PAYMENT_SCHEDULE_LICENSE_PUBKEY=<base64url-nopad public key>
+> ```
+>
+> There is no default: `src-tauri/src/license.rs` reads it with `env!`, so a
+> release build without it **fails to compile**, naming the variable. Debug
+> builds (`npm run tauri dev`, `cargo test`) get a development key from
+> `src-tauri/build.rs` and need no setup.
+>
+> Generate a production keypair with the `certificate-generation` tool, which
+> prints the line to export. Never build a release with the development key —
+> its secret half is published in `docs/license-format.md` §7, so anyone could
+> mint licences your build accepts.
+
+### Getting the key value
+
+`keygen` prints the exact line to use:
+
+```bash
+cd ../certificate-generation
+java -jar target/certificate-generation.jar keygen --out ~/secure/paymentschedule-production.key
+# → PAYMENT_SCHEDULE_LICENSE_PUBKEY=<43-character base64url value>
+```
+
+For a keypair you already have, read back **only** the public line — never the
+`seed=` line, which is the secret that mints licences:
+
+```bash
+grep '^publicKey=' ~/secure/paymentschedule-production.key | cut -d= -f2-
+```
+
+### Setting it in CI
+
+The release workflow reads the key from a **repository variable** and refuses to
+build without one. Set it once, at
+[Settings → Secrets and variables → Actions → Variables](https://github.com/MalekGn/payment-schedule-desktop/settings/variables/actions):
+
+| Field | Value                                 |
+| ----- | ------------------------------------- |
+| Name  | `PAYMENT_SCHEDULE_LICENSE_PUBKEY`     |
+| Value | the 43-character base64url public key |
+
+> **It must be a _Variable_, not a _Secret_.** The workflow reads
+> `${{ vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY }}`, so a value stored under Secrets
+> leaves `vars.` empty and the guard reports **"is not set"** — indistinguishable
+> from never having set it at all. This is the easiest hour to lose here.
+
+A public key is not confidential, which is why it is a variable: keeping it
+unmasked means a wrong-key release is legible in the logs instead of showing up
+as `***`.
+
+With the [GitHub CLI](https://cli.github.com/) instead of the browser:
+
+```bash
+gh variable set PAYMENT_SCHEDULE_LICENSE_PUBKEY \
+  --repo MalekGn/payment-schedule-desktop \
+  --body "<43-character base64url public key>"
+```
+
+On a tagged push the guard step prints `Licence public key present (43 chars)`
+before the build starts. It fails the job if the variable is missing, **or if it
+holds the development key** — a release that trusts a published keypair is worse
+than no release.
+
 ### Linux (`.deb` + `.AppImage`)
 
 ```bash

@@ -264,3 +264,46 @@ export interface SettingsPatch {
   shopInfo?: string;
   alertSoonDays?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Licence
+// ---------------------------------------------------------------------------
+
+/**
+ * Verdict on the installed licence. Mirrors the tags produced by
+ * `LicenseStatus::tag` in `src-tauri/src/license.rs` — a wire contract, so
+ * renaming a member here means renaming it there.
+ *
+ * Only `"valid"` grants access. `"clockTampered"` means the system date reads
+ * earlier than the latest date this install has seen.
+ */
+export type LicenseStatusTag =
+  | "valid"
+  | "expired"
+  | "machineMismatch"
+  | "invalidSignature"
+  | "malformed"
+  | "missing"
+  | "clockTampered";
+
+/** A licence whose signature has verified. Every field is vendor-attested. */
+export interface License {
+  licenseId: string;
+  licensee: string;
+  issuedAt: string;
+  expiresAt: string;
+  /** Fingerprint this licence is bound to, or null for a floating licence. */
+  machineId: string | null;
+  /** Reserved for later feature gating; `["*"]` means everything. */
+  features: string[];
+}
+
+export interface LicenseInfo {
+  status: LicenseStatusTag;
+  /** Present only when the signature verified, so it can be trusted. */
+  license: License | null;
+  /** ISO date, set only when `status` is `"expired"`. */
+  expiredOn: string | null;
+  /** **This machine's** fingerprint, which the customer reports to get a licence. */
+  machineId: string | null;
+}

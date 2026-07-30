@@ -27,6 +27,9 @@ const CODE_PARAMS: Record<string, readonly string[]> = {
   PREVIOUS_UNPAID: ["index"],
   BELOW_PAID: ["paidAmount"],
   PAID_ABOVE_AMOUNT: ["amount"],
+  // The licence status tag ("expired", "machineMismatch", …) that made an
+  // import fail. Interpolated so the user learns why their file was refused.
+  INVALID_LICENSE: ["status"],
 };
 
 /** A code is `SCREAMING_SNAKE_CASE`; anything else is not one of ours. */

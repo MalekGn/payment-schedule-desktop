@@ -10,6 +10,7 @@ import { useFormat } from "@/composables/useFormat";
 import { useSort } from "@/composables/useSort";
 import { useBack } from "@/composables/useBack";
 import { useUiStore } from "@/stores/ui";
+import { useLicenseStore } from "@/stores/license";
 import { api } from "@/api";
 import type { ClientDetail, Payment } from "@/types/models";
 
@@ -18,6 +19,7 @@ const { t } = useI18n();
 const router = useRouter();
 const fmt = useFormat();
 const ui = useUiStore();
+const license = useLicenseStore();
 const goBack = useBack("/clients");
 
 const detail = ref<ClientDetail | null>(null);
@@ -48,7 +50,10 @@ async function load() {
   const clientId = Number(props.id);
   try {
     detail.value = await api.getClientDetail(clientId);
-    payments.value = await api.listPaymentsForClient(clientId);
+    // Same rule as the purchase detail: the client record is the unlicensed
+    // baseline, their payment history is a licensed view. The `catch` below
+    // turns any failure into "not found", so a licence refusal must not reach it.
+    payments.value = license.isLicensed ? await api.listPaymentsForClient(clientId) : [];
     ui.pageTitle = `${detail.value.client.firstName} ${detail.value.client.lastName}`;
   } catch {
     notFound.value = true;
@@ -220,7 +225,13 @@ onMounted(load);
         <h2>{{ t("clients.detail.paymentHistory") }}</h2>
       </div>
       <EmptyState
-        v-if="payments.length === 0"
+        v-if="!license.isLicensed"
+        icon="lock"
+        :title="t('license.requiredTitle')"
+        :hint="t('license.requiredBody')"
+      />
+      <EmptyState
+        v-else-if="payments.length === 0"
         icon="card"
         :title="t('clients.detail.noPayments')"
       />

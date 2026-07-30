@@ -12,6 +12,7 @@ import type {
   ImpayeClient,
   ImpayeFilter,
   InstallmentEdit,
+  LicenseInfo,
   Payment,
   PaymentInput,
   PurchaseDetail,
@@ -206,4 +207,28 @@ export const api = {
    */
   openExternal: (url: string): Promise<void> =>
     isTauri() ? openWithOs(url) : Promise.resolve(mockDb.openExternal(url)),
+
+  // -- licence --
+  /**
+   * The current licence verdict. Never rejects: "no licence installed" is a
+   * status to render, not an error to catch.
+   *
+   * This drives what the UI shows, but it is not what enforces anything — the
+   * gated commands refuse on their own in Rust. Hiding a control here is a
+   * courtesy to the user, not a security boundary.
+   */
+  getLicenseStatus: (): Promise<LicenseInfo> =>
+    isTauri() ? invoke("get_license_status") : Promise.resolve(mockDb.getLicenseStatus()),
+
+  /**
+   * Validate the licence file at `sourcePath` and, only if it is valid, install
+   * it into the app-data directory.
+   *
+   * Rejects with `INVALID_LICENSE:{status}` when the file is not a valid
+   * licence for this machine, leaving any existing licence untouched.
+   */
+  importLicense: (sourcePath: string): Promise<LicenseInfo> =>
+    isTauri()
+      ? invoke("import_license", { sourcePath })
+      : Promise.resolve(mockDb.importLicense(sourcePath)),
 };

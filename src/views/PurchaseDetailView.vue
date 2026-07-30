@@ -10,6 +10,7 @@ import { useFormat } from "@/composables/useFormat";
 import { useSort } from "@/composables/useSort";
 import { useBack } from "@/composables/useBack";
 import { useUiStore } from "@/stores/ui";
+import { useLicenseStore } from "@/stores/license";
 import { api } from "@/api";
 import type { Installment, Payment, PurchaseDetail } from "@/types/models";
 
@@ -17,6 +18,7 @@ const props = defineProps<{ id: string }>();
 const { t } = useI18n();
 const fmt = useFormat();
 const ui = useUiStore();
+const license = useLicenseStore();
 const goBack = useBack("/achats");
 
 const detail = ref<PurchaseDetail | null>(null);
@@ -35,7 +37,11 @@ async function load() {
   const pid = Number(props.id);
   try {
     detail.value = await api.getPurchaseDetail(pid);
-    payments.value = await api.listPaymentsForPurchase(pid);
+    // Reading the purchase is the unlicensed baseline; its payment history is a
+    // licensed view. Skipping the gated call matters because the `catch` below
+    // treats any failure as "not found" — letting a licence refusal through
+    // would show a shop keeper a missing-page screen for a purchase that exists.
+    payments.value = license.isLicensed ? await api.listPaymentsForPurchase(pid) : [];
     ui.pageTitle = detail.value.purchase.reference;
   } catch {
     notFound.value = true;
@@ -77,7 +83,13 @@ async function onSaved(updated: PurchaseDetail) {
       <div class="card-header">
         <h2>{{ t("dashboard.detail.paymentHistory") }}</h2>
       </div>
-      <EmptyState v-if="payments.length === 0" icon="card" :title="t('paiements.empty')" />
+      <EmptyState
+        v-if="!license.isLicensed"
+        icon="lock"
+        :title="t('license.requiredTitle')"
+        :hint="t('license.requiredBody')"
+      />
+      <EmptyState v-else-if="payments.length === 0" icon="card" :title="t('paiements.empty')" />
       <div v-else class="table-scroll">
         <table class="table">
           <thead>

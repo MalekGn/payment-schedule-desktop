@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import {
@@ -10,9 +10,10 @@ import {
   ALERT_SOON_DAYS_MAX,
 } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
+import { useLicenseStore } from "@/stores/license";
 import { SUPPORTED_LOCALES, type AppLocale } from "@/i18n";
 import { resolveLogoSrc } from "@/lib/assets";
-import { formatDatePattern } from "@/composables/useFormat";
+import { formatDatePattern, useFormat } from "@/composables/useFormat";
 import { api, isTauri } from "@/api";
 import { toUserMessage } from "@/lib/errors";
 import { todayIso } from "@/lib/finance";
@@ -20,6 +21,22 @@ import { todayIso } from "@/lib/finance";
 const { t } = useI18n();
 const settings = useSettingsStore();
 const ui = useUiStore();
+const license = useLicenseStore();
+const fmt = useFormat();
+
+/**
+ * Everything on this page except the language and the licence section itself is
+ * a licensed setting. Language stays open deliberately: locking someone out of
+ * a language they cannot read would make the licence screen unusable, and the
+ * backend applies the same rule (`is_language_only` in `commands.rs`).
+ */
+const locked = computed(() => !license.isLicensed);
+
+/** `"machineMismatch"` → `license.statusMachineMismatch`. */
+const statusLabel = computed(() => {
+  const tag = license.status;
+  return t(`license.status${tag.charAt(0).toUpperCase()}${tag.slice(1)}`);
+});
 
 const shopName = ref(settings.settings.shopName);
 const shopInfo = ref(settings.settings.shopInfo);
@@ -126,10 +143,86 @@ async function backupDatabase() {
 function dateSample(pattern: string): string {
   return formatDatePattern(todayIso(), pattern);
 }
+
+// -- licence ---------------------------------------------------------------
+
+/** Let the user hand their machine fingerprint to the vendor without retyping 64 hex chars. */
+async function copyMachineId() {
+  const id = license.machineId;
+  if (!id) return;
+  try {
+    await navigator.clipboard.writeText(id);
+    ui.notify(t("license.copied"));
+  } catch (e) {
+    // A denied clipboard permission must not look like success; the value is
+    // still on screen and selectable.
+    console.error("clipboard write failed:", e);
+    ui.notify(toUserMessage(e, t), "error");
+  }
+}
+
+async function pickLicense() {
+  if (!isTauri()) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: "Licence", extensions: ["json"] }],
+  });
+  if (typeof selected !== "string") return;
+  await save(() => license.importFrom(selected), "license.imported");
+}
 </script>
 
 <template>
   <div class="settings">
+    <section class="card set-card">
+      <div class="card-header">
+        <h2>{{ t("license.title") }}</h2>
+      </div>
+      <div class="set-body">
+        <div class="lic-status" :class="`lic-status--${license.status}`">
+          <AppIcon :name="license.isLicensed ? 'check' : 'lock'" :size="18" />
+          <span>{{ t("license.status") }}:</span>
+          <strong>{{ statusLabel }}</strong>
+        </div>
+
+        <template v-if="license.license">
+          <div class="lic-row">
+            <span class="lic-key">{{ t("license.licensee") }}</span>
+            <span class="lic-val">{{ license.license.licensee }}</span>
+          </div>
+          <div class="lic-row">
+            <span class="lic-key">{{ t("license.licenseId") }}</span>
+            <span class="lic-val">{{ license.license.licenseId }}</span>
+          </div>
+          <div class="lic-row">
+            <span class="lic-key">
+              {{ license.status === "expired" ? t("license.expiredOn") : t("license.expiresAt") }}
+            </span>
+            <span class="lic-val">{{ fmt.date(license.license.expiresAt) }}</span>
+          </div>
+        </template>
+
+        <div class="field">
+          <span class="field-label">{{ t("license.machineId") }}</span>
+          <div v-if="license.machineId" class="lic-machine">
+            <code class="lic-fingerprint">{{ license.machineId }}</code>
+            <button class="btn btn--ghost btn--sm" type="button" @click="copyMachineId">
+              <AppIcon name="copy" :size="16" /> {{ t("license.copy") }}
+            </button>
+          </div>
+          <span v-else class="hint">{{ t("license.machineIdUnavailable") }}</span>
+          <span class="hint">{{ t("license.machineIdHint") }}</span>
+        </div>
+
+        <div v-if="isTauri()" class="field">
+          <button class="btn btn--primary btn--sm" type="button" @click="pickLicense">
+            <AppIcon name="upload" :size="16" /> {{ t("license.import") }}
+          </button>
+        </div>
+      </div>
+    </section>
+
     <section class="card set-card">
       <div class="card-header">
         <h2>{{ t("settings.general") }}</h2>
@@ -147,7 +240,13 @@ function dateSample(pattern: string): string {
 
         <div class="field">
           <label for="set-cur">{{ t("settings.currency") }}</label>
-          <select id="set-cur" class="select" :value="settings.currencyCode" @change="onCurrency">
+          <select
+            id="set-cur"
+            class="select"
+            :value="settings.currencyCode"
+            :disabled="locked"
+            @change="onCurrency"
+          >
             <option v-for="c in CURRENCIES" :key="c" :value="c">{{ c }}</option>
           </select>
           <span class="hint">{{ t("settings.currencyHint") }}</span>
@@ -155,7 +254,13 @@ function dateSample(pattern: string): string {
 
         <div class="field">
           <label for="set-date">{{ t("settings.dateFormat") }}</label>
-          <select id="set-date" class="select" :value="settings.dateFormat" @change="onDateFormat">
+          <select
+            id="set-date"
+            class="select"
+            :value="settings.dateFormat"
+            :disabled="locked"
+            @change="onDateFormat"
+          >
             <option v-for="f in DATE_FORMATS" :key="f" :value="f">
               {{ f }} — {{ dateSample(f) }}
             </option>
@@ -172,6 +277,7 @@ function dateSample(pattern: string): string {
             :min="ALERT_SOON_DAYS_MIN"
             :max="ALERT_SOON_DAYS_MAX"
             step="1"
+            :disabled="locked"
             @change="onAlertSoonDays"
           />
           <span class="hint">{{ t("settings.alertSoonDaysHint") }}</span>
@@ -192,13 +298,19 @@ function dateSample(pattern: string): string {
               <AppIcon v-else name="washer" :size="30" :stroke-width="1.6" />
             </div>
             <div class="logo-actions">
-              <button class="btn btn--ghost btn--sm" type="button" @click="pickLogo">
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                :disabled="locked"
+                @click="pickLogo"
+              >
                 <AppIcon name="upload" :size="16" /> {{ t("settings.uploadLogo") }}
               </button>
               <button
                 v-if="settings.logoPath"
                 class="btn btn--ghost btn--sm"
                 type="button"
+                :disabled="locked"
                 @click="removeLogo"
               >
                 <AppIcon name="trash" :size="16" /> {{ t("settings.removeLogo") }}
@@ -217,20 +329,27 @@ function dateSample(pattern: string): string {
 
         <div class="field">
           <label for="set-shop">{{ t("settings.shopName") }}</label>
-          <input id="set-shop" v-model="shopName" class="input" @blur="saveShop" />
+          <input
+            id="set-shop"
+            v-model="shopName"
+            class="input"
+            :disabled="locked"
+            @blur="saveShop"
+          />
         </div>
         <div class="field">
           <label for="set-info">{{ t("settings.shopInfo") }}</label>
           <textarea
             id="set-info"
             v-model="shopInfo"
+            :disabled="locked"
             class="textarea"
             rows="3"
             :placeholder="t('settings.shopInfoPlaceholder')"
             @blur="saveShop"
           />
         </div>
-        <button class="btn btn--primary" type="button" @click="saveShop">
+        <button class="btn btn--primary" type="button" :disabled="locked" @click="saveShop">
           {{ t("common.saveChanges") }}
         </button>
       </div>
@@ -244,7 +363,7 @@ function dateSample(pattern: string): string {
       </div>
       <div class="set-body">
         <div class="field">
-          <button class="btn btn--ghost" type="button" @click="backupDatabase">
+          <button class="btn btn--ghost" type="button" :disabled="locked" @click="backupDatabase">
             <AppIcon name="download" :size="16" /> {{ t("settings.backupAction") }}
           </button>
           <span class="hint">{{ t("settings.backupHint") }}</span>
@@ -313,5 +432,51 @@ function dateSample(pattern: string): string {
 }
 .textarea {
   resize: vertical;
+}
+
+/* -- licence -- */
+.lic-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  color: var(--text-secondary);
+}
+.lic-status strong {
+  color: var(--text-primary);
+}
+.lic-status--valid {
+  color: var(--success, #16a34a);
+}
+.lic-row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+.lic-key {
+  min-width: 160px;
+  color: var(--text-secondary);
+}
+.lic-val {
+  font-weight: 600;
+}
+.lic-machine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* The fingerprint is 64 hex characters; it must wrap rather than widen the card. */
+.lic-fingerprint {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: all;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
 }
 </style>

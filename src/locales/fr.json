@@ -377,6 +377,35 @@
     "backupAction": "Sauvegarder la base",
     "backupDone": "Sauvegarde enregistrée."
   },
+  "license": {
+    "title": "Licence",
+    "status": "État",
+    "statusValid": "Active",
+    "statusExpired": "Expirée",
+    "statusMachineMismatch": "Émise pour un autre ordinateur",
+    "statusInvalidSignature": "Signature invalide",
+    "statusMalformed": "Fichier illisible",
+    "statusMissing": "Aucune licence",
+    "statusClockTampered": "Horloge système incohérente",
+    "licensee": "Titulaire",
+    "licenseId": "Référence",
+    "expiresAt": "Expire le",
+    "expiredOn": "Expirée le",
+    "machineId": "Identifiant de cet ordinateur",
+    "machineIdHint": "Communiquez cet identifiant pour obtenir une licence.",
+    "machineIdUnavailable": "Indisponible sur cet ordinateur.",
+    "copy": "Copier",
+    "copied": "Identifiant copié.",
+    "import": "Importer une licence",
+    "imported": "Licence installée.",
+    "requiredTitle": "Fonctionnalité sous licence",
+    "requiredBody": "Cette page nécessite une licence active. Vos clients et vos achats restent consultables.",
+    "expiredBody": "Votre licence a expiré le {date}. Vos clients et vos achats restent consultables.",
+    "machineMismatchBody": "Cette licence a été émise pour un autre ordinateur.",
+    "clockTamperedBody": "La date du système est antérieure à la dernière date connue. Rétablissez l'heure correcte.",
+    "goToSettings": "Gérer la licence",
+    "unlicensedNotice": "Version sans licence — lecture des clients et des achats uniquement."
+  },
   "validation": {
     "required": "Ce champ est requis.",
     "numeric": "Veuillez saisir un nombre valide.",
@@ -418,7 +447,9 @@
     "amountLocked": "Cette tranche est soldée — son montant ne peut plus être modifié.",
     "dueDateOutOfOrder": "L'échéance doit rester entre celle de la tranche précédente et celle de la suivante.",
     "paidAboveAmount": "Supérieur au montant de cette tranche ({amount}).",
-    "noPaymentToDate": "Aucun paiement n'a encore été encaissé sur cette tranche : il n'y a pas de date à modifier."
+    "noPaymentToDate": "Aucun paiement n'a encore été encaissé sur cette tranche : il n'y a pas de date à modifier.",
+    "licenseRequired": "Cette fonctionnalité nécessite une licence active.",
+    "invalidLicense": "Fichier de licence refusé ({status}). La licence actuelle est conservée."
   },
   "filters": {
     "date": "Filtrer par date",

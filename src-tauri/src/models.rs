@@ -32,7 +32,7 @@ pub struct Client {
 
 /// Which slice of the client list to return. Serialized as
 /// `"active" | "archived" | "all"`; absent means [`ClientScope::Active`].
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ClientScope {
     #[default]
@@ -102,7 +102,7 @@ pub struct Purchase {
 
 /// Which slice of the purchase list to return. Serialized as
 /// `"active" | "archived" | "all"`; absent means [`PurchaseScope::Active`].
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PurchaseScope {
     #[default]

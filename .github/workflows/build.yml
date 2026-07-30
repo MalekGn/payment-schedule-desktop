@@ -174,6 +174,36 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      # The licence public key has no compiled-in default: `src/license.rs` reads
+      # it with `env!`, so a release build without it does not compile. Checking
+      # here turns that into one readable line instead of a cargo error buried in
+      # tauri-action's output, and stops a tag from half-publishing a release.
+      #
+      # It is a repository *variable*, not a secret: a public key is not
+      # confidential, and masking it in the logs would only make a wrong-key
+      # release harder to diagnose.
+      - name: Require the licence signing public key
+        shell: bash
+        env:
+          LICENSE_PUBKEY: ${{ vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY }}
+        run: |
+          if [ -z "$LICENSE_PUBKEY" ]; then
+            echo "::error::Repository variable PAYMENT_SCHEDULE_LICENSE_PUBKEY is not set."
+            echo "Release builds must embed the production licence public key."
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables."
+            echo "Generate one with the certificate-generation tool; see docs/license-format.md section 7."
+            exit 1
+          fi
+          # Guard against shipping a build that trusts the published development
+          # keypair, whose secret half is printed in docs/license-format.md.
+          if [ "$LICENSE_PUBKEY" = "vA58s7GMDPCW-FnoVy7jDxJQWShUznnJM2aFPT5TVsc" ]; then
+            echo "::error::PAYMENT_SCHEDULE_LICENSE_PUBKEY is the published DEVELOPMENT key."
+            echo "Anyone who has read docs/license-format.md could mint licences this build accepts."
+            echo "Generate a production keypair and set the variable to its public half."
+            exit 1
+          fi
+          echo "Licence public key present (${#LICENSE_PUBKEY} chars)."
+
       # Builds the frontend (via beforeBuildCommand), then the native bundles, then
       # creates/updates the GitHub Release for this tag and uploads the installers to it.
       # Both matrix runners target the same tagName, so they attach to one shared Release.
@@ -182,6 +212,7 @@ jobs:
         uses: tauri-apps/tauri-action@42e9df6c59070d114bf90dcd3943a1b8f138b113 # v0.5.20
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAYMENT_SCHEDULE_LICENSE_PUBKEY: ${{ vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "paymentSchedule ${{ github.ref_name }}"

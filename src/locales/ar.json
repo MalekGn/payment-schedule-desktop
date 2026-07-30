@@ -377,6 +377,35 @@
     "backupAction": "حفظ نسخة احتياطية",
     "backupDone": "تم حفظ النسخة الاحتياطية."
   },
+  "license": {
+    "title": "الرخصة",
+    "status": "الحالة",
+    "statusValid": "سارية",
+    "statusExpired": "منتهية",
+    "statusMachineMismatch": "صادرة لجهاز آخر",
+    "statusInvalidSignature": "توقيع غير صالح",
+    "statusMalformed": "ملف غير قابل للقراءة",
+    "statusMissing": "لا توجد رخصة",
+    "statusClockTampered": "ساعة النظام غير متسقة",
+    "licensee": "صاحب الرخصة",
+    "licenseId": "المرجع",
+    "expiresAt": "تنتهي في",
+    "expiredOn": "انتهت في",
+    "machineId": "معرّف هذا الجهاز",
+    "machineIdHint": "أرسل هذا المعرّف للحصول على رخصة.",
+    "machineIdUnavailable": "غير متوفر على هذا الجهاز.",
+    "copy": "نسخ",
+    "copied": "تم نسخ المعرّف.",
+    "import": "استيراد رخصة",
+    "imported": "تم تثبيت الرخصة.",
+    "requiredTitle": "ميزة مرخّصة",
+    "requiredBody": "تتطلب هذه الصفحة رخصة سارية. تبقى بيانات العملاء والمشتريات قابلة للاطلاع.",
+    "expiredBody": "انتهت رخصتك في {date}. تبقى بيانات العملاء والمشتريات قابلة للاطلاع.",
+    "machineMismatchBody": "صدرت هذه الرخصة لجهاز مختلف.",
+    "clockTamperedBody": "تاريخ النظام أقدم من آخر تاريخ معروف. يرجى ضبط الوقت الصحيح.",
+    "goToSettings": "إدارة الرخصة",
+    "unlicensedNotice": "نسخة بدون رخصة — الاطلاع على العملاء والمشتريات فقط."
+  },
   "validation": {
     "required": "هذا الحقل مطلوب.",
     "numeric": "يرجى إدخال رقم صالح.",
@@ -418,7 +447,9 @@
     "amountLocked": "هذا القسط مسوّى — لم يعد بالإمكان تغيير مبلغه.",
     "dueDateOutOfOrder": "يجب أن يبقى تاريخ الاستحقاق بين تاريخ القسط السابق وتاريخ القسط التالي.",
     "paidAboveAmount": "أكبر من قيمة هذا القسط ({amount}).",
-    "noPaymentToDate": "لم يتم تحصيل أي دفعة على هذا القسط بعد، فليس هناك تاريخ دفع لتغييره."
+    "noPaymentToDate": "لم يتم تحصيل أي دفعة على هذا القسط بعد، فليس هناك تاريخ دفع لتغييره.",
+    "licenseRequired": "تتطلب هذه الميزة رخصة سارية.",
+    "invalidLicense": "تم رفض ملف الرخصة ({status}). لم يتم تغيير رخصتك الحالية."
   },
   "filters": {
     "date": "تصفية حسب التاريخ",

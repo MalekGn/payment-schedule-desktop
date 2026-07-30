@@ -5,12 +5,14 @@ import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import { useStatsStore } from "@/stores/stats";
 import { useSettingsStore } from "@/stores/settings";
+import { useLicenseStore } from "@/stores/license";
 import { resolveLogoSrc } from "@/lib/assets";
 
 const { t } = useI18n();
 const router = useRouter();
 const stats = useStatsStore();
 const settings = useSettingsStore();
+const license = useLicenseStore();
 
 interface NavItem {
   name: string;
@@ -18,20 +20,23 @@ interface NavItem {
   icon: string;
   badge?: () => number;
   badgeKind?: "danger" | "warning";
+  /** Mirrors `meta.licensed` in the router; shows a padlock when unlicensed. */
+  licensed?: boolean;
 }
 
 const items: NavItem[] = [
-  { name: "dashboard", route: "/", icon: "home" },
+  { name: "dashboard", route: "/", icon: "home", licensed: true },
   { name: "achats", route: "/achats", icon: "cart" },
   { name: "clients", route: "/clients", icon: "users" },
-  { name: "paiements", route: "/paiements", icon: "card" },
-  { name: "echeances", route: "/echeances", icon: "calendar" },
+  { name: "paiements", route: "/paiements", icon: "card", licensed: true },
+  { name: "echeances", route: "/echeances", icon: "calendar", licensed: true },
   {
     name: "impayes",
     route: "/impayes",
     icon: "alert",
     badge: () => stats.overdueClients,
     badgeKind: "danger",
+    licensed: true,
   },
   {
     name: "alertes",
@@ -39,10 +44,16 @@ const items: NavItem[] = [
     icon: "bell",
     badge: () => stats.overdueInstallments,
     badgeKind: "warning",
+    licensed: true,
   },
-  { name: "rapports", route: "/rapports", icon: "report" },
+  { name: "rapports", route: "/rapports", icon: "report", licensed: true },
   { name: "parametres", route: "/parametres", icon: "settings" },
 ];
+
+/** A padlock replaces the count badge on locked entries — never both. */
+function isLocked(item: NavItem): boolean {
+  return item.licensed === true && !license.isLicensed;
+}
 
 const logoSrc = computed(() => resolveLogoSrc(settings.logoPath));
 
@@ -75,13 +86,17 @@ function newPurchase() {
         :key="item.name"
         :to="item.route"
         class="nav-item"
+        :class="{ 'is-locked': isLocked(item) }"
         active-class="is-active"
         :exact-active-class="item.route === '/' ? 'is-active' : ''"
       >
         <span class="nav-icon"><AppIcon :name="item.icon" :size="19" /></span>
         <span class="nav-label">{{ t(`nav.${item.name}`) }}</span>
+        <span v-if="isLocked(item)" class="nav-lock" :title="t('license.requiredTitle')">
+          <AppIcon name="lock" :size="14" />
+        </span>
         <span
-          v-if="item.badge && item.badge() > 0"
+          v-else-if="item.badge && item.badge() > 0"
           class="nav-badge"
           :class="`nav-badge--${item.badgeKind}`"
           >{{ item.badge() }}</span
@@ -220,6 +235,17 @@ function newPurchase() {
   font-size: 12px;
   font-weight: 700;
   color: #fff;
+}
+/* Locked entries stay clickable — the destination explains why it is locked,
+   which is more useful than a dead link. They are only dimmed. */
+.nav-item.is-locked .nav-label,
+.nav-item.is-locked .nav-icon {
+  opacity: 0.55;
+}
+.nav-lock {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.55;
 }
 .nav-badge--danger {
   background: var(--danger);

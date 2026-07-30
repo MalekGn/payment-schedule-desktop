@@ -15,6 +15,7 @@ import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { parseErrorCode, toUserMessage } from "@/lib/errors";
 import { useUiStore } from "@/stores/ui";
+import { useLicenseStore } from "@/stores/license";
 import { useStatsStore } from "@/stores/stats";
 import { api } from "@/api";
 import type { PurchaseDetail, PurchaseScope, PurchaseSummary } from "@/types/models";
@@ -24,6 +25,7 @@ const route = useRoute();
 const router = useRouter();
 const fmt = useFormat();
 const ui = useUiStore();
+const license = useLicenseStore();
 const stats = useStatsStore();
 
 const purchases = ref<PurchaseSummary[]>([]);
@@ -237,6 +239,12 @@ async function confirmPending() {
                 class="tab"
                 :class="{ 'tab--active': scope === sc.key }"
                 type="button"
+                :disabled="sc.key !== 'active' && !license.isLicensed"
+                :title="
+                  sc.key !== 'active' && !license.isLicensed
+                    ? t('license.requiredTitle')
+                    : undefined
+                "
                 @click="scope = sc.key"
               >
                 {{ t(sc.label) }}
