@@ -26,12 +26,44 @@ use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
     CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER,
     FUTURE_PAID_DATE, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT, INVALID_INSTALLMENT_COUNT,
-    INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LOGO_TYPE, INVALID_TOTAL_PRICE,
-    LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, NO_REBALANCE_ROOM, OVERPAYMENT, PAID_ABOVE_AMOUNT,
-    PREVIOUS_UNPAID, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED,
-    PURCHASE_NOT_FOUND, SUM_MISMATCH,
+    INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE,
+    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, NO_REBALANCE_ROOM,
+    OVERPAYMENT, PAID_ABOVE_AMOUNT, PREVIOUS_UNPAID, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS,
+    PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, SUM_MISMATCH,
 };
+use crate::license::{self, LicenseInfo, LicenseState, LicenseStatus};
 use crate::models::*;
+
+// ===========================================================================
+// Licence gate
+// ===========================================================================
+//
+// The gate lives here, in Rust, and not only in the UI. The renderer is a
+// WebView the user controls: hiding a button behind `v-if` is a statement of
+// intent, not a control. These are the calls that must actually refuse.
+//
+// The unlicensed baseline is deliberately narrow but genuinely usable: a shop
+// keeper can still *read* their clients and purchases, so an expired licence
+// never holds their own ledger hostage. Everything that changes data, and every
+// derived view (dashboard, payments, échéances, impayés, alerts), is licensed.
+//
+// One honest limitation: sorting and most filtering happen in the browser on
+// already-fetched rows (`useSort.ts`, `ListFilterBar.vue`), so the backend never
+// sees them and cannot enforce them. `scope` is the exception — a real argument,
+// degraded below rather than refused.
+
+/// Refuse a licensed command when the install has no valid licence.
+///
+/// Takes `&LicenseState`, not `&State<'_, LicenseState>`, so the call sites keep
+/// working by deref coercion while the rule itself stays reachable from
+/// `cargo test` without a Tauri runtime — the same reasoning behind the `*_impl`
+/// split used throughout this module.
+fn require_license(lic: &LicenseState) -> DbResult<()> {
+    if lic.is_valid() {
+        return Ok(());
+    }
+    Err(AppError::validation(LICENSE_REQUIRED))
+}
 
 // ===========================================================================
 // Row mappers & shared helpers
@@ -219,9 +251,27 @@ fn build_purchase_summary(conn: &Connection, purchase_id: i64) -> DbResult<Purch
 #[tauri::command]
 pub async fn list_clients(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     scope: Option<ClientScope>,
 ) -> DbResult<Vec<ClientSummary>> {
-    list_clients_impl(&db.lock(), scope.unwrap_or_default())
+    // Reading your own client list is the unlicensed baseline, so this degrades
+    // instead of refusing: without a licence the caller always gets the active
+    // slice, whatever it asked for. Refusing outright would need a new error
+    // code and would leave the page blank; silently narrowing keeps the baseline
+    // honest — the archive is a licensed view, the client list is not.
+    let scope = licensed_scope(&lic, scope);
+    list_clients_impl(&db.lock(), scope)
+}
+
+/// Force an unlicensed caller onto the default (active) slice.
+///
+/// Generic over the two scope enums, which both derive `Default` with `Active`
+/// as the default variant.
+fn licensed_scope<T: Default>(lic: &LicenseState, scope: Option<T>) -> T {
+    if lic.is_valid() {
+        return scope.unwrap_or_default();
+    }
+    T::default()
 }
 
 /// Split out despite being a read, which the module doc reserves for mutating
@@ -315,7 +365,12 @@ pub async fn get_client_detail(db: State<'_, Db>, id: i64) -> DbResult<ClientDet
 }
 
 #[tauri::command]
-pub async fn create_client(db: State<'_, Db>, input: ClientInput) -> DbResult<Client> {
+pub async fn create_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    input: ClientInput,
+) -> DbResult<Client> {
+    require_license(&lic)?;
     let conn = db.lock();
     conn.execute(
         "INSERT INTO client (first_name, last_name, phone, address, email)
@@ -332,7 +387,13 @@ pub async fn create_client(db: State<'_, Db>, input: ClientInput) -> DbResult<Cl
 }
 
 #[tauri::command]
-pub async fn update_client(db: State<'_, Db>, id: i64, input: ClientInput) -> DbResult<Client> {
+pub async fn update_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+    input: ClientInput,
+) -> DbResult<Client> {
+    require_license(&lic)?;
     let conn = db.lock();
     conn.execute(
         "UPDATE client SET first_name = ?1, last_name = ?2, phone = ?3,
@@ -352,7 +413,12 @@ pub async fn update_client(db: State<'_, Db>, id: i64, input: ClientInput) -> Db
 /// Archive a client: hide them from the active list while keeping every
 /// purchase, installment and payment row exactly as it was.
 #[tauri::command]
-pub async fn archive_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn archive_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     archive_client_impl(&mut db.lock(), id)
 }
 
@@ -389,7 +455,12 @@ pub(crate) fn archive_client_impl(conn: &mut Connection, id: i64) -> DbResult<()
 
 /// Restore an archived client to the active list.
 #[tauri::command]
-pub async fn restore_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn restore_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     restore_client_impl(&mut db.lock(), id)
 }
 
@@ -411,7 +482,12 @@ pub(crate) fn restore_client_impl(conn: &mut Connection, id: i64) -> DbResult<()
 /// entry. Anyone with history is archived instead, never destroyed: the app's
 /// only other recovery path is a backup the user had to have taken first.
 #[tauri::command]
-pub async fn delete_client(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn delete_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     delete_client_impl(&mut db.lock(), id)
 }
 
@@ -468,13 +544,19 @@ pub(crate) fn list_purchase_ids(conn: &Connection, scope: PurchaseScope) -> DbRe
 #[tauri::command]
 pub async fn list_purchases(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     scope: Option<PurchaseScope>,
     search: Option<String>,
 ) -> DbResult<Vec<PurchaseSummary>> {
+    // Same baseline rule as `list_clients`: reading the purchase list is free,
+    // narrowing it is licensed. An unlicensed caller is pinned to the active
+    // slice with no server-side search.
+    let licensed = lic.is_valid();
     let conn = db.lock();
-    let ids = list_purchase_ids(&conn, scope.unwrap_or_default())?;
+    let ids = list_purchase_ids(&conn, licensed_scope(&lic, scope))?;
 
     let needle = search
+        .filter(|_| licensed)
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
     let mut out = Vec::new();
@@ -499,7 +581,12 @@ pub async fn get_purchase_detail(db: State<'_, Db>, id: i64) -> DbResult<Purchas
 }
 
 #[tauri::command]
-pub async fn create_purchase(db: State<'_, Db>, input: PurchaseInput) -> DbResult<PurchaseDetail> {
+pub async fn create_purchase(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    input: PurchaseInput,
+) -> DbResult<PurchaseDetail> {
+    require_license(&lic)?;
     create_purchase_impl(&mut db.lock(), input)
 }
 
@@ -691,9 +778,11 @@ fn schedule_changed(
 #[tauri::command]
 pub async fn update_purchase(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     id: i64,
     input: PurchaseInput,
 ) -> DbResult<PurchaseDetail> {
+    require_license(&lic)?;
     update_purchase_impl(&mut db.lock(), id, input)
 }
 
@@ -749,7 +838,12 @@ pub(crate) fn update_purchase_impl(
 
 /// Archive a purchase: remove it from every list and every total, reversibly.
 #[tauri::command]
-pub async fn archive_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn archive_purchase(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     archive_purchase_impl(&mut db.lock(), id)
 }
 
@@ -781,7 +875,12 @@ pub(crate) fn archive_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<
 
 /// Restore an archived purchase, putting it back into every total.
 #[tauri::command]
-pub async fn restore_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn restore_purchase(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     restore_purchase_impl(&mut db.lock(), id)
 }
 
@@ -800,7 +899,12 @@ pub(crate) fn restore_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<
 /// the two-step real rather than a convention the UI could forget. Combined
 /// with the archive guard, a purchase carrying payments can never reach here.
 #[tauri::command]
-pub async fn delete_purchase(db: State<'_, Db>, id: i64) -> DbResult<()> {
+pub async fn delete_purchase(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    id: i64,
+) -> DbResult<()> {
+    require_license(&lic)?;
     delete_purchase_impl(&mut db.lock(), id)
 }
 
@@ -923,9 +1027,11 @@ fn load_installment_rows(
 #[tauri::command]
 pub async fn update_installment(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     id: i64,
     edit: InstallmentEdit,
 ) -> DbResult<PurchaseDetail> {
+    require_license(&lic)?;
     update_installment_impl(&mut db.lock(), id, edit)
 }
 
@@ -1141,7 +1247,12 @@ pub(crate) fn update_installment_impl(
 /// the installment's `paid_amount` accumulates and `paid_date` is set once it
 /// is fully covered.
 #[tauri::command]
-pub async fn record_payment(db: State<'_, Db>, input: PaymentInput) -> DbResult<PurchaseDetail> {
+pub async fn record_payment(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    input: PaymentInput,
+) -> DbResult<PurchaseDetail> {
+    require_license(&lic)?;
     record_payment_impl(&mut db.lock(), input)
 }
 
@@ -1237,8 +1348,10 @@ fn map_payment(row: &rusqlite::Row) -> rusqlite::Result<Payment> {
 #[tauri::command]
 pub async fn list_payments_for_purchase(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     purchase_id: i64,
 ) -> DbResult<Vec<Payment>> {
+    require_license(&lic)?;
     let conn = db.lock();
     let mut stmt = conn.prepare(
         "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
@@ -1257,7 +1370,12 @@ pub async fn list_payments_for_purchase(
 }
 
 #[tauri::command]
-pub async fn list_all_payments(db: State<'_, Db>, limit: Option<i64>) -> DbResult<Vec<Payment>> {
+pub async fn list_all_payments(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    limit: Option<i64>,
+) -> DbResult<Vec<Payment>> {
+    require_license(&lic)?;
     let conn = db.lock();
     let mut stmt = conn.prepare(
         "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
@@ -1276,7 +1394,12 @@ pub async fn list_all_payments(db: State<'_, Db>, limit: Option<i64>) -> DbResul
 }
 
 #[tauri::command]
-pub async fn list_payments_for_client(db: State<'_, Db>, client_id: i64) -> DbResult<Vec<Payment>> {
+pub async fn list_payments_for_client(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    client_id: i64,
+) -> DbResult<Vec<Payment>> {
+    require_license(&lic)?;
     let conn = db.lock();
     let mut stmt = conn.prepare(
         "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
@@ -1303,8 +1426,10 @@ pub async fn list_payments_for_client(db: State<'_, Db>, client_id: i64) -> DbRe
 #[tauri::command]
 pub async fn list_impayes(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     filter: Option<ImpayeFilter>,
 ) -> DbResult<Vec<ImpayeClient>> {
+    require_license(&lic)?;
     let conn = db.lock();
     build_impayes(&conn, filter.unwrap_or_default(), None)
 }
@@ -1428,7 +1553,11 @@ fn build_impayes(
 /// All installments enriched with client/purchase context, for the schedule
 /// (Échéances) screen. Sorted by due date.
 #[tauri::command]
-pub async fn list_schedule(db: State<'_, Db>) -> DbResult<Vec<ScheduleRow>> {
+pub async fn list_schedule(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+) -> DbResult<Vec<ScheduleRow>> {
+    require_license(&lic)?;
     list_schedule_rows(&db.lock())
 }
 
@@ -1477,7 +1606,12 @@ pub(crate) fn list_schedule_rows(conn: &Connection) -> DbResult<Vec<ScheduleRow>
 // ===========================================================================
 
 #[tauri::command]
-pub async fn get_dashboard(db: State<'_, Db>, upcoming_days: Option<i64>) -> DbResult<Dashboard> {
+pub async fn get_dashboard(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    upcoming_days: Option<i64>,
+) -> DbResult<Dashboard> {
+    require_license(&lic)?;
     let conn = db.lock();
     let today = today();
     let today_str = today.to_string();
@@ -1685,9 +1819,43 @@ pub async fn get_settings(db: State<'_, Db>) -> DbResult<Settings> {
     Ok(read_settings(&conn))
 }
 
+/// Update settings. Unlicensed, only `language` may be changed.
+///
+/// Language stays open because an unlicensed user still has to be able to *read*
+/// the licence screen — locking them out of a language they cannot read would
+/// make the app unrecoverable. Everything else here (shop branding, currency,
+/// date format, alert window) is configuration of a licensed product.
 #[tauri::command]
-pub async fn update_settings(db: State<'_, Db>, patch: SettingsPatch) -> DbResult<Settings> {
+pub async fn update_settings(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    patch: SettingsPatch,
+) -> DbResult<Settings> {
+    if !lic.is_valid() && !is_language_only(&patch) {
+        return Err(AppError::validation(LICENSE_REQUIRED));
+    }
     update_settings_impl(&mut db.lock(), patch)
+}
+
+/// Whether a patch touches nothing but the language.
+///
+/// Written as an exhaustive destructure on purpose: adding a field to
+/// [`SettingsPatch`] without deciding whether it is licensed becomes a compile
+/// error here rather than a silently ungated setting.
+fn is_language_only(patch: &SettingsPatch) -> bool {
+    let SettingsPatch {
+        language: _,
+        currency_code,
+        date_format,
+        shop_name,
+        shop_info,
+        alert_soon_days,
+    } = patch;
+    currency_code.is_none()
+        && date_format.is_none()
+        && shop_name.is_none()
+        && shop_info.is_none()
+        && alert_soon_days.is_none()
 }
 
 pub(crate) fn update_settings_impl(
@@ -1771,9 +1939,11 @@ fn looks_like_image(bytes: &[u8]) -> bool {
 #[tauri::command]
 pub async fn set_logo(
     db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
     app: tauri::AppHandle,
     source_path: String,
 ) -> DbResult<Settings> {
+    require_license(&lic)?;
     use std::io::Read;
     use tauri::Manager;
 
@@ -1843,7 +2013,8 @@ fn remove_existing_logos(data_dir: &std::path::Path) {
 }
 
 #[tauri::command]
-pub async fn clear_logo(db: State<'_, Db>) -> DbResult<Settings> {
+pub async fn clear_logo(db: State<'_, Db>, lic: State<'_, LicenseState>) -> DbResult<Settings> {
+    require_license(&lic)?;
     let conn = db.lock();
     let existing = get_setting(&conn, "logo_path", "");
     if !existing.is_empty() {
@@ -1871,7 +2042,12 @@ pub async fn clear_logo(db: State<'_, Db>) -> DbResult<Settings> {
 /// file. This is the only recovery path the app has — client deletes cascade
 /// through purchases, installments and payments and are irreversible.
 #[tauri::command]
-pub async fn backup_database(db: State<'_, Db>, dest: String) -> DbResult<()> {
+pub async fn backup_database(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    dest: String,
+) -> DbResult<()> {
+    require_license(&lic)?;
     use std::io::Read;
 
     let dest_path = std::path::Path::new(&dest);
@@ -1926,10 +2102,106 @@ pub async fn backup_database(db: State<'_, Db>, dest: String) -> DbResult<()> {
     Ok(())
 }
 
+// ===========================================================================
+// Licence
+// ===========================================================================
+
+/// Validate the installed licence, applying the clock guard and advancing the
+/// high-water mark.
+///
+/// This is the single place the three pieces are combined — `lib.rs` calls it at
+/// startup and [`import_license`] calls it again after installing a file. The
+/// watermark I/O lives here rather than in `license.rs` so that module stays
+/// free of persistence concerns and its core stays a pure function.
+pub(crate) fn evaluate_license(app: &tauri::AppHandle, conn: &Connection) -> LicenseStatus {
+    // An unreadable licence file is treated as absent: the app must still start.
+    // `validate_installed` has already logged the underlying cause.
+    let status = license::validate_installed(app).unwrap_or(LicenseStatus::Missing);
+
+    let today = today();
+    let stored = get_setting(conn, license::CLOCK_WATERMARK_KEY, "");
+    let watermark = parse_date(&stored).ok();
+
+    let status = license::apply_clock_guard(status, today, watermark);
+
+    if let Some(next) = license::next_watermark(watermark, today) {
+        // Best-effort: a read-only database must not stop the app from running.
+        if let Err(e) = put_setting(conn, license::CLOCK_WATERMARK_KEY, &next.to_string()) {
+            log::warn!("could not advance the licence clock watermark: {e}");
+        }
+    }
+
+    status
+}
+
+/// The current licence verdict, for the UI.
+///
+/// Never fails: every outcome, including "no licence installed", is a status the
+/// frontend renders rather than an error it has to catch.
+#[tauri::command]
+pub async fn get_license_status(lic: State<'_, LicenseState>) -> DbResult<LicenseInfo> {
+    Ok(lic.get().to_info(license::machine_fingerprint()))
+}
+
+/// Install a licence file the user picked, after proving it is valid.
+///
+/// `source_path` is untrusted even though it normally comes from the native
+/// picker — the renderer can call this command with any path at all. The same
+/// reasoning as [`set_logo`], with one difference that matters: a licence
+/// validates itself. There is no need to sniff the content, because a file that
+/// does not carry a good signature is rejected outright.
+///
+/// The file is validated **before** it is copied, so a bad import can never
+/// displace a licence that was working. That ordering is the whole point of this
+/// command; reversing it would let a stray file lock a paying customer out.
+#[tauri::command]
+pub async fn import_license(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    app: tauri::AppHandle,
+    source_path: String,
+) -> DbResult<LicenseInfo> {
+    use tauri::Manager;
+
+    let source = std::path::Path::new(&source_path);
+    let candidate =
+        license::validate_file(source, today(), license::machine_fingerprint().as_deref())?;
+
+    if !candidate.is_valid() {
+        // The status tag is safe to send — it is a fixed vocabulary, not parser
+        // detail — and the user needs to know *why* their file was refused.
+        let info = candidate.to_info(None);
+        log::warn!("licence import refused: {}", info.status);
+        return Err(AppError::conflict(INVALID_LICENSE, info.status));
+    }
+
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+    let dest = data_dir.join("license.json");
+    std::fs::copy(source, &dest)?;
+
+    // Re-evaluate from the installed path rather than trusting `candidate`:
+    // this is what every later startup will see, and it also advances the clock
+    // watermark. If the copy landed wrong, the user finds out now.
+    let status = evaluate_license(&app, &db.lock());
+    lic.set(status.clone());
+
+    if status.is_valid() {
+        log::info!("licence installed");
+    } else {
+        log::warn!(
+            "licence re-check after install returned {}",
+            status.to_info(None).status
+        );
+    }
+    Ok(status.to_info(license::machine_fingerprint()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Db;
+    use crate::license::License;
     use std::path::PathBuf;
 
     fn temp_db_path(tag: &str) -> PathBuf {
@@ -3817,5 +4089,200 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM installment", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 4);
+    }
+
+    // =======================================================================
+    // Licence gate
+    // =======================================================================
+    //
+    // The `#[tauri::command]` wrappers need a Tauri `State`, so — exactly as
+    // with the `*_impl` split — the tests target the decision functions the
+    // wrappers delegate to. Those take `&LicenseState`, which is constructible
+    // here without a runtime.
+
+    fn licensed() -> LicenseState {
+        LicenseState::new(LicenseStatus::Valid(License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2030-01-01".into(),
+            machine_id: None,
+            features: vec!["*".into()],
+        }))
+    }
+
+    /// Every non-`Valid` verdict, so a new variant cannot quietly default to
+    /// "allowed" — adding one to the enum without adding it here still leaves
+    /// `require_license` correct, but this is the list the gate is proven against.
+    fn unlicensed_states() -> Vec<LicenseState> {
+        let license = License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2026-02-01".into(),
+            machine_id: None,
+            features: vec![],
+        };
+        [
+            LicenseStatus::Missing,
+            LicenseStatus::InvalidSignature,
+            LicenseStatus::Malformed { reason: "x" },
+            LicenseStatus::Expired {
+                license: license.clone(),
+                expired_on: parse_date("2026-02-01").unwrap(),
+            },
+            LicenseStatus::MachineMismatch {
+                license,
+                local: None,
+            },
+            LicenseStatus::ClockTampered {
+                watermark: parse_date("2027-01-01").unwrap(),
+            },
+        ]
+        .into_iter()
+        .map(LicenseState::new)
+        .collect()
+    }
+
+    #[test]
+    fn the_gate_refuses_every_unlicensed_verdict_and_admits_only_valid() {
+        assert!(require_license(&licensed()).is_ok());
+
+        for state in unlicensed_states() {
+            let err = require_license(&state).expect_err("must refuse");
+            // A stable code the frontend maps to a localized sentence — not
+            // prose, and not an opaque INTERNAL that tells the user nothing.
+            assert_eq!(err.code(), "LICENSE_REQUIRED");
+        }
+    }
+
+    #[test]
+    fn an_expired_licence_still_permits_reading_your_own_ledger() {
+        // The deliberate shape of the baseline: losing a licence must never hold
+        // a shop keeper's own client and purchase records hostage. Those two
+        // reads carry no gate at all — this pins that they were not gated by
+        // accident along with everything else.
+        let f = Fixture::new("license_baseline");
+        seeded_purchase(&f);
+        let conn = f.db.lock();
+
+        assert!(!list_clients_impl(&conn, ClientScope::Active)
+            .unwrap()
+            .is_empty());
+        assert!(!list_purchase_ids(&conn, PurchaseScope::Active)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_unlicensed_caller_is_pinned_to_the_active_scope() {
+        // Degrade rather than refuse: asking for the archive without a licence
+        // returns the active slice instead of an error, so the page still
+        // renders. Archived rows are a licensed view.
+        let unlicensed = LicenseState::new(LicenseStatus::Missing);
+
+        assert_eq!(
+            licensed_scope(&unlicensed, Some(ClientScope::Archived)),
+            ClientScope::Active
+        );
+        assert_eq!(
+            licensed_scope(&unlicensed, Some(ClientScope::All)),
+            ClientScope::Active
+        );
+        assert_eq!(
+            licensed_scope(&unlicensed, Some(PurchaseScope::Archived)),
+            PurchaseScope::Active
+        );
+
+        // With a licence the requested scope is honoured.
+        assert_eq!(
+            licensed_scope(&licensed(), Some(ClientScope::Archived)),
+            ClientScope::Archived
+        );
+        // And an absent scope still means "active" either way.
+        assert_eq!(
+            licensed_scope(&licensed(), None::<ClientScope>),
+            ClientScope::Active
+        );
+    }
+
+    #[test]
+    fn language_is_the_only_setting_an_unlicensed_user_may_change() {
+        // Locking the language would make the app unrecoverable for someone who
+        // cannot read the current one — including the licence screen itself.
+        let language_only = SettingsPatch {
+            language: Some("ar".into()),
+            currency_code: None,
+            date_format: None,
+            shop_name: None,
+            shop_info: None,
+            alert_soon_days: None,
+        };
+        assert!(is_language_only(&language_only));
+
+        // An empty patch changes nothing, so it is harmless.
+        assert!(is_language_only(&SettingsPatch {
+            language: None,
+            currency_code: None,
+            date_format: None,
+            shop_name: None,
+            shop_info: None,
+            alert_soon_days: None,
+        }));
+
+        // Anything smuggled alongside the language is refused.
+        for patch in [
+            SettingsPatch {
+                language: Some("ar".into()),
+                currency_code: Some("EUR".into()),
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: None,
+            },
+            SettingsPatch {
+                language: None,
+                currency_code: None,
+                date_format: None,
+                shop_name: Some("Free branding".into()),
+                shop_info: None,
+                alert_soon_days: None,
+            },
+            SettingsPatch {
+                language: None,
+                currency_code: None,
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: Some(30),
+            },
+        ] {
+            assert!(!is_language_only(&patch), "{patch:?} must be licensed");
+        }
+    }
+
+    #[test]
+    fn the_clock_watermark_survives_a_round_trip_through_the_settings_table() {
+        // The watermark shares the `setting` table with user preferences but
+        // must never appear in `Settings` — that struct is serialized straight
+        // to the renderer, which is the code the watermark defends against.
+        let f = Fixture::new("license_watermark");
+        let conn = f.db.lock();
+
+        assert_eq!(
+            get_setting(&conn, crate::license::CLOCK_WATERMARK_KEY, ""),
+            ""
+        );
+        put_setting(&conn, crate::license::CLOCK_WATERMARK_KEY, "2026-07-28").unwrap();
+        assert_eq!(
+            get_setting(&conn, crate::license::CLOCK_WATERMARK_KEY, ""),
+            "2026-07-28"
+        );
+
+        let json = serde_json::to_string(&read_settings(&conn)).unwrap();
+        assert!(
+            !json.contains("watermark") && !json.contains("2026-07-28"),
+            "the watermark must not reach the renderer: {json}"
+        );
     }
 }

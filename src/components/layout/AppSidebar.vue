@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import { useStatsStore } from "@/stores/stats";
 import { useSettingsStore } from "@/stores/settings";
+import { useLicenseStore } from "@/stores/license";
 import { resolveLogoSrc } from "@/lib/assets";
 
 const { t } = useI18n();
 const router = useRouter();
+const route = useRoute();
 const stats = useStatsStore();
 const settings = useSettingsStore();
+const license = useLicenseStore();
 
 interface NavItem {
   name: string;
@@ -18,20 +21,23 @@ interface NavItem {
   icon: string;
   badge?: () => number;
   badgeKind?: "danger" | "warning";
+  /** Mirrors `meta.licensed` in the router; shows a padlock when unlicensed. */
+  licensed?: boolean;
 }
 
 const items: NavItem[] = [
-  { name: "dashboard", route: "/", icon: "home" },
+  { name: "dashboard", route: "/", icon: "home", licensed: true },
   { name: "achats", route: "/achats", icon: "cart" },
   { name: "clients", route: "/clients", icon: "users" },
-  { name: "paiements", route: "/paiements", icon: "card" },
-  { name: "echeances", route: "/echeances", icon: "calendar" },
+  { name: "paiements", route: "/paiements", icon: "card", licensed: true },
+  { name: "echeances", route: "/echeances", icon: "calendar", licensed: true },
   {
     name: "impayes",
     route: "/impayes",
     icon: "alert",
     badge: () => stats.overdueClients,
     badgeKind: "danger",
+    licensed: true,
   },
   {
     name: "alertes",
@@ -39,12 +45,40 @@ const items: NavItem[] = [
     icon: "bell",
     badge: () => stats.overdueInstallments,
     badgeKind: "warning",
+    licensed: true,
   },
-  { name: "rapports", route: "/rapports", icon: "report" },
+  { name: "rapports", route: "/rapports", icon: "report", licensed: true },
   { name: "parametres", route: "/parametres", icon: "settings" },
 ];
 
+/** A padlock replaces the count badge on locked entries — never both. */
+function isLocked(item: NavItem): boolean {
+  return item.licensed === true && !license.isLicensed;
+}
+
 const logoSrc = computed(() => resolveLogoSrc(settings.logoPath));
+
+/**
+ * The shop name shown beside the logo.
+ *
+ * The licence is the source of truth: `license.license` is populated only once
+ * the signature has verified — including for an expired or wrong-machine
+ * licence — so the name it carries is vendor-attested rather than user-typed.
+ * The stored setting is the fallback for an install with no readable licence,
+ * and an empty string falls back further to the generic app title in the
+ * template.
+ */
+const shopName = computed(() => license.license?.licensee.trim() || settings.shopName.trim());
+
+/**
+ * The Achats page carries its own primary "new purchase" button, so the sidebar
+ * shortcut is a duplicate there — and a broken one: `AchatsView` reads `?new=1`
+ * in `onMounted` only, so pushing the same route from the page itself never
+ * remounts it and the modal never opens. The purchase *detail* page keeps the
+ * shortcut: it has no button of its own, and navigating away and back does
+ * remount the list.
+ */
+const showNewPurchase = computed(() => route.name !== "achats");
 
 function newPurchase() {
   router.push({ name: "achats", query: { new: "1" } });
@@ -59,12 +93,15 @@ function newPurchase() {
         <AppIcon v-else name="washer" :size="26" :stroke-width="1.8" />
       </div>
       <div class="brand-text">
-        <span class="brand-line1">{{ t("app.title") }}</span>
-        <span class="brand-line2">{{ t("app.titleLine2") }}</span>
+        <span v-if="shopName" class="brand-name" :title="shopName">{{ shopName }}</span>
+        <template v-else>
+          <span class="brand-line1">{{ t("app.title") }}</span>
+          <span class="brand-line2">{{ t("app.titleLine2") }}</span>
+        </template>
       </div>
     </div>
 
-    <button class="new-purchase" type="button" @click="newPurchase">
+    <button v-if="showNewPurchase" class="new-purchase" type="button" @click="newPurchase">
       <AppIcon name="plus" :size="18" />
       <span>{{ t("sidebar.newPurchase") }}</span>
     </button>
@@ -75,13 +112,17 @@ function newPurchase() {
         :key="item.name"
         :to="item.route"
         class="nav-item"
+        :class="{ 'is-locked': isLocked(item) }"
         active-class="is-active"
         :exact-active-class="item.route === '/' ? 'is-active' : ''"
       >
         <span class="nav-icon"><AppIcon :name="item.icon" :size="19" /></span>
         <span class="nav-label">{{ t(`nav.${item.name}`) }}</span>
+        <span v-if="isLocked(item)" class="nav-lock" :title="t('license.requiredTitle')">
+          <AppIcon name="lock" :size="14" />
+        </span>
         <span
-          v-if="item.badge && item.badge() > 0"
+          v-else-if="item.badge && item.badge() > 0"
           class="nav-badge"
           :class="`nav-badge--${item.badgeKind}`"
           >{{ item.badge() }}</span
@@ -139,6 +180,9 @@ function newPurchase() {
   display: flex;
   flex-direction: column;
   line-height: 1.15;
+  /* Without this a flex item never shrinks below its content, so a long shop
+     name would widen the brand block past the fixed sidebar. */
+  min-width: 0;
 }
 .brand-line1,
 .brand-line2 {
@@ -146,6 +190,21 @@ function newPurchase() {
   font-weight: 700;
   font-size: 16px;
   letter-spacing: -0.01em;
+}
+/* A shop name is arbitrary text, unlike the two fixed title lines: wrap it,
+   cap it at two lines, and leave the full value in the `title` attribute. */
+.brand-name {
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-align: start;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .new-purchase {
@@ -220,6 +279,17 @@ function newPurchase() {
   font-size: 12px;
   font-weight: 700;
   color: #fff;
+}
+/* Locked entries stay clickable — the destination explains why it is locked,
+   which is more useful than a dead link. They are only dimmed. */
+.nav-item.is-locked .nav-label,
+.nav-item.is-locked .nav-icon {
+  opacity: 0.55;
+}
+.nav-lock {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.55;
 }
 .nav-badge--danger {
   background: var(--danger);

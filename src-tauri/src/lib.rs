@@ -5,6 +5,11 @@
 mod commands;
 mod db;
 mod error;
+// `pub` on purpose: nothing calls into the licence validator yet, and a private
+// module would make every item unreachable and fail `clippy -D warnings` on
+// `dead_code`. Being part of the lib crate's public API is also honest — the
+// enforcement task consumes it from outside this file.
+pub mod license;
 mod models;
 mod seed;
 
@@ -64,7 +69,20 @@ pub fn run() {
             let db_path = data_dir.join("payment_schedule.db");
             let database =
                 db::Db::open(&db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+
+            // Validate the licence once, here, rather than per command: it reads
+            // a file and hashes a machine identifier.
+            //
+            // Deliberately not propagated with `?`. Returning `Err` from `setup`
+            // aborts startup, and "no licence" or "expired" must never stop the
+            // app launching — an unlicensed install still lets the shop keeper
+            // read their own clients and purchases, and it is the only way they
+            // can reach the screen that installs a licence.
+            let status = commands::evaluate_license(app.handle(), &database.lock());
+            log::info!("licence status at startup: {}", status.to_info(None).status);
+
             app.manage(database);
+            app.manage(license::LicenseState::new(status));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -101,6 +119,9 @@ pub fn run() {
             commands::set_logo,
             commands::clear_logo,
             commands::backup_database,
+            // licence
+            commands::get_license_status,
+            commands::import_license,
         ])
         .run(tauri::generate_context!())
         .expect("error while running paymentSchedule");

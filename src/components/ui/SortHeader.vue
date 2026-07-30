@@ -9,21 +9,38 @@ const props = defineProps<{
   field: string;
   label: string;
   align?: "start" | "end";
+  /**
+   * Present the column as unsortable. Sorting is a licensed feature, and it runs
+   * entirely in the browser (`useSort.ts` reorders rows already fetched), so
+   * this is the only place it can be withheld — there is no server call to
+   * refuse. It communicates the boundary; it does not enforce it.
+   */
+  disabled?: boolean;
 }>();
 
 const isActive = () => props.sort.key === props.field;
+
+function toggle() {
+  if (props.disabled) return;
+  props.sort.toggle(props.field);
+}
 </script>
 
 <template>
   <th
     class="sortable"
-    :class="{ 'is-active': isActive(), 'align-end': align === 'end' }"
+    :class="{
+      'is-active': isActive(),
+      'align-end': align === 'end',
+      'is-disabled': disabled,
+    }"
     :aria-sort="isActive() ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'"
+    :aria-disabled="disabled ? 'true' : undefined"
     role="button"
-    tabindex="0"
-    @click="sort.toggle(field)"
-    @keydown.enter.prevent="sort.toggle(field)"
-    @keydown.space.prevent="sort.toggle(field)"
+    :tabindex="disabled ? -1 : 0"
+    @click="toggle"
+    @keydown.enter.prevent="toggle"
+    @keydown.space.prevent="toggle"
   >
     <span class="sort-label">
       {{ label }}
@@ -51,6 +68,12 @@ const isActive = () => props.sort.key === props.field;
 }
 .sortable.align-end {
   text-align: end;
+}
+.sortable.is-disabled {
+  cursor: default;
+}
+.sortable.is-disabled:hover {
+  color: inherit;
 }
 .sort-label {
   display: inline-flex;

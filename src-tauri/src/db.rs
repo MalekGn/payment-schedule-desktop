@@ -320,6 +320,8 @@ pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
 pub const BACKUP_FAILED: &str = "BACKUP_FAILED";
+pub const LICENSE_REQUIRED: &str = "LICENSE_REQUIRED";
+pub const INVALID_LICENSE: &str = "INVALID_LICENSE";
 
 /// Advance `date` by `k` intervals of the given kind.
 ///

@@ -13,6 +13,7 @@ import { useFormat } from "@/composables/useFormat";
 import { useLoader } from "@/composables/useLoader";
 import { useSort } from "@/composables/useSort";
 import { useUiStore } from "@/stores/ui";
+import { useLicenseStore } from "@/stores/license";
 import { useStatsStore } from "@/stores/stats";
 import { api } from "@/api";
 import type { Client, ClientScope, ClientSummary } from "@/types/models";
@@ -21,6 +22,7 @@ const { t } = useI18n();
 const router = useRouter();
 const fmt = useFormat();
 const ui = useUiStore();
+const license = useLicenseStore();
 const stats = useStatsStore();
 
 const clients = ref<ClientSummary[]>([]);
@@ -262,6 +264,10 @@ function openDetail(id: number) {
             class="tab"
             :class="{ 'tab--active': scope === s.key }"
             type="button"
+            :disabled="s.key !== 'active' && !license.isLicensed"
+            :title="
+              s.key !== 'active' && !license.isLicensed ? t('license.requiredTitle') : undefined
+            "
             @click="scope = s.key"
           >
             {{ t(s.label) }}

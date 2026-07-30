@@ -1,7 +1,20 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 
+// `meta.licensed` marks a route as a licensed feature. `App.vue` renders
+// `LicenseRequiredPanel` in its place when the install has no valid licence —
+// one gate site rather than a check inside each view.
+//
+// The routes *without* the flag are the unlicensed baseline: reading clients and
+// purchases, plus Settings, which has to stay reachable or a user could never
+// install the licence that unlocks the rest. This only decides what is shown;
+// the Rust commands refuse on their own.
 const routes: RouteRecordRaw[] = [
-  { path: "/", name: "dashboard", component: () => import("@/views/DashboardView.vue") },
+  {
+    path: "/",
+    name: "dashboard",
+    component: () => import("@/views/DashboardView.vue"),
+    meta: { licensed: true },
+  },
   { path: "/achats", name: "achats", component: () => import("@/views/AchatsView.vue") },
   {
     path: "/achats/:id",
@@ -16,11 +29,36 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/ClientDetailView.vue"),
     props: true,
   },
-  { path: "/paiements", name: "paiements", component: () => import("@/views/PaiementsView.vue") },
-  { path: "/echeances", name: "echeances", component: () => import("@/views/EcheancesView.vue") },
-  { path: "/impayes", name: "impayes", component: () => import("@/views/ImpayesView.vue") },
-  { path: "/alertes", name: "alertes", component: () => import("@/views/AlertesView.vue") },
-  { path: "/rapports", name: "rapports", component: () => import("@/views/RapportsView.vue") },
+  {
+    path: "/paiements",
+    name: "paiements",
+    component: () => import("@/views/PaiementsView.vue"),
+    meta: { licensed: true },
+  },
+  {
+    path: "/echeances",
+    name: "echeances",
+    component: () => import("@/views/EcheancesView.vue"),
+    meta: { licensed: true },
+  },
+  {
+    path: "/impayes",
+    name: "impayes",
+    component: () => import("@/views/ImpayesView.vue"),
+    meta: { licensed: true },
+  },
+  {
+    path: "/alertes",
+    name: "alertes",
+    component: () => import("@/views/AlertesView.vue"),
+    meta: { licensed: true },
+  },
+  {
+    path: "/rapports",
+    name: "rapports",
+    component: () => import("@/views/RapportsView.vue"),
+    meta: { licensed: true },
+  },
   { path: "/parametres", name: "parametres", component: () => import("@/views/SettingsView.vue") },
   // Catch-all. The "not-found" name is matched by string elsewhere — `useBack`
   // (to avoid sending the user back into another unknown URL) and `AppHeader`'s

@@ -24,6 +24,8 @@ import type {
   ImpayeFilter,
   Installment,
   InstallmentEdit,
+  LicenseInfo,
+  LicenseStatusTag,
   Payment,
   PaymentInput,
   PurchaseDetail,
@@ -121,10 +123,18 @@ class MockDb {
   /** Last URI passed to `openExternal`, for assertions in tests. */
   lastExternalUrl: string | null = null;
   lastBackupPath: string | null = null;
+  /** See `getLicenseStatus` for why this starts valid. */
+  private license: LicenseInfo = {
+    status: "valid",
+    license: null,
+    expiredOn: null,
+    machineId: null,
+  };
   private seq = { client: 0, purchase: 0, installment: 0, payment: 0 };
 
   constructor() {
     this.seed();
+    this.setLicense("valid");
   }
 
   private nextId(k: keyof typeof this.seq): number {
@@ -1050,6 +1060,61 @@ class MockDb {
   openExternal(url: string): void {
     this.lastExternalUrl = url;
   }
+
+  // -- licence --
+
+  /**
+   * Browser stand-in for the licence verdict.
+   *
+   * **Licensed by default, on purpose.** The mock backs every unit, integration
+   * and E2E test, and all of them exercise screens that are licensed features.
+   * Defaulting to unlicensed would turn the whole suite red and, worse, would
+   * make "the licence gate is showing" the expected output of tests that are
+   * really about purchases and payments. Licence behaviour is tested by flipping
+   * this explicitly with `setLicense`.
+   *
+   * The mock does not reimplement Ed25519 — signature verification is Rust's
+   * job and is covered by `cargo test`. This only models the *verdict*.
+   */
+  getLicenseStatus(): LicenseInfo {
+    return { ...this.license };
+  }
+
+  /**
+   * Browser stand-in for the import flow. There is no file to read, so a path
+   * ending in `.json` is accepted and anything else is refused with the same
+   * `INVALID_LICENSE:{status}` shape the Rust command uses.
+   */
+  importLicense(sourcePath: string): LicenseInfo {
+    if (!sourcePath.toLowerCase().endsWith(".json")) {
+      throw new Error("INVALID_LICENSE:malformed");
+    }
+    this.setLicense("valid");
+    return this.getLicenseStatus();
+  }
+
+  /** Test hook: put the mock into a given licence state. */
+  setLicense(status: LicenseStatusTag): void {
+    this.license = {
+      status,
+      license:
+        status === "valid" || status === "expired" || status === "machineMismatch"
+          ? {
+              licenseId: "PS-MOCK-0001",
+              licensee: "Boutique de démonstration",
+              issuedAt: "2026-01-01",
+              expiresAt: status === "expired" ? "2026-02-01" : "2999-12-31",
+              machineId: status === "machineMismatch" ? "other-machine" : null,
+              features: ["*"],
+            }
+          : null,
+      expiredOn: status === "expired" ? "2026-02-01" : null,
+      machineId: MOCK_MACHINE_ID,
+    };
+  }
 }
+
+/** Stable stand-in for a real machine fingerprint (64 lower-case hex chars). */
+const MOCK_MACHINE_ID = "m0ckm0ck".repeat(8);
 
 export const mockDb = new MockDb();

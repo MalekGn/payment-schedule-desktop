@@ -98,8 +98,12 @@ async function open(page, route = "/") {
 
 test("app shell + sidebar render on first load", async (page) => {
   await open(page, "/");
-  assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "brand line 1");
-  assertEqual(await page.locator(".brand-line2").innerText(), "Échelonnés", "brand line 2");
+  // The brand block shows the licence holder; the mock ships a valid licence.
+  assertEqual(
+    await page.locator(".brand-name").innerText(),
+    "Boutique de démonstration",
+    "brand shows the licensee",
+  );
   assertEqual(await page.locator(".nav-item").count(), 9, "sidebar should have 9 nav items");
   assertEqual(
     await page.locator("h1.page-title").innerText(),
@@ -130,6 +134,35 @@ test("sidebar navigates to every page and header title updates", async (page) =>
     );
     assertEqual(await page.locator("h1.page-title").innerText(), label, `header title for ${name}`);
   }
+});
+
+test("the sidebar new-purchase shortcut steps aside on the Achats page", async (page) => {
+  await open(page, "/");
+  assertEqual(await page.locator(".new-purchase").count(), 1, "shortcut present on the dashboard");
+
+  // On Achats the page's own primary button owns the action, so the sidebar
+  // shortcut would be a second control for the same thing — and a dead one,
+  // since `AchatsView` only reads `?new=1` when it mounts.
+  await page.locator(".nav-item", { hasText: NAV.achats }).click();
+  // Wait on the header title, not on a table: the dashboard renders `table.table`
+  // too, so waiting for a row here would resolve before the route had changed and
+  // the assertion below would silently run against the dashboard.
+  await page.waitForFunction(
+    (expected) => document.querySelector("h1.page-title")?.textContent?.trim() === expected,
+    NAV.achats,
+    { timeout: 10000 },
+  );
+  assertEqual(await page.locator(".new-purchase").count(), 0, "shortcut hidden on Achats");
+
+  // The page's own button still opens the modal, so nothing was lost.
+  await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
+  await page.locator('[role="dialog"]').waitFor({ state: "visible", timeout: 5000 });
+
+  // Off Achats it comes back — including on a purchase's detail page, which has
+  // no new-purchase button of its own.
+  await open(page, "/achats/1");
+  await page.locator(".new-purchase").waitFor({ timeout: 10000 });
+  assertEqual(await page.locator(".new-purchase").count(), 1, "shortcut returns off Achats");
 });
 
 // --- Header notification bell ------------------------------------------------
@@ -548,8 +581,9 @@ test("new purchase: auto-split installments and sum-mismatch validation", async 
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
   assertEqual(await page.locator("table.table tbody tr").count(), 8, "precondition: 8 purchases");
 
-  // Scope to the main content: the sidebar also carries a permanent "Nouvel
-  // achat" button, so an unscoped role query would match two elements.
+  // Scope to the main content. The sidebar shortcut is hidden on this page, so
+  // an unscoped query would resolve today — but it would silently start matching
+  // two elements again the moment that rule changes.
   await page.getByRole("main").getByRole("button", { name: "Nouvel achat" }).click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
@@ -895,7 +929,13 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   // Baseline: French, left-to-right.
   assertEqual(await page.locator("html").getAttribute("dir"), "ltr", "baseline dir is ltr");
   assertEqual(await page.locator("html").getAttribute("lang"), "fr", "baseline lang is fr");
-  assertEqual(await page.locator(".brand-line1").innerText(), "Paiements", "baseline brand (fr)");
+  // The brand block is no longer a translation probe: it shows the licence
+  // holder's name, which is a proper noun and identical in every locale.
+  assertEqual(
+    await page.locator("h1.page-title").innerText(),
+    NAV.dashboard,
+    "baseline page title (fr)",
+  );
 
   // Pick Arabic from the header language menu.
   await page.locator(".lang-btn").click();
@@ -910,9 +950,9 @@ test("switching to Arabic mirrors the layout to RTL", async (page) => {
   assertEqual(await page.locator("html").getAttribute("dir"), "rtl", "dir switches to rtl");
   assertEqual(await page.locator("html").getAttribute("lang"), "ar", "lang switches to ar");
   assertEqual(
-    await page.locator(".brand-line1").innerText(),
-    "الدفع",
-    "brand re-renders in Arabic",
+    await page.locator("h1.page-title").innerText(),
+    "لوحة التحكم",
+    "page title re-renders in Arabic",
   );
   assertEqual(
     await page.locator(".nav-item", { hasText: "لوحة التحكم" }).count(),
@@ -1386,6 +1426,26 @@ test("settings exposes a database backup action", async (page) => {
     await page.locator(".set-card", { hasText: "Sauvegarde" }).count(),
     0,
     "backup card must be hidden outside the Tauri runtime",
+  );
+});
+
+test("the shop name is licence-owned: no input for it in settings", async (page) => {
+  await open(page, "/parametres");
+  await page.locator(".set-card").first().waitFor({ timeout: 10000 });
+
+  // The name comes from the licence and is rendered in the sidebar brand block.
+  // Re-adding an editable field here would let branding and identity disagree,
+  // so the absence of the input is the assertion.
+  assertEqual(await page.locator("#set-shop").count(), 0, "no shop-name input in settings");
+  assertEqual(
+    await page.locator(".lic-row", { hasText: "Titulaire" }).innerText(),
+    "Titulaire\nBoutique de démonstration",
+    "the licence card still shows the holder",
+  );
+  assertEqual(
+    await page.locator(".brand-name").innerText(),
+    "Boutique de démonstration",
+    "and the sidebar brand shows the same name",
   );
 });
 

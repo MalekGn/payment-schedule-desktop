@@ -60,6 +60,8 @@
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |
 //! | `BACKUP_FAILED`               | Database snapshot could not be written         |
+//! | `LICENSE_REQUIRED`            | The command is licensed and no valid licence   |
+//! | `INVALID_LICENSE:{status}`    | Import rejected the file; `status` is the tag  |
 //! | `INTERNAL`                    | Anything else; the detail is in the log only   |
 
 use std::fmt;

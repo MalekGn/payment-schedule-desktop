@@ -92,6 +92,66 @@ direct database or filesystem access.
   brick every later one under `tauri dev`.
 - **`models.rs`** — serde structs (camelCase payloads) shared with the frontend.
 - **`seed.rs`** — first-run Tunisian demo data.
+- **`license.rs`** — offline licence validation. See "Licensing".
+
+## Licensing
+
+`license.rs` reads a signed licence from `$APPDATA/license.json` — beside the
+database and the logo — and reports a `LicenseStatus` of `Valid` / `Expired` /
+`MachineMismatch` / `InvalidSignature` / `Malformed` / `Missing`. The wire format
+and the signing recipe are specified in `docs/license-format.md`; the module doc
+in `license.rs` is the authoritative copy.
+
+Design points that constrain later work:
+
+- **The gate is in Rust, not the UI.** `require_license` in `commands.rs` refuses
+  21 of the 29 commands with `LICENSE_REQUIRED` when the install is unlicensed.
+  The frontend mirrors that state, but a check that lived only in the renderer
+  would be decoration: the WebView is the user's, and a `v-if` is not a control.
+- **The unlicensed baseline is narrow but genuinely usable**: reading clients and
+  purchases — list and detail — plus `get_settings` and a language-only
+  `update_settings`. Losing a licence must never hold a shop keeper's own ledger
+  hostage, and language has to stay editable or the licence screen could become
+  unreadable. `list_clients`/`list_purchases` **degrade** rather than refuse:
+  an unlicensed caller is pinned to the active scope with no server-side search.
+- **Filters and sorting cannot be enforced here.** `useSort.ts` reorders rows
+  already in the browser and `ListFilterBar.vue` filters in the parent component,
+  so the backend never sees either. Disabling them in the UI communicates the
+  licence boundary; it does not enforce it. `scope` is the one real exception.
+- **The clock watermark** (`license_clock_watermark` in the `setting` table)
+  records the latest date the install has seen; a system clock behind it yields
+  `ClockTampered` instead of reviving an expired licence. It is deliberately kept
+  out of `Settings`/`SettingsPatch`, which are serialized to and written by the
+  renderer — the code it defends against.
+- **The shop name is licence-attested, not configuration.** `AppSidebar`'s brand
+  block shows `licensee`, falling back to the stored `shop_name` setting and then
+  to the generic app title. The setting stays in `Settings`/`SettingsPatch` as
+  that fallback but is no longer editable from Paramètres: a name the user can
+  type is branding, a name the vendor signs is identification. Note the fallback
+  chain covers `clockTampered`, `invalidSignature` and `missing` — the statuses
+  where no verified payload exists.
+- **`LicenseStatus` never crosses IPC**; `LicenseInfo` does. The projection drops
+  `Malformed { reason }`, which is parser detail for the log, exactly as
+  `AppError::Internal` collapses to an opaque code.
+- **The trust anchor is compiled in.** The Ed25519 public key is a constant,
+  overridden at build time by `PAYMENT_SCHEDULE_LICENSE_PUBKEY`. It is never
+  fetched, read from disk or taken from configuration — a licence check whose key
+  is editable is not a check. The default is a development key whose seed is
+  published in the module docs; a release build still using it logs a warning.
+- **Signature before parse.** The signature covers the base64 payload text
+  exactly as it appears in the file, so it is verified before any untrusted JSON
+  is decoded, and there is no JSON canonicalization for a signer and a verifier
+  to disagree about.
+- **First cryptography in the tree**: `ed25519-dalek`, `sha2`, `base64` and
+  `machine-uid`. Pure Rust on purpose — `ring` and `sodiumoxide` need a C/asm
+  toolchain the Windows build does not have. `sha2` is pinned to the 0.10 already
+  present transitively so `cargo deny`'s duplicate-version check stays quiet.
+- **Machine binding** hashes the per-OS machine identifier with an app-specific
+  salt, so the raw OS UUID never lands in a file the customer can forward.
+  `machine_fingerprint()` is public because a bound licence cannot be issued until
+  the customer can read their fingerprint off the screen.
+- Validation is **fail-closed** and non-panicking throughout: `panic = "abort"` in
+  release means a panic on a hostile licence file would take down the whole app.
 
 ## Error contract
 

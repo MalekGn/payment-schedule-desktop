@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "paymentSchedule",
+        "title": "Payment Schedule",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,

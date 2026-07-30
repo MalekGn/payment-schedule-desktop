@@ -6,6 +6,498 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-07-30 (c) — The sidebar's new-purchase shortcut steps aside on Achats
+
+### Summary
+
+The sidebar's **Nouvel achat** button is now hidden on the Achats page, which
+carries its own primary button for the same action. `AppSidebar.vue` gained
+`showNewPurchase = computed(() => route.name !== "achats")`; the purchase
+_detail_ page keeps the shortcut, having no button of its own.
+
+Reading `AchatsView.vue` while planning turned up a second reason: `?new=1` is
+read in `onMounted` only (`AchatsView.vue:103-109`). Pushing `{ name: "achats",
+query: { new: "1" } }` **from the Achats page itself** does not remount the view,
+so the modal never opened. The shortcut was not merely redundant there — it was
+dead. Hiding it removes the duplicate and the dead control together.
+
+Presentational only: `create_purchase` stays licence-gated in Rust.
+
+### Test cases
+
+**Executed.** Frontend unit **147 passed** (10 files), `npm run lint`,
+`npm run build` (`vue-tsc --noEmit`), E2E **49/49 passed** — run at the user's
+explicit request. No `cargo`: `src-tauri/` is not touched.
+
+Two unit cases added to `src/components/layout/AppSidebar.test.ts` (hidden on
+`achats`; shown on `dashboard` and `achat-detail`). The `vue-router` mock there
+now exposes `useRoute` through a `vi.hoisted` route object, so each test picks
+its route before mounting.
+
+One E2E test added: shortcut present on the dashboard → absent on Achats → the
+page's own button still opens the modal → present again on `/achats/1`.
+
+### Issues found
+
+1. **The new E2E test failed on its first run — the test was wrong, not the
+   feature.** It waited on `table.table tbody tr` after clicking the nav item,
+   but the dashboard renders `table.table` too (`RecentPurchasesCard.vue:41`,
+   `PurchaseDetailCard.vue:112`). The wait resolved instantly, before the route
+   changed, and the assertion ran against the dashboard: expected 0, got 1.
+   Fixed by waiting on `h1.page-title` — a route-driven value — as the
+   neighbouring navigation test does. Re-run: 49/49.
+   **Reproduction, for the record:** replace the `waitForFunction` with
+   `await page.locator("table.table tbody tr").first().waitFor()` and re-run.
+2. Found during review: the comment at `run.mjs:576` justified scoping a role
+   query with "the sidebar also carries a permanent Nouvel achat button", which
+   this change makes false. The scoping is kept (it guards against the rule
+   changing back); the comment now says so.
+
+The stale failure screenshot written by issue 1 was deleted from
+`tests/e2e/artifacts/` once the test passed.
+
+### Risks and edge cases
+
+1. **A stale wait can make an E2E assertion vacuous rather than red.** Issue 1
+   failed loudly only because the control it checked was still present. Had the
+   assertion been "the shortcut is visible", it would have passed on the wrong
+   page and tested nothing. Worth remembering: `table.table` is not unique to a
+   list page.
+2. **The hide is keyed on the route name `achats`.** Renaming that route in
+   `src/router/index.ts` silently brings the duplicate button back; nothing links
+   the two beyond the unit test.
+3. **The `?new=1`-on-remount limitation is untouched**, only routed around. A
+   future entry point that pushes that query from the Achats page will hit the
+   same dead end.
+
+### Recommendations
+
+1. If the shortcut is ever wanted on Achats again, fix the root cause first:
+   `watch` the route query in `AchatsView` instead of reading it in `onMounted`.
+2. Consider asserting the route name in the unit test alongside the class, so
+   risk 2 fails a test rather than reaching a user.
+
+---
+
+## 2026-07-30 (b) — The shop name comes from the licence, and shows beside the logo
+
+### Summary
+
+The shop name was in two places at once: a `shop_name` row in the `setting` table,
+editable in **Paramètres → Boutique** but rendered nowhere, and the `licensee`
+field of the signed licence, shown only in the licence card. The name now comes
+from the licence and is displayed in the sidebar brand block, beside the logo,
+replacing the generic "Paiements / Échelonnés" title. The editable field is gone
+from Paramètres.
+
+Fallback chain, in `AppSidebar.vue`: `license.license?.licensee` → the stored
+`shop_name` setting → the app title. The licence branch covers `valid`, `expired`
+and `machineMismatch`, the three statuses where a payload has actually verified;
+`missing`, `invalidSignature`, `malformed` and `clockTampered` carry no payload
+and fall through to the setting.
+
+No Rust change: `licensee` already crossed IPC on `LicenseInfo`. `shop_name`
+stays in `Settings`/`SettingsPatch` as the fallback, so `is_language_only`'s
+exhaustive destructure is untouched and the unlicensed write rule is unchanged.
+
+### Test cases
+
+**Executed.** Frontend unit **145 passed** (10 files), `npm run lint`,
+`npm run build` (`vue-tsc --noEmit`). E2E **48/48 passed** — run at the user's
+explicit request. No `cargo`: `src-tauri/` is not touched by this change.
+Integration suite not run (not requested, and it exercises no UI).
+
+New unit file `src/components/layout/AppSidebar.test.ts`, one case per branch:
+
+| Case                                            | Expectation                                          |
+| ----------------------------------------------- | ---------------------------------------------------- |
+| Valid licence, a stored `shopName` also present | `.brand-name` = licensee; the setting loses          |
+| `expired` with a verified payload               | Name still shown — a lapsed licence is not anonymous |
+| No licence, stored `shopName` set               | `.brand-name` = the setting                          |
+| No licence, `shopName` blank (whitespace only)  | Falls back to `.brand-line1` / `.brand-line2`        |
+
+E2E changes, all in `tests/e2e/run.mjs`:
+
+1. "app shell + sidebar render" now asserts `.brand-name` = "Boutique de
+   démonstration" (the mock's licensee) instead of the two title lines.
+2. "switching to Arabic mirrors the layout to RTL" no longer uses the brand block
+   as its i18n probe — a licence holder's name is a proper noun and identical in
+   every locale, so it would have silently stopped testing anything. Both the
+   French baseline and the Arabic assertion moved to `h1.page-title`.
+3. **New** — "the shop name is licence-owned: no input for it in settings":
+   asserts `#set-shop` is absent, and that the licence card and the sidebar show
+   the same name.
+
+### Issues found
+
+None. Two review findings were fixed during the work:
+
+1. `saveShop` in `SettingsView.vue` no longer wrote a shop name, making its name
+   misleading. Renamed `saveShopInfo`; it now patches `shopInfo` only.
+2. `features.md` still described the shop name as an editable setting, and the
+   "attested, not configured" decision was recorded nowhere. Updated
+   `features.md` and added the design point to `architecture.md` § Licensing.
+
+### Risks and edge cases
+
+1. **A long name is truncated, not fitted.** The sidebar is a fixed 232px and the
+   logo takes 42 of it. `.brand-name` clamps to two lines with the full value in
+   a `title` attribute. Covered by the markup, not by an automated test — jsdom
+   does not lay out CSS, and the E2E mock's licensee is short.
+2. **The fallback branches are unreachable in E2E.** The browser mock always
+   reports a valid licence, so only the unit tests exercise the setting and
+   app-title fallbacks. An install that loses its licence is not covered
+   end-to-end.
+3. **`shop_name` is now write-once-then-frozen.** Nothing in the UI can change
+   it, so an install seeded with "Électro Ménager" keeps that value forever as
+   its fallback. Harmless while a licence is present, but it means the fallback
+   name can be stale rather than merely generic.
+4. **The window title is still static.** `tauri.conf.json` sets it at build time,
+   so it cannot reflect the licence holder; only the in-app brand block does.
+5. **RTL was verified by construction, not by eye.** The brand block is a flex
+   row with `text-align: start`, and the E2E RTL test passes, but no test asserts
+   the mirrored position of the name relative to the logo.
+
+### Recommendations
+
+1. Look at the sidebar with a genuinely long licensee (a 60-character company
+   name) in both LTR and RTL before shipping — risk 1 and 5 are the two things
+   this pass could not verify automatically.
+2. If the shop name ever needs to appear on a printed receipt or export, read it
+   from the licence there too rather than from `shop_name`, or the two will
+   disagree exactly as they did before this change.
+
+---
+
+## 2026-07-30 — Format-doc audit, and retiring the development key
+
+### Summary
+
+Two requests: validate `docs/license-format.md` against the code, and clean up
+the licence handling now that a signing key file exists.
+
+**The audit found six defects in the doc, two of them factual.** Separately, and
+more seriously, the key file at `~/secure/paymentschedule-signing.key` was found
+to contain the **published development keypair**, not a generated one — see
+Issues below.
+
+The public key is now a compile-time requirement. `license.rs` reads it with
+`env!`, so a release build without `PAYMENT_SCHEDULE_LICENSE_PUBKEY` does not
+compile; the silent fallback to the development key is gone. `build.rs` supplies
+the development key to debug builds.
+
+### Test cases
+
+**Executed.** Rust 122 passed, frontend 141 passed, `cargo fmt --check`,
+`clippy --all-targets -D warnings` (0), `cargo deny check` (all ok),
+`npm run lint`, `npm run build`, `prettier --check`.
+
+| Check                                    | Result                                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Release build with **no** key            | Fails to compile, naming the variable and pointing at §7                                         |
+| Release build **with** a key             | Compiles                                                                                         |
+| `cargo test` with a foreign key exported | **122 passed** — `build.rs` forces the development key in debug, and says so via `cargo:warning` |
+| Dev public key identical in all 5 places | Confirmed (build.rs, license.rs, the doc, the CI guard, LicenseFormat.java)                      |
+| `option_env!` fallback removed           | Confirmed absent                                                                                 |
+
+### Issues found
+
+1. **Blocker — the "production" signing key is the published development key.**
+   `~/secure/paymentschedule-signing.key` holds a seed byte-identical to the one
+   printed in `docs/license-format.md` §7. Verified by comparison without printing
+   the value. A release built with it would accept licences minted by anyone who
+   has read that page. **A real keypair must be generated before shipping.**
+2. **`docs/license-format.md` §5 stated the wrong salt length** — "the 31-byte
+   string `payment-schedule.machine-id.v1` followed by a single NUL". The string
+   is 30 bytes; 31 is the total including the NUL. An implementer following it
+   literally would derive a different fingerprint for every machine and see it as
+   a signing failure.
+3. **§9 omitted `ClockTampered`** — 7 variants in code, 6 documented.
+4. **Three claims had gone stale** when enforcement landed: §6 "the validator does
+   not enforce it", §9 "how the app reacts … is not implemented", §10 "the
+   watermark … is part of the enforcement task". All three are implemented.
+5. **§7's openssl recipe could not produce a usable value** — `openssl pkey -text
+-noout` prints hex, not the base64url the variable needs. Replaced with the
+   `certificate-generation` tool, which the doc had never mentioned.
+6. **§10 overstated "the licence file is world-readable"** — `import_license` uses
+   `std::fs::copy`, so permissions are inherited. Reworded to "not encrypted".
+
+Found and fixed during the work itself:
+
+7. `DEV_PUBLIC_KEY_B64` became dead code in debug builds once the fallback was
+   removed, failing `clippy -D warnings`. Fixed with `cfg!` instead of `#[cfg]`
+   so the constant is referenced in every profile.
+8. **Exporting the key then running `cargo test` failed 17 tests.** The README now
+   tells you to export it for release builds, so hitting this was likely. `build.rs`
+   now forces the development key for _all_ debug builds and emits a
+   `cargo:warning` when overriding — `cargo test` is hermetic. Nothing is lost:
+   a debug build with a production public key is unusable anyway, since minting a
+   licence for it needs the production seed.
+
+### Risks and edge cases
+
+1. **The release workflow now requires a repository variable.** `build.yml` gained
+   a guard step that fails the job if `vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY` is
+   empty **or is the development key**. Set it before the next tag or the release
+   build stops — deliberately, but it is a change you must action.
+2. **Three copies of the development public key** exist (build.rs, license.rs, the
+   doc) plus the CI guard and the Java tool. The test
+   `the_documented_dev_seed_matches_the_embedded_public_key` derives it from the
+   seed and checks two of them; CI checks a third. Not fully self-checking.
+3. **`cargo test` still does not run in CI.** `build.yml` runs `npm test`, clippy
+   and an MSRV `cargo check` only, so all 122 Rust tests — every licence test
+   included — are unverified on every push.
+
+### Recommendations
+
+1. **Generate a real signing keypair** with
+   `java -jar certificate-generation.jar keygen --out <path>`, keep the seed
+   offline, and set the repository variable to the printed public key. Treat the
+   current file as compromised for production use.
+2. Add a `cargo test` job to `build.yml` (risk 3). Say the word and I'll do it.
+3. After generating the real key, re-run the end-to-end check: mint against it,
+   build a release with the matching public key, and confirm the app reports
+   **Active** while a `--dev-key` licence is rejected.
+
+---
+
+## 2026-07-28 (g) — Licence enforcement: making the validator apply
+
+### Summary
+
+Reported: "the app keeps the same behaviour, the licence is not applied."
+
+**Verified and confirmed — and it was not a defect.** The previous entry (f) built
+validation only, by agreement; a grep showed nothing outside `license.rs`
+referenced it, `lib.rs` registered no command for it, and `src/` had zero hits, so
+the app _could not_ behave differently. This entry wires it up.
+
+The gate is in **Rust**, not only the UI. `require_license` refuses 21 of the now
+29 commands with `LICENSE_REQUIRED`. A check living only in the renderer would be
+decoration — the WebView is the user's.
+
+Distribution, audited mechanically rather than by eye:
+
+- **Gated (21):** 10 client/purchase mutations, `update_installment`,
+  `record_payment`, 3 payment reads, `list_impayes`, `list_schedule`,
+  `get_dashboard`, `set_logo`, `clear_logo`, `backup_database`.
+- **Baseline (4):** `list_clients`, `get_client_detail`, `list_purchases`,
+  `get_purchase_detail` — these **degrade** rather than refuse, pinning an
+  unlicensed caller to the active scope with no server-side search.
+- **Open (2):** `get_settings`, and the new `get_license_status` /
+  `import_license` — which must work unlicensed or a licence could never be
+  installed.
+- **Partial (1):** `update_settings` accepts a language-only patch. Locking the
+  language would make the licence screen unreadable for a user who cannot read
+  the current one.
+
+Also added: the clock-rollback watermark, `LicenseInfo` as the IPC projection
+(dropping `Malformed { reason }`), a licence section in Settings with the machine
+fingerprint and import button, sidebar padlocks, and `LicenseRequiredPanel`
+rendered from `App.vue` off `route.meta.licensed` — one gate site, not eleven.
+
+### Test cases
+
+**Executed.** Rust: 122 passed (was 107; +15). Frontend unit: 141 passed (was 133;
++8, a new `stores/license.test.ts`). Integration: 190 passed across 8 suites (was
+183/7). `cargo fmt --check`, `cargo clippy --all-targets -D warnings` (0 errors),
+`cargo deny check` (advisories/bans/licenses/sources ok), `npm run lint`,
+`npm run build`, `prettier --check` — all clean.
+
+> Integration was **executed** here, contrary to the usual default, because the
+> plan's verification step required proving the existing suites still pass with
+> the gate in place. That is a regression check, not new-feature validation.
+
+| Area                | Covered                                                                                                                                                                                                                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gate (Rust)         | Every non-`Valid` verdict — missing, invalid signature, malformed, expired, machine mismatch, clock tampered — refuses with exactly `LICENSE_REQUIRED`; `Valid` admits.                                                                                                               |
+| Baseline (Rust)     | Client and purchase reads still work with no licence; an unlicensed caller asking for `Archived`/`All` silently gets `Active` for both scope enums.                                                                                                                                   |
+| Settings (Rust)     | A language-only patch is accepted unlicensed; anything carrying `currencyCode`, `shopName` or `alertSoonDays` is refused. `is_language_only` destructures exhaustively, so a new `SettingsPatch` field is a compile error until someone decides whether it is licensed.               |
+| Clock guard (Rust)  | A licence that expired in 2027 reads `Valid` again with the clock wound back to 2026 — and is then refused as `ClockTampered` by the watermark. Verdicts that do not depend on the date (invalid signature, missing, malformed) pass through untouched. Watermark only ever advances. |
+| Wire type (Rust)    | `LicenseInfo` never serializes `Malformed.reason`; withholds the licence body for unverified verdicts; emits ISO date strings; all 7 status tags stable and distinct; `ClockTampered` is **not** licensed.                                                                            |
+| Watermark isolation | Round-trips through the `setting` table and does **not** appear in the JSON `get_settings` sends to the renderer.                                                                                                                                                                     |
+| Store (frontend)    | Unlicensed before the first check; only `"valid"` unlocks; all 6 other verdicts lock; expiry date carried; fingerprint exposed; **fails closed when the check itself throws**.                                                                                                        |
+| Import (frontend)   | Unlicensed → import → licensed with no restart; a refused file leaves the previous verdict intact.                                                                                                                                                                                    |
+| Error contract      | `LICENSE_REQUIRED` and `INVALID_LICENSE:{status}` resolve to localized prose in all three locales, never a raw code or a bare `errors.*` key.                                                                                                                                         |
+
+Locale parity re-verified programmatically: **424 keys identical across ar/fr/en**.
+
+### Issues found
+
+Two real defects, both found during the review pass and both fixed:
+
+1. **Blocker — the unlicensed baseline was broken by the gate.** `/achats/:id` and
+   `/clients/:id` are ungated routes, but their `load()` calls
+   `listPaymentsForPurchase` / `listPaymentsForClient`, which **are** gated. Worse,
+   both wrap the whole load in `try { … } catch { notFound.value = true }`, so an
+   unlicensed user opening a purchase that exists would have seen **"page not
+   found"**. Fixed: the payment fetch is skipped when unlicensed and the history
+   section renders a licence notice instead. This is exactly the kind of thing the
+   command-by-command audit was for — the route was open, its data was not.
+2. **Should-fix — the scope tabs lied.** Because `list_clients`/`list_purchases`
+   _degrade_ rather than refuse, clicking "Archivés" unlicensed returned **active**
+   rows under an "Archived" heading. Fixed: non-active scope tabs are disabled
+   unlicensed, with a tooltip.
+
+Checked and clean: api/mock parity (both new methods mirrored), integer money
+(untouched), `finance.ts` ↔ `db.rs` parity (untouched), transactional integrity
+(the gate returns before any write; no new multi-write paths), resource cleanup
+(two `OnceLock`s and one `RwLock`, all bounded; no listeners added), logging
+(status tags and licence ids only — `licensee` is never logged, per the PII rule).
+
+### Risks and edge cases
+
+1. **Filters and sorting are not enforceable.** `useSort.ts` reorders rows already
+   in the browser; `ListFilterBar.vue` filters in the parent. The backend never
+   sees either, so disabling them communicates the boundary rather than enforcing
+   it. Anyone with devtools can re-enable sorting. `scope` is the one real
+   server-side filter and is genuinely degraded. **This is a design limit of the
+   agreed baseline, not a bug.**
+2. **The watermark shares the database it defends.** It stops a clock change; it
+   does not stop restoring an older `.db`. Nothing in the app signs the database.
+3. **Mutation buttons still appear unlicensed** on the Clients and Achats pages
+   and error with a localized refusal when pressed. Correct and safe, but a
+   further pass could disable them for a cleaner experience.
+4. **`import_license` is callable with any path** and reports `missing` vs
+   `malformed`, a weak file-existence oracle for the renderer. Same property
+   `set_logo` already has; it copies only after a signature verifies, so it cannot
+   exfiltrate content.
+5. **The development key is still the compiled-in default** — unchanged from entry
+   (f), and still the most important thing to fix before shipping.
+
+### Recommendations
+
+1. **Before shipping:** set `PAYMENT_SCHEDULE_LICENSE_PUBKEY` in the release build
+   and make it a required variable, so a build cannot silently fall back to the
+   published development key.
+2. Run `npm run test:e2e` before release — the E2E suite drives the app against
+   the mock, which is licensed by default, so it should be unaffected; that is
+   worth confirming rather than assuming. No E2E scenario was added for the gate.
+3. Consider disabling (not just refusing) the mutation buttons on the baseline
+   pages, per risk 3.
+4. `validate_installed` remains the one function with no automated coverage — it
+   is the thin `AppHandle` wrapper the `*_impl` split exists to avoid. The manual
+   steps below exercise it.
+
+### Manual verification still outstanding
+
+Not run — this pass covers the automated suites. The four-step check in the plan
+(launch unlicensed → import a minted licence → expire it → wind the clock back)
+needs a desktop session with `npm run tauri dev`.
+
+---
+
+## 2026-07-28 (f) — Offline Ed25519 licence validation
+
+### Summary
+
+New `src-tauri/src/license.rs`: reads a signed licence from `$APPDATA/license.json`,
+verifies an Ed25519 signature against a public key compiled into the binary, checks
+machine binding and expiry, and returns a typed `LicenseStatus`. No network, no
+licence server.
+
+**Validation only.** Nothing calls the module — there is no Tauri command, no
+gateway method, no mock method and no locale key. Feature gating, lockout and
+read-only fallback are a separate task by design.
+
+Format is a self-contained envelope (`version`, `payload`, `signature`), both
+strings base64url without padding. The signature covers
+`b"payment-schedule-license.v1." || payload_b64`, i.e. the base64 text exactly as
+it appears in the file. Two consequences: JSON canonicalization is a non-issue,
+and the signature is verified **before** any untrusted JSON is parsed.
+
+First cryptography in the tree: `ed25519-dalek`, `sha2` (pinned to the 0.10
+already present transitively), `base64`, `machine-uid`. `cargo deny check` passes
+unmodified — `advisories ok, bans ok, licenses ok, sources ok`.
+
+### Test cases
+
+**Rust unit — 28 new tests in `license.rs`, all executed, all passing**
+(`cargo test`: 106 passed total, up from 79).
+
+| Area           | Covered                                                                                                                                                                                                                                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Signature      | Valid licence round-trips its fields; **every byte of the payload flipped in turn** is rejected; signature from an untrusted key rejected; signature made without the domain prefix rejected; embedded public key is a usable Ed25519 point.                                                                     |
+| Check order    | An unsigned, unparseable payload reports `InvalidSignature` — **not** `Malformed` — pinning that untrusted JSON is never parsed before the signature check.                                                                                                                                                      |
+| Malformed      | Not JSON; empty file; missing `signature` field; envelope `version: 2`; non-base64 signature; 63-byte signature; non-ISO date; `issuedAt` after `expiresAt`; payload missing required fields.                                                                                                                    |
+| Expiry         | Inclusive boundary (expires today → still `Valid`); day after → `Expired`, carrying the licence and the date.                                                                                                                                                                                                    |
+| Machine        | Bound to this machine → `Valid`; bound elsewhere → `MachineMismatch` carrying both fingerprints; `machineId: null` valid anywhere; fingerprint unavailable → `MachineMismatch { local: None }`; comparison ignores hex case; **wrong machine reported ahead of expiry**.                                         |
+| Fingerprint    | Normalization absorbs trailing newline, surrounding spaces, `{}` braces and upper case (all one machine); output is 64 lower-case hex chars; derivation is the salted SHA-256 and specifically _not_ a bare hash.                                                                                                |
+| Forward compat | Unknown payload fields ignored, not rejected; absent `features` defaults to `[]`.                                                                                                                                                                                                                                |
+| Filesystem     | Missing file → `Missing` (not an error); real file on disk validates; oversized file rejected on metadata without being read; a directory at the path → `Malformed`, not a crash.                                                                                                                                |
+| Docs parity    | The worked example published in `docs/license-format.md` §8 — minted by an external **Python** signer — is embedded verbatim and asserted to validate. This is the only cross-language check that a third-party signer can interoperate, and it pins prefix, alphabet, salt and fingerprint derivation together. |
+
+**Other gates, all executed:** `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
+`cargo deny check`, and a `debug-assertions=off` build to compile the
+release-only dev-key warning branch (a `cfg(not(debug_assertions))` block that a
+normal debug build never type-checks). Frontend unaffected and confirmed:
+`npm test` 133 passed, `npm run lint` clean, `npm run build` succeeded.
+
+**Integration / E2E — none written, deliberately.** Those suites (`tests/integration/**`,
+`tests/e2e/run.mjs`) drive the `src/api` facade against the browser mock. This
+change adds no command, no gateway method and no UI, so there is no surface for
+them to exercise; writing a suite here would test nothing. They become relevant
+with the enforcement task.
+
+### Issues found
+
+One, in the new test code, found during Code Review and fixed:
+
+- `a_single_flipped_payload_byte_is_rejected` computed a `position` variable and
+  asserted a tautology against it — leftover scaffolding proving nothing. Replaced
+  with a loop that corrupts **every** byte position in the payload individually and
+  asserts each is rejected (~300 cases; suite runtime went 0.03s → 1.21s, which is
+  the work actually happening).
+
+No issues found in production code. No `unwrap`/`expect`/`panic!`/slice indexing
+on file-derived data anywhere outside `#[cfg(test)]` — verified by grep, and load-
+bearing because `panic = "abort"` in the release profile would turn a panic on a
+hostile licence file into a crash of the whole app.
+
+### Risks and edge cases
+
+Flagged explicitly, including ones not covered by tests. All are documented in
+`docs/license-format.md` §10 rather than left implicit:
+
+1. **The system clock is trusted.** Setting the clock back makes an expired licence
+   validate again. Inherent to offline validation with no stored state; the fix is a
+   monotonic watermark, which is stateful enforcement and belongs to the next task.
+   _Not covered by tests — it is a design limitation, not a defect._
+2. **Binary patching.** The public key is a constant in the executable; anyone able
+   to replace it can sign their own licences. Signature verification raises the cost
+   of casual copying, it does not make the app tamper-proof.
+3. **Cloned machine identifiers.** Some virtualised/imaged environments copy
+   `/etc/machine-id` across hosts, so one bound licence would validate on every
+   clone. Conversely a reinstall or motherboard swap changes it and needs a reissue.
+4. **The development key is the compiled-in default.** Any build that forgets
+   `PAYMENT_SCHEDULE_LICENSE_PUBKEY` trusts a keypair whose seed is published in the
+   module docs. A release build in that state logs a warning; it cannot be a hard
+   failure without crashing the app under `panic = "abort"`. **Recommend making the
+   env var mandatory in the release CI job.**
+5. **`machineId` is unverifiable at issue time.** The vendor takes the customer's
+   word for the fingerprint they report. A customer could supply a colleague's.
+6. **`validate_bytes` is `pub` and uncapped.** The 64 KiB cap lives in
+   `validate_file`; a caller passing an enormous slice directly would allocate a
+   copy of the payload. Not reachable today (no caller) and bounded in the real path.
+
+### Recommendations
+
+1. **Before shipping:** generate a production keypair, keep the seed offline, and
+   set `PAYMENT_SCHEDULE_LICENSE_PUBKEY` in the release build. Make it a required
+   variable so a build cannot silently fall back to the development key.
+2. **The enforcement task** should decide the reaction per status, add the
+   monotonic-clock watermark, surface `license::machine_fingerprint()` in Settings
+   (support cannot issue a bound licence otherwise), and — when `LicenseStatus`
+   crosses IPC — ensure `Malformed { reason }` collapses to an opaque code the way
+   `AppError::Internal` does. That constraint is recorded in the module docs.
+3. **The unlicensed baseline** is recorded in `docs/license-format.md` §6: reading
+   clients and purchases, list and detail, without filters and without sorting,
+   requires no licence. Everything else is licensed.
+4. Integration/E2E coverage should be written with the enforcement task, once there
+   is a command and a UI for them to drive.
+
+---
+
 ## 2026-07-28 (e) — Bug: tables paint outside their card when the window is not maximized
 
 ### Summary
