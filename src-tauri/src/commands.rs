@@ -18,18 +18,19 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tauri::State;
 
 use crate::db::{
-    add_interval, installment_status, parse_date, purchase_status, rebalance_amounts,
-    split_amounts, today, AppError, Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE,
-    INTERVAL_KINDS, UPCOMING_DAYS_RANGE,
+    add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
+    Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS,
+    UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
     CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER,
     FUTURE_PAID_DATE, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT, INVALID_INSTALLMENT_COUNT,
     INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE,
-    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, NO_REBALANCE_ROOM,
-    OVERPAYMENT, PAID_ABOVE_AMOUNT, PREVIOUS_UNPAID, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS,
-    PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, SUM_MISMATCH,
+    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT,
+    PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
+    PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, SCHEDULE_VIA_PURCHASE,
+    SUM_MISMATCH,
 };
 use crate::license::{self, LicenseInfo, LicenseState, LicenseStatus};
 use crate::models::*;
@@ -667,18 +668,30 @@ fn resolve_schedule(
             .collect(),
     };
 
+    // Position order and chronological order have to stay the same thing: the
+    // money rules speak of "the previous installment" and mean both readings at
+    // once. The generated path is ascending by construction, so this only bites
+    // a hand-edited schedule. It lives here rather than in `update_purchase` so
+    // create and update cannot drift.
+    if due_dates.windows(2).any(|w| w[0] > w[1]) {
+        return Err(AppError::conflict(DUE_DATE_OUT_OF_ORDER, ""));
+    }
+
     Ok((amounts, due_dates))
 }
 
-/// Insert the installment rows for `purchase_id`. `idx` is 1-based positional.
+/// Insert installment rows for `purchase_id`. `idx` is 1-based positional and
+/// continues from `first_position` (0 when writing a whole new schedule), so
+/// this serves both creating a purchase and appending to one being rescheduled.
 fn insert_installments(
     tx: &rusqlite::Transaction,
     purchase_id: i64,
     amounts: &[i64],
     due_dates: &[String],
+    first_position: usize,
 ) -> DbResult<()> {
     for (i, (amount, due)) in amounts.iter().zip(due_dates).enumerate() {
-        let idx = (i as i64) + 1;
+        let idx = (first_position + i) as i64 + 1;
         tx.execute(
             "INSERT INTO installment (purchase_id, idx, amount, due_date)
              VALUES (?1, ?2, ?3, ?4)",
@@ -727,7 +740,7 @@ pub(crate) fn create_purchase_impl(
         params![reference, purchase_id],
     )?;
 
-    insert_installments(&tx, purchase_id, &amounts, &due_dates)?;
+    insert_installments(&tx, purchase_id, &amounts, &due_dates, 0)?;
 
     tx.commit()?;
     log::info!(
@@ -767,14 +780,114 @@ fn schedule_changed(
             .any(|(inst, (amount, due))| inst.amount != *amount || inst.due_date != *due)
 }
 
+/// Apply a resolved schedule onto the stored rows, position by position.
+///
+/// This is the **only** place an installment's `amount` or `due_date` changes.
+/// `update_installment` refuses both outright, so a schedule edit always arrives
+/// as a whole schedule and can be judged against every row at once.
+///
+/// It updates in place rather than regenerating, which is what lets a purchase
+/// carrying payments still be rescheduled: the `payment` ledger hangs off
+/// `installment` by `ON DELETE CASCADE`, so keeping the rows keeps the history.
+///
+/// Three rules decide whether the incoming schedule is acceptable, all checked
+/// before anything is written:
+///
+/// * A **settled** row (`paid_amount >= amount`) is history. The incoming
+///   schedule has to agree with it or the edit is refused (`AMOUNT_LOCKED`,
+///   `DUE_DATE_LOCKED`).
+/// * No row may be pushed below what it has already collected (`BELOW_PAID`),
+///   because `amount - paid_amount` feeds every outstanding aggregate and must
+///   not go negative.
+/// * A row may only be **dropped** — by shortening the schedule — while it has
+///   no ledger history at all (`PURCHASE_HAS_PAYMENTS`), or the delete would
+///   cascade real payments away.
+fn apply_schedule_in_place(
+    tx: &rusqlite::Transaction,
+    purchase_id: i64,
+    amounts: &[i64],
+    due_dates: &[String],
+) -> DbResult<()> {
+    let rows = load_installment_rows(tx, purchase_id)?;
+    let kept = rows.len().min(amounts.len());
+
+    for (row, (amount, due)) in rows.iter().zip(amounts.iter().zip(due_dates)) {
+        if row.paid_amount >= row.amount {
+            if *amount != row.amount {
+                return Err(AppError::conflict(AMOUNT_LOCKED, ""));
+            }
+            if *due != row.due_date {
+                return Err(AppError::conflict(DUE_DATE_LOCKED, ""));
+            }
+        }
+        if *amount < row.paid_amount {
+            return Err(AppError::conflict(BELOW_PAID, row.paid_amount));
+        }
+    }
+
+    // Counted from the ledger, not from `paid_amount`. A row corrected back down
+    // to zero still holds the entries that took the money and gave it back, and
+    // the cascade would erase both — a silent hole in the payment log rather
+    // than a broken total, which is exactly the kind of loss no aggregate would
+    // ever surface.
+    let mut dropped_with_history = 0usize;
+    for row in &rows[kept..] {
+        let entries: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM payment WHERE installment_id = ?1",
+            [row.id],
+            |r| r.get(0),
+        )?;
+        if entries > 0 {
+            dropped_with_history += 1;
+        }
+    }
+    if dropped_with_history > 0 {
+        return Err(AppError::conflict(
+            PURCHASE_HAS_PAYMENTS,
+            dropped_with_history,
+        ));
+    }
+
+    // --- writes --------------------------------------------------------------
+
+    for (row, (amount, due)) in rows.iter().zip(amounts.iter().zip(due_dates)) {
+        if row.amount == *amount && row.due_date == *due {
+            continue;
+        }
+        tx.execute(
+            "UPDATE installment SET amount = ?1, due_date = ?2 WHERE id = ?3",
+            params![amount, due, row.id],
+        )?;
+        // `paid_date` is derived from the amount as much as from the ledger: a
+        // row lowered onto its collected figure settles and gains a date, one
+        // raised past it stops being settled and loses it.
+        if row.amount != *amount {
+            sync_paid_date(tx, row.id, *amount, row.paid_amount)?;
+        }
+    }
+
+    for row in &rows[kept..] {
+        tx.execute("DELETE FROM installment WHERE id = ?1", [row.id])?;
+    }
+
+    insert_installments(
+        tx,
+        purchase_id,
+        &amounts[kept..],
+        &due_dates[kept..],
+        rows.len(),
+    )
+}
+
 /// Edit a purchase.
 ///
 /// The product label is always editable. Everything the schedule is derived
-/// from — total, count, interval and the purchase date that anchors it — may
-/// only change while no payment has been recorded, because applying it means
-/// regenerating the installment rows, and those rows own the payments through
-/// an `ON DELETE CASCADE`. `client_id` is ignored: moving a purchase to another
-/// client is not something this command does.
+/// from — total, count, interval and the purchase date that anchors it — is
+/// applied through [`apply_schedule_in_place`], which is what makes this the
+/// single place an installment's amount or due date may move. A settled
+/// installment, or one whose removal would take payments with it, refuses the
+/// edit there. `client_id` is ignored: moving a purchase to another client is
+/// not something this command does.
 #[tauri::command]
 pub async fn update_purchase(
     db: State<'_, Db>,
@@ -801,12 +914,6 @@ pub(crate) fn update_purchase_impl(
     }
 
     let reschedule = schedule_changed(&existing, &input, &amounts, &due_dates);
-    if reschedule {
-        let paid = payment_count(&tx, id)?;
-        if paid > 0 {
-            return Err(AppError::conflict(PURCHASE_HAS_PAYMENTS, paid));
-        }
-    }
 
     tx.execute(
         "UPDATE purchase SET product_label = ?1, total_price = ?2,
@@ -825,10 +932,7 @@ pub(crate) fn update_purchase_impl(
     )?;
 
     if reschedule {
-        // Safe precisely because the guard above proved there are no payments:
-        // dropping these rows would otherwise cascade the payment ledger away.
-        tx.execute("DELETE FROM installment WHERE purchase_id = ?1", [id])?;
-        insert_installments(&tx, id, &amounts, &due_dates)?;
+        apply_schedule_in_place(&tx, id, &amounts, &due_dates)?;
     }
 
     tx.commit()?;
@@ -928,11 +1032,13 @@ pub(crate) fn delete_purchase_impl(conn: &mut Connection, id: i64) -> DbResult<(
 /// Re-derive one installment's `paid_date` from its current numbers.
 ///
 /// `record_payment_impl` owns the same rule, but it only ever moves
-/// `paid_amount` upwards against a fixed `amount`. Editing works the other way
-/// round — the amount moves under a fixed `paid_amount` — so a row can *become*
-/// settled or *stop* being settled without any payment changing hands, and the
-/// date has to follow. The settled date is the last payment on the row; a row
-/// settled because it was zeroed has no payments and keeps a `NULL` date.
+/// `paid_amount` upwards against a fixed `amount`. The two editors reach it from
+/// either side: `update_installment` moves `paid_amount` under a fixed amount,
+/// and `apply_schedule_in_place` moves the amount under a fixed `paid_amount`.
+/// Either way a row can *become* settled or *stop* being settled without any
+/// payment changing hands, and the date has to follow. The settled date is the
+/// last payment on the row; a row settled because it was zeroed has no payments
+/// and keeps a `NULL` date.
 fn sync_paid_date(
     tx: &rusqlite::Transaction,
     installment_id: i64,
@@ -989,39 +1095,32 @@ fn load_installment_rows(
     Ok(rows)
 }
 
-/// Edit a single installment in place.
+/// Record money against a single installment.
 ///
 /// This is the one write path that still works *after* a payment has been
-/// recorded. `update_purchase` cannot: rescheduling there means deleting and
-/// reinserting the rows, and those rows own the payments through an
-/// `ON DELETE CASCADE`, so it is refused outright once cash has been taken.
+/// recorded, and it deals **only** in money: `paid_amount`, `payment_date` and
+/// `note`. The schedule — `amount` and `due_date` — belongs to
+/// [`update_purchase`] alone and is refused here with `SCHEDULE_VIA_PURCHASE`,
+/// which is what makes "the schedule is edited in one place" a property of the
+/// backend rather than a habit of the UI.
 ///
-/// The fields split into two halves governed by opposite rules, and neither
-/// half's rule looks at the other's:
+/// The rules:
 ///
-/// * **The schedule** — `amount` and `due_date` — is editable until the
-///   installment settles, after which it is history (`AMOUNT_LOCKED`,
-///   `DUE_DATE_LOCKED`). Nothing about the *neighbouring* installments gates it.
-/// * **The money** — `paid_amount`, `payment_date`, `note` — is editable only
-///   once installment `N-1` is fully paid (`PREVIOUS_UNPAID:{index}`). Cash is
-///   collected in order, so it cannot be recorded out of order. Nothing about
-///   *this* installment's own status gates it.
+/// * `paid_amount` is editable only once installment `N-1` is fully paid
+///   (`PREVIOUS_UNPAID:{index}`). Cash is collected in order, so it cannot be
+///   recorded out of order. Nothing about *this* installment's own status gates
+///   it — a settled row's collected figure stays correctable.
+/// * A **payment date is history once recorded** (`PAYMENT_DATE_LOCKED`). It may
+///   only be supplied to date the ledger entry this edit is about to create, so
+///   an existing entry's date can never be rewritten. With no entry to create
+///   and none on record, a date or a note is refused with `NO_PAYMENT_TO_DATE`
+///   rather than silently dropped.
 ///
-/// Two invariants survive it:
-///
-/// * `SUM(amount) == purchase.total_price`. The total is never written; a
-///   changed amount is absorbed by the other unsettled installments — see
-///   [`rebalance_amounts`] — or refused with `NO_REBALANCE_ROOM`.
-/// * `SUM(payment.amount) == SUM(installment.paid_amount)`. `paid_amount` is a
-///   cache of the ledger, so moving it writes a matching **correction entry**
-///   into `payment` (negative when the figure comes down). Without that the
-///   dashboard's "Amount collected", the only money figure derived from the
-///   ledger, would drift away from every other total in the app.
-///
-/// A due date is additionally clamped to `[prev.due_date, next.due_date]`
-/// (`DUE_DATE_OUT_OF_ORDER`). That is what keeps position order and
-/// chronological order the same thing, so "the previous installment" means the
-/// same in both readings however the dates are edited.
+/// One invariant survives it: `SUM(payment.amount) == SUM(installment.paid_amount)`.
+/// `paid_amount` is a cache of the ledger, so moving it writes a matching
+/// **correction entry** into `payment` (negative when the figure comes down).
+/// Without that the dashboard's "Amount collected", the only money figure
+/// derived from the ledger, would drift away from every other total in the app.
 ///
 /// Mirrored guard-for-guard by `updateInstallment` in `src/api/mock.ts`.
 #[tauri::command]
@@ -1042,9 +1141,15 @@ pub(crate) fn update_installment_impl(
 ) -> DbResult<PurchaseDetail> {
     // Validate what can be validated without touching the database, so a
     // malformed request never opens a transaction.
-    let new_due = edit.due_date.as_deref().map(parse_date).transpose()?;
+    //
+    // Refused on *presence*, not on "differs from what is stored": a caller
+    // sending a schedule field still believes this command owns one, and a
+    // no-op today is a real edit after the next keystroke.
+    if edit.amount.is_some() || edit.due_date.is_some() {
+        return Err(AppError::conflict(SCHEDULE_VIA_PURCHASE, ""));
+    }
     let payment_date = edit.payment_date.as_deref().map(parse_date).transpose()?;
-    if edit.amount.is_some_and(|a| a < 0) || edit.paid_amount.is_some_and(|p| p < 0) {
+    if edit.paid_amount.is_some_and(|p| p < 0) {
         return Err(AppError::validation(INVALID_AMOUNT));
     }
     if payment_date.is_some_and(|d| d > today()) {
@@ -1076,30 +1181,8 @@ pub(crate) fn update_installment_impl(
         .position(|r| r.id == id)
         .ok_or_else(|| AppError::not_found(INSTALLMENT_NOT_FOUND))?;
     let target = &rows[pos];
-    let settled = target.paid_amount >= target.amount;
 
-    // --- the schedule half: gated on this installment being unsettled --------
-
-    let amount_changed = edit.amount.is_some_and(|a| a != target.amount);
-    let due_changed = new_due.is_some_and(|d| d.to_string() != target.due_date);
-    if settled {
-        if amount_changed {
-            return Err(AppError::conflict(AMOUNT_LOCKED, ""));
-        }
-        if due_changed {
-            return Err(AppError::conflict(DUE_DATE_LOCKED, ""));
-        }
-    }
-    if due_changed {
-        let due = new_due.unwrap().to_string();
-        let below = pos > 0 && due < rows[pos - 1].due_date;
-        let above = pos + 1 < rows.len() && due > rows[pos + 1].due_date;
-        if below || above {
-            return Err(AppError::conflict(DUE_DATE_OUT_OF_ORDER, ""));
-        }
-    }
-
-    // --- the money half: gated on the previous installment being settled -----
+    // --- the money: gated on the previous installment being settled ----------
 
     let paid_changed = edit.paid_amount.is_some_and(|p| p != target.paid_amount);
     let touches_money = paid_changed || payment_date.is_some() || edit.note.is_some();
@@ -1114,36 +1197,10 @@ pub(crate) fn update_installment_impl(
     // --- resolve everything before writing anything --------------------------
 
     let final_paid = edit.paid_amount.unwrap_or(target.paid_amount);
-    let final_amount = edit.amount.unwrap_or(target.amount);
-    if final_paid > final_amount {
-        // The same constraint from either side; report it against the field the
-        // user actually moved so the message names a number they typed.
-        return Err(if paid_changed {
-            AppError::conflict(PAID_ABOVE_AMOUNT, final_amount)
-        } else {
-            AppError::conflict(BELOW_PAID, target.paid_amount)
-        });
+    if final_paid > target.amount {
+        return Err(AppError::conflict(PAID_ABOVE_AMOUNT, target.amount));
     }
 
-    let next_amounts = if amount_changed {
-        let amounts: Vec<i64> = rows.iter().map(|r| r.amount).collect();
-        let mut paid_amounts: Vec<i64> = rows.iter().map(|r| r.paid_amount).collect();
-        // The edited row's own floor is what this edit lands on, not what is
-        // stored, so lowering the amount and the collected figure together is
-        // not refused for a conflict the request itself resolves.
-        paid_amounts[pos] = final_paid;
-        Some(
-            rebalance_amounts(&amounts, &paid_amounts, pos, final_amount)
-                .ok_or_else(|| AppError::conflict(NO_REBALANCE_ROOM, ""))?,
-        )
-    } else {
-        None
-    };
-
-    // A payment date needs something to date. A correction entry is created
-    // below when the collected figure moves; otherwise it re-dates the row's
-    // most recent ledger entry, which is what keeps `paid_date` (derived as
-    // `MAX(payment_date)`) agreeing with the history behind it.
     let latest_payment: Option<i64> = tx
         .query_row(
             "SELECT id FROM payment WHERE installment_id = ?1
@@ -1152,30 +1209,26 @@ pub(crate) fn update_installment_impl(
             |r| r.get(0),
         )
         .optional()?;
-    if (payment_date.is_some() || edit.note.is_some()) && !paid_changed && latest_payment.is_none()
-    {
+
+    // A payment date dates the correction entry created below, and nothing
+    // else. Once an entry exists its date is history — re-dating it would move
+    // `paid_date` (derived as `MAX(payment_date)`) away from the cash it
+    // describes — and with no entry either way there is nothing for the date to
+    // land on. Both are refusals rather than a silently dropped field.
+    if payment_date.is_some() && !paid_changed {
+        return Err(if latest_payment.is_some() {
+            AppError::conflict(PAYMENT_DATE_LOCKED, "")
+        } else {
+            AppError::conflict(NO_PAYMENT_TO_DATE, "")
+        });
+    }
+    // A note carries no such history, so it may still amend the latest entry —
+    // but it still needs one to amend.
+    if edit.note.is_some() && !paid_changed && latest_payment.is_none() {
         return Err(AppError::conflict(NO_PAYMENT_TO_DATE, ""));
     }
 
     // --- writes --------------------------------------------------------------
-
-    if let Some(due) = new_due {
-        tx.execute(
-            "UPDATE installment SET due_date = ?1 WHERE id = ?2",
-            params![due.to_string(), id],
-        )?;
-    }
-
-    if let Some(next) = &next_amounts {
-        for (row, amount) in rows.iter().zip(next) {
-            if row.amount != *amount {
-                tx.execute(
-                    "UPDATE installment SET amount = ?1 WHERE id = ?2",
-                    params![amount, row.id],
-                )?;
-            }
-        }
-    }
 
     let note = edit
         .note
@@ -1196,14 +1249,8 @@ pub(crate) fn update_installment_impl(
             params![final_paid, id],
         )?;
     } else if let Some(payment_id) = latest_payment {
-        // Nothing to correct, so a date or a note amends the entry already
-        // there. The guard above proved there is one.
-        if let Some(date) = payment_date {
-            tx.execute(
-                "UPDATE payment SET payment_date = ?1 WHERE id = ?2",
-                params![date.to_string(), payment_id],
-            )?;
-        }
+        // Nothing to correct, so a note amends the entry already there. The
+        // guard above proved there is one — and that no date came with it.
         if let Some(note) = note {
             tx.execute(
                 "UPDATE payment SET note = ?1 WHERE id = ?2",
@@ -1212,23 +1259,14 @@ pub(crate) fn update_installment_impl(
         }
     }
 
-    // `paid_date` is derived, so it has to be re-run for every row whose numbers
-    // moved — the edited one, and any absorber a rebalance pushed across its
-    // settled threshold.
-    sync_paid_date(&tx, id, final_amount, final_paid)?;
-    if let Some(next) = &next_amounts {
-        for (row, amount) in rows.iter().zip(next) {
-            if row.id != id && row.amount != *amount {
-                sync_paid_date(&tx, row.id, *amount, row.paid_amount)?;
-            }
-        }
-    }
+    // `paid_date` is derived from the collected figure, so it has to be re-run
+    // whenever that figure moves.
+    sync_paid_date(&tx, id, target.amount, final_paid)?;
 
     tx.commit()?;
     log::info!(
         "updated installment id={id} on purchase id={purchase_id} \
-         (rebalanced: {}, ledger correction: {paid_changed})",
-        next_amounts.is_some()
+         (ledger correction: {paid_changed})"
     );
     build_purchase_detail(conn, purchase_id)
 }
@@ -3261,30 +3299,332 @@ mod tests {
         assert_eq!(updated.total_paid, 250, "the payment survived");
     }
 
+    /// Regenerating the whole schedule from the anchor fields rewrites every
+    /// row's amount and due date, settled ones included — so a settled tranche
+    /// refuses it. The tranches that are still owed remain editable; see
+    /// `rescheduling_moves_the_unpaid_tranches_around_a_settled_one`.
     #[test]
-    fn rescheduling_is_refused_once_a_payment_exists() {
+    fn regenerating_the_schedule_is_refused_once_a_tranche_is_settled() {
         let f = Fixture::new("update_locked");
         let detail = seeded_purchase(&f);
         pay_first(&f, &detail, 250);
 
-        for mutate in [
-            (|i: &mut PurchaseInput| i.total_price = 2000) as fn(&mut PurchaseInput),
-            |i: &mut PurchaseInput| i.installment_count = 6,
-            |i: &mut PurchaseInput| i.interval_kind = "weekly".into(),
-            |i: &mut PurchaseInput| i.purchase_date = "2024-02-01".into(),
+        for (mutate, expected) in [
+            (
+                (|i: &mut PurchaseInput| i.total_price = 2000) as fn(&mut PurchaseInput),
+                "AMOUNT_LOCKED",
+            ),
+            (
+                |i: &mut PurchaseInput| i.installment_count = 6,
+                "AMOUNT_LOCKED",
+            ),
+            (
+                |i: &mut PurchaseInput| i.purchase_date = "2024-02-01".into(),
+                "DUE_DATE_LOCKED",
+            ),
         ] {
             let mut input = f.purchase_input();
             mutate(&mut input);
             let err =
                 update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
-            assert_eq!(code_of(err), "PURCHASE_HAS_PAYMENTS:1");
+            assert_eq!(code_of(err), expected);
         }
 
-        // Nothing moved.
+        // Nothing moved — not even the purchase row, which is written first.
         let after = build_purchase_detail(&f.db.lock(), detail.purchase.id).unwrap();
         assert_eq!(after.purchase.total_price, 1000);
         assert_eq!(after.purchase.purchase_date, "2024-01-15");
         assert_eq!(after.installments.len(), 4);
+    }
+
+    /// The point of applying a schedule in place: a purchase carrying payments
+    /// can still have the tranches that are still owed moved, because the rows
+    /// — and the ledger hanging off them — survive the edit.
+    #[test]
+    fn rescheduling_moves_the_unpaid_tranches_around_a_settled_one() {
+        let f = Fixture::new("update_around_settled");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+        let ids: Vec<i64> = detail.installments.iter().map(|i| i.id).collect();
+
+        let mut input = f.purchase_input();
+        // Tranche 1 keeps its 250 and its date; the rest are re-cut and re-dated.
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 250,
+                due_date: "2024-01-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 400,
+                due_date: "2024-03-01".into(),
+            },
+            InstallmentInput {
+                index: 3,
+                amount: 200,
+                due_date: "2024-04-01".into(),
+            },
+            InstallmentInput {
+                index: 4,
+                amount: 150,
+                due_date: "2024-05-01".into(),
+            },
+        ]);
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(amounts_of(&updated), vec![250, 400, 200, 150]);
+        assert_eq!(updated.installments[1].due_date, "2024-03-01");
+        // In place, not regenerated: the rows kept their identities, which is
+        // what kept the payment attached to tranche 1.
+        assert_eq!(
+            updated
+                .installments
+                .iter()
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(updated.total_paid, 250);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+        assert_eq!(updated.installments[0].status, "paid");
+    }
+
+    /// A tranche cannot be worth less than what has already been collected on
+    /// it: `amount - paid_amount` feeds every outstanding total.
+    #[test]
+    fn rescheduling_below_what_a_tranche_collected_is_refused() {
+        let f = Fixture::new("update_below_paid");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 100); // partial, so the row is not settled
+
+        let mut input = f.purchase_input();
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 50,
+                due_date: "2024-01-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 450,
+                due_date: "2024-02-15".into(),
+            },
+            InstallmentInput {
+                index: 3,
+                amount: 250,
+                due_date: "2024-03-15".into(),
+            },
+            InstallmentInput {
+                index: 4,
+                amount: 250,
+                due_date: "2024-04-15".into(),
+            },
+        ]);
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "BELOW_PAID:100");
+        assert_eq!(
+            stored_amounts(&f, detail.purchase.id),
+            vec![250, 250, 250, 250]
+        );
+    }
+
+    /// Shortening the schedule deletes rows, and `payment` cascades off them.
+    #[test]
+    fn shortening_the_schedule_past_a_paid_tranche_is_refused() {
+        let f = Fixture::new("update_shorten");
+        let detail = seeded_purchase(&f);
+        pay_installment(&f, &detail, 3, 250); // the *last* tranche carries cash
+
+        let mut input = f.purchase_input();
+        input.total_price = 750;
+        input.installment_count = 3;
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_HAS_PAYMENTS:1");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+    }
+
+    /// The drop guard counts *ledger entries*, not the collected figure. A row
+    /// corrected back down to zero still holds the entries that took the money
+    /// and gave it back, and the cascade would erase both — a hole in the
+    /// payment log that no total would ever surface.
+    #[test]
+    fn shortening_past_a_row_corrected_back_to_zero_is_refused() {
+        let f = Fixture::new("update_shorten_zeroed");
+        let detail = seeded_purchase(&f);
+        let last = detail.installments[3].id;
+
+        // Cash is recorded in order, so every earlier tranche is settled first;
+        // then the last one's figure is corrected all the way back down.
+        for pos in 0..4 {
+            pay_installment(&f, &detail, pos, 250);
+        }
+        update_installment_impl(&mut f.db.lock(), last, edit_paid(0)).unwrap();
+
+        let zeroed: i64 =
+            f.db.lock()
+                .query_row(
+                    "SELECT paid_amount FROM installment WHERE id = ?1",
+                    [last],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(zeroed, 0, "the figure is back to zero");
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM payment"),
+            5,
+            "history remains"
+        );
+
+        let mut input = f.purchase_input();
+        input.total_price = 750;
+        input.installment_count = 3;
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "PURCHASE_HAS_PAYMENTS:1");
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 5);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+    }
+
+    /// Dropping rows nobody has paid into is ordinary rescheduling.
+    #[test]
+    fn shortening_the_schedule_drops_only_empty_tranches() {
+        let f = Fixture::new("update_shorten_ok");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+        let first_id = detail.installments[0].id;
+
+        let mut input = f.purchase_input();
+        input.total_price = 500;
+        input.installment_count = 2;
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 250,
+                due_date: "2024-01-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 250,
+                due_date: "2024-02-15".into(),
+            },
+        ]);
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(amounts_of(&updated), vec![250, 250]);
+        assert_eq!(updated.installments[0].id, first_id, "kept in place");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 2);
+        assert_eq!(updated.total_paid, 250);
+    }
+
+    /// Lengthening it appends rows past the ones already stored.
+    #[test]
+    fn lengthening_the_schedule_appends_new_tranches() {
+        let f = Fixture::new("update_lengthen");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+        let ids: Vec<i64> = detail.installments.iter().map(|i| i.id).collect();
+
+        let mut input = f.purchase_input();
+        input.installment_count = 5;
+        input.installments = Some(
+            [250, 200, 200, 200, 150]
+                .iter()
+                .enumerate()
+                .map(|(i, amount)| InstallmentInput {
+                    index: i as i64 + 1,
+                    amount: *amount,
+                    due_date: format!("2024-0{}-15", i + 1),
+                })
+                .collect(),
+        );
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(amounts_of(&updated), vec![250, 200, 200, 200, 150]);
+        assert_eq!(
+            updated.installments[..4]
+                .iter()
+                .map(|i| i.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(updated.installments[4].index, 5);
+        assert_eq!(updated.total_paid, 250);
+    }
+
+    /// Lowering a tranche onto its collected figure settles it, and `paid_date`
+    /// is derived, so it has to gain one — from the ledger, not from thin air.
+    #[test]
+    fn rescheduling_onto_the_collected_figure_settles_the_tranche() {
+        let f = Fixture::new("update_settles_row");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 100);
+
+        let mut input = f.purchase_input();
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 100,
+                due_date: "2024-01-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 300,
+                due_date: "2024-02-15".into(),
+            },
+            InstallmentInput {
+                index: 3,
+                amount: 300,
+                due_date: "2024-03-15".into(),
+            },
+            InstallmentInput {
+                index: 4,
+                amount: 300,
+                due_date: "2024-04-15".into(),
+            },
+        ]);
+        let updated = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
+
+        assert_eq!(updated.installments[0].status, "paid");
+        assert_eq!(
+            updated.installments[0].paid_date.as_deref(),
+            Some("2024-01-20")
+        );
+    }
+
+    /// Position order and chronological order have to stay the same thing, on
+    /// the way in as much as on the way out.
+    #[test]
+    fn a_schedule_whose_dates_run_backwards_is_refused() {
+        let f = Fixture::new("update_dates_backwards");
+        let detail = seeded_purchase(&f);
+
+        let out_of_order = vec![
+            InstallmentInput {
+                index: 1,
+                amount: 500,
+                due_date: "2024-03-15".into(),
+            },
+            InstallmentInput {
+                index: 2,
+                amount: 500,
+                due_date: "2024-02-15".into(),
+            },
+        ];
+
+        let mut input = f.purchase_input();
+        input.installment_count = 2;
+        input.installments = Some(out_of_order.clone());
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "DUE_DATE_OUT_OF_ORDER");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 4);
+
+        // Shared with create, so the two cannot drift.
+        let mut input = f.purchase_input();
+        input.installment_count = 2;
+        input.installments = Some(out_of_order);
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "DUE_DATE_OUT_OF_ORDER");
     }
 
     #[test]
@@ -3345,10 +3685,9 @@ mod tests {
     // The baseline purchase is 1000 over 4 monthly tranches of 250, dated
     // 2024-01-15 — so every tranche is already overdue against today.
     //
-    // The two halves of the editor are governed by opposite rules: the schedule
-    // (amount, due date) unlocks while the tranche is unsettled and nothing
-    // about its neighbours matters; the money (paid amount, payment date) is
-    // gated on the *previous* tranche and nothing about its own status matters.
+    // This editor deals only in money. The schedule belongs to `update_purchase`
+    // and is refused here outright; the money is gated on the *previous* tranche
+    // and nothing about this one's own status matters.
 
     /// Pay `amount` against installment `pos` (0-based) of `detail`.
     fn pay_installment(f: &Fixture, detail: &PurchaseDetail, pos: usize, amount: i64) {
@@ -3387,203 +3726,52 @@ mod tests {
         }
     }
 
-    // -- the schedule half ----------------------------------------------------
+    // -- the schedule is not this command's ------------------------------------
 
+    /// Rule 3, and the structural half of rules 1 and 2: an amount or a due
+    /// date sent here is refused whatever its value and whatever the tranche's
+    /// state, so "the schedule is edited in one place" is a property of the
+    /// backend rather than a habit of the UI.
     #[test]
-    fn editing_an_amount_rebalances_the_later_tranches_and_holds_the_total() {
-        let f = Fixture::new("inst_rebalance");
-        let detail = seeded_purchase(&f);
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[0].id,
-            edit_amount(400),
-        )
-        .unwrap();
-
-        assert_eq!(amounts_of(&updated), vec![400, 200, 200, 200]);
-        // The invariant the whole rebalance exists for.
-        assert_eq!(amounts_of(&updated).iter().sum::<i64>(), 1000);
-        assert_eq!(updated.purchase.total_price, 1000);
-        assert_eq!(updated.remaining, 1000);
-    }
-
-    /// The schedule rules look at this tranche alone. A tranche deep in an
-    /// entirely unpaid purchase is still editable — that gate is on the money
-    /// half, not this one.
-    #[test]
-    fn an_amount_is_editable_regardless_of_the_previous_tranche() {
-        let f = Fixture::new("inst_amount_no_gate");
-        let detail = seeded_purchase(&f);
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[2].id,
-            edit_amount(400),
-        )
-        .unwrap();
-
-        assert_eq!(amounts_of(&updated), vec![250, 250, 400, 100]);
-        assert_eq!(updated.purchase.total_price, 1000);
-    }
-
-    /// Zeroing a tranche nobody has paid into settles it — status is derived,
-    /// so `paid >= amount` reads as "paid" with no payment involved.
-    #[test]
-    fn zeroing_an_untouched_tranche_settles_it() {
-        let f = Fixture::new("inst_zero");
-        let detail = seeded_purchase(&f);
-
-        let updated =
-            update_installment_impl(&mut f.db.lock(), detail.installments[0].id, edit_amount(0))
-                .unwrap();
-
-        assert_eq!(amounts_of(&updated), vec![0, 333, 333, 334]);
-        assert_eq!(updated.installments[0].status, "paid");
-        // Settled by arithmetic, not by a payment, so there is no date to show.
-        assert_eq!(updated.installments[0].paid_date, None);
-        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
-    }
-
-    /// Once a tranche is settled its schedule is history: neither number moves.
-    #[test]
-    fn a_settled_tranche_locks_its_amount_and_due_date() {
-        let f = Fixture::new("inst_settled_locks");
+    fn the_installment_editor_refuses_the_schedule_fields() {
+        let f = Fixture::new("inst_schedule_refused");
         let detail = seeded_purchase(&f);
         pay_installment(&f, &detail, 0, 250);
-        let inst_id = detail.installments[0].id;
 
-        let err = update_installment_impl(&mut f.db.lock(), inst_id, edit_amount(400)).unwrap_err();
-        assert_eq!(code_of(err), "AMOUNT_LOCKED");
+        // Settled (tranche 1) and unsettled (tranche 3) alike.
+        for pos in [0, 2] {
+            for edit in [
+                edit_amount(400),
+                InstallmentEdit {
+                    due_date: Some("2024-06-01".into()),
+                    ..Default::default()
+                },
+                // Even a value identical to what is stored: sending the field at
+                // all is a caller that still believes this command owns it.
+                edit_amount(250),
+            ] {
+                let err =
+                    update_installment_impl(&mut f.db.lock(), detail.installments[pos].id, edit)
+                        .unwrap_err();
+                assert_eq!(code_of(err), "SCHEDULE_VIA_PURCHASE", "at position {pos}");
+            }
+        }
 
-        let err = update_installment_impl(
-            &mut f.db.lock(),
-            inst_id,
-            InstallmentEdit {
-                due_date: Some("2024-01-20".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-        assert_eq!(code_of(err), "DUE_DATE_LOCKED");
-
-        // Resending the values it already has is not a change, so not a refusal.
-        update_installment_impl(
-            &mut f.db.lock(),
-            inst_id,
-            InstallmentEdit {
-                amount: Some(250),
-                due_date: Some("2024-01-15".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
         assert_eq!(
             stored_amounts(&f, detail.purchase.id),
             vec![250, 250, 250, 250]
         );
     }
 
-    /// A due date may move anywhere between its neighbours' dates. Clamping it
-    /// there is what keeps position order and chronological order the same
-    /// thing, so "the previous tranche" is unambiguous however dates are edited.
+    /// The refusal comes before the licence gate has anything to say, and before
+    /// the transaction opens, so a schedule field never reaches the database.
     #[test]
-    fn a_due_date_moves_freely_between_its_neighbours() {
-        let f = Fixture::new("inst_due_date");
-        let detail = seeded_purchase(&f);
-        // Tranche 3 sits between 2024-02-15 and 2024-04-15.
-        let inst_id = detail.installments[2].id;
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            inst_id,
-            InstallmentEdit {
-                due_date: Some("2024-04-01".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(updated.installments[2].due_date, "2024-04-01");
-        // Dates are independent of the money: nothing was rebalanced.
-        assert_eq!(amounts_of(&updated), vec![250, 250, 250, 250]);
-
-        for out_of_range in ["2024-02-01", "2024-05-01"] {
-            let err = update_installment_impl(
-                &mut f.db.lock(),
-                inst_id,
-                InstallmentEdit {
-                    due_date: Some(out_of_range.into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(code_of(err), "DUE_DATE_OUT_OF_ORDER", "for {out_of_range}");
-        }
-
-        // The neighbours' own dates are inclusive bounds.
-        for edge in ["2024-02-15", "2024-04-15"] {
-            update_installment_impl(
-                &mut f.db.lock(),
-                inst_id,
-                InstallmentEdit {
-                    due_date: Some(edge.into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        }
-    }
-
-    /// The first and last tranches are unbounded on their missing side.
-    #[test]
-    fn the_outer_tranches_have_only_one_bound() {
-        let f = Fixture::new("inst_due_outer");
-        let detail = seeded_purchase(&f);
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[0].id,
-            InstallmentEdit {
-                due_date: Some("2020-01-01".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(updated.installments[0].due_date, "2020-01-01");
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[3].id,
-            InstallmentEdit {
-                due_date: Some("2030-12-31".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(updated.installments[3].due_date, "2030-12-31");
-    }
-
-    /// With every other tranche settled there is nowhere for the delta to go,
-    /// and the total is not this command's to move.
-    #[test]
-    fn an_amount_is_locked_once_every_other_tranche_is_settled() {
-        let f = Fixture::new("inst_no_room");
-        let detail = seeded_purchase(&f);
-        for pos in 0..3 {
-            pay_installment(&f, &detail, pos, 250);
-        }
-
-        let err = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[3].id,
-            edit_amount(100),
-        )
-        .unwrap_err();
-        assert_eq!(code_of(err), "NO_REBALANCE_ROOM");
-        assert_eq!(
-            stored_amounts(&f, detail.purchase.id),
-            vec![250, 250, 250, 250]
-        );
+    fn the_schedule_refusal_precedes_every_lookup() {
+        let f = Fixture::new("inst_schedule_first");
+        // An id that does not exist: the schedule guard still wins, which is
+        // what proves it runs before the row is even looked up.
+        let err = update_installment_impl(&mut f.db.lock(), 9_999, edit_amount(1)).unwrap_err();
+        assert_eq!(code_of(err), "SCHEDULE_VIA_PURCHASE");
     }
 
     // -- the money half -------------------------------------------------------
@@ -3694,23 +3882,37 @@ mod tests {
         f.assert_ledger_matches_installments();
     }
 
-    /// The gate is on the money only — the schedule of the very same tranche
-    /// stays editable while its predecessor is owing.
+    /// The gate is on the money only — a tranche whose predecessor is owing can
+    /// still be rescheduled, just not from here.
     #[test]
-    fn the_gate_does_not_reach_the_schedule_fields() {
+    fn the_gate_does_not_reach_the_purchase_editor() {
         let f = Fixture::new("inst_gate_scope");
         let detail = seeded_purchase(&f);
 
-        update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[1].id,
-            InstallmentEdit {
-                amount: Some(300),
-                due_date: Some("2024-03-01".into()),
-                ..Default::default()
+        let mut input = f.purchase_input();
+        input.installments = Some(vec![
+            InstallmentInput {
+                index: 1,
+                amount: 250,
+                due_date: "2024-01-15".into(),
             },
-        )
-        .unwrap();
+            InstallmentInput {
+                index: 2,
+                amount: 300,
+                due_date: "2024-03-01".into(),
+            },
+            InstallmentInput {
+                index: 3,
+                amount: 225,
+                due_date: "2024-03-15".into(),
+            },
+            InstallmentInput {
+                index: 4,
+                amount: 225,
+                due_date: "2024-04-15".into(),
+            },
+        ]);
+        update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap();
 
         assert_eq!(
             stored_amounts(&f, detail.purchase.id),
@@ -3733,59 +3935,73 @@ mod tests {
         assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 0);
     }
 
-    /// Reported against whichever field the user actually moved.
+    /// Rule 1's other half: a *settled* tranche's collected figure stays
+    /// correctable. Only its amount and due date are history.
     #[test]
-    fn lowering_the_amount_under_the_collected_figure_is_refused() {
-        let f = Fixture::new("inst_below_paid");
+    fn a_settled_tranche_keeps_its_collected_figure_editable() {
+        let f = Fixture::new("inst_settled_money");
         let detail = seeded_purchase(&f);
-        pay_installment(&f, &detail, 0, 100);
+        pay_installment(&f, &detail, 0, 250);
 
-        let err =
-            update_installment_impl(&mut f.db.lock(), detail.installments[0].id, edit_amount(50))
-                .unwrap_err();
-        assert_eq!(code_of(err), "BELOW_PAID:100");
-    }
+        let updated =
+            update_installment_impl(&mut f.db.lock(), detail.installments[0].id, edit_paid(180))
+                .unwrap();
 
-    /// Lowering both together is a request that resolves itself, and must not
-    /// be refused for a conflict that only exists against the stored values.
-    #[test]
-    fn the_amount_and_the_paid_figure_may_come_down_together() {
-        let f = Fixture::new("inst_both_down");
-        let detail = seeded_purchase(&f);
-        pay_installment(&f, &detail, 0, 200);
-
-        let updated = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[0].id,
-            InstallmentEdit {
-                amount: Some(120),
-                paid_amount: Some(120),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(amounts_of(&updated), vec![120, 293, 293, 294]);
-        assert_eq!(updated.installments[0].paid_amount, 120);
-        assert_eq!(updated.installments[0].status, "paid");
+        assert_eq!(updated.installments[0].paid_amount, 180);
+        // No longer settled, so the derived date goes with it.
+        assert_eq!(updated.installments[0].paid_date, None);
+        assert_eq!(updated.installments[0].amount, 250, "the schedule held");
         f.assert_ledger_matches_installments();
     }
 
     // -- the payment date -----------------------------------------------------
 
-    /// With no correction to carry it, a payment date re-dates the row's most
-    /// recent ledger entry — which is what keeps `paid_date` (derived as
-    /// `MAX(payment_date)`) agreeing with the history behind it.
+    /// Rule 2: a payment date is history once recorded. With no correction to
+    /// carry it there is nothing for a new date to describe, and rewriting the
+    /// entry already there would move `paid_date` away from the cash behind it.
     #[test]
-    fn a_payment_date_alone_re_dates_the_latest_ledger_entry() {
+    fn a_recorded_payment_date_cannot_be_rewritten() {
         let f = Fixture::new("inst_redate");
         let detail = seeded_purchase(&f);
         pay_installment(&f, &detail, 0, 250);
+
+        let err = update_installment_impl(
+            &mut f.db.lock(),
+            detail.installments[0].id,
+            InstallmentEdit {
+                payment_date: Some("2024-03-05".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(err), "PAYMENT_DATE_LOCKED");
+
+        // The ledger entry, and the date derived from it, are untouched.
+        let dated: String =
+            f.db.lock()
+                .query_row("SELECT payment_date FROM payment", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(dated, "2024-02-01");
+        let after = build_purchase_detail(&f.db.lock(), detail.purchase.id).unwrap();
+        assert_eq!(
+            after.installments[0].paid_date.as_deref(),
+            Some("2024-02-01")
+        );
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
+    }
+
+    /// Setting one the first time is the whole point, though — a date travelling
+    /// with a moved figure dates the entry that move creates.
+    #[test]
+    fn a_payment_date_still_dates_the_entry_it_arrives_with() {
+        let f = Fixture::new("inst_date_new_entry");
+        let detail = seeded_purchase(&f);
 
         let updated = update_installment_impl(
             &mut f.db.lock(),
             detail.installments[0].id,
             InstallmentEdit {
+                paid_amount: Some(250),
                 payment_date: Some("2024-03-05".into()),
                 ..Default::default()
             },
@@ -3796,12 +4012,13 @@ mod tests {
             updated.installments[0].paid_date.as_deref(),
             Some("2024-03-05")
         );
-        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1, "no entry added");
-        let dated: String =
-            f.db.lock()
-                .query_row("SELECT payment_date FROM payment", [], |r| r.get(0))
+        // And a second, later correction dates its own entry without touching
+        // the first — the ledger accumulates rather than being rewritten.
+        let updated =
+            update_installment_impl(&mut f.db.lock(), detail.installments[0].id, edit_paid(200))
                 .unwrap();
-        assert_eq!(dated, "2024-03-05");
+        assert_eq!(updated.installments[0].paid_amount, 200);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 2);
         f.assert_ledger_matches_installments();
     }
 
@@ -3887,12 +4104,9 @@ mod tests {
         let detail = seeded_purchase(&f);
         archive_purchase_impl(&mut f.db.lock(), detail.purchase.id).unwrap();
 
-        let err = update_installment_impl(
-            &mut f.db.lock(),
-            detail.installments[0].id,
-            edit_amount(300),
-        )
-        .unwrap_err();
+        let err =
+            update_installment_impl(&mut f.db.lock(), detail.installments[0].id, edit_paid(250))
+                .unwrap_err();
         assert_eq!(code_of(err), "PURCHASE_ARCHIVED");
     }
 
@@ -3903,12 +4117,6 @@ mod tests {
         let inst_id = detail.installments[0].id;
 
         assert_eq!(
-            code_of(
-                update_installment_impl(&mut f.db.lock(), inst_id, edit_amount(-1)).unwrap_err()
-            ),
-            "INVALID_AMOUNT"
-        );
-        assert_eq!(
             code_of(update_installment_impl(&mut f.db.lock(), inst_id, edit_paid(-1)).unwrap_err()),
             "INVALID_AMOUNT"
         );
@@ -3918,7 +4126,8 @@ mod tests {
                     &mut f.db.lock(),
                     inst_id,
                     InstallmentEdit {
-                        due_date: Some("not-a-date".into()),
+                        paid_amount: Some(250),
+                        payment_date: Some("not-a-date".into()),
                         ..Default::default()
                     },
                 )
@@ -3927,9 +4136,7 @@ mod tests {
             "INVALID_DATE"
         );
         assert_eq!(
-            code_of(
-                update_installment_impl(&mut f.db.lock(), 9_999, edit_amount(300)).unwrap_err()
-            ),
+            code_of(update_installment_impl(&mut f.db.lock(), 9_999, edit_paid(300)).unwrap_err()),
             "INSTALLMENT_NOT_FOUND"
         );
 
@@ -3939,9 +4146,9 @@ mod tests {
         );
     }
 
-    /// A refused edit must leave the whole schedule alone, not just the row it
-    /// addressed — the rebalance writes several rows, so a partial apply would
-    /// silently break `SUM(amount) == total_price`.
+    /// A refused edit must leave the ledger alone as well as the row, since the
+    /// correction entry and the cached figure are two writes that have to land
+    /// together or not at all.
     #[test]
     fn a_refused_edit_writes_nothing_at_all() {
         let f = Fixture::new("inst_rollback");
@@ -3949,15 +4156,13 @@ mod tests {
         pay_installment(&f, &detail, 0, 100);
         let before = f.money_snapshot();
 
-        // The amount alone is fine — 150 clears the 100 already collected and
-        // the later tranches can absorb it — but the money half is gated on
-        // tranche 1, which is still owing, so the whole edit is refused.
+        // Tranche 1 is still owing, so no money may be recorded against 2.
         let err = update_installment_impl(
             &mut f.db.lock(),
             detail.installments[1].id,
             InstallmentEdit {
-                amount: Some(150),
                 paid_amount: Some(50),
+                note: Some("acompte".into()),
                 ..Default::default()
             },
         )
@@ -3969,7 +4174,32 @@ mod tests {
             vec![250, 250, 250, 250]
         );
         assert_eq!(f.money_snapshot(), before);
+        assert_eq!(f.count("SELECT COUNT(*) FROM payment"), 1);
         f.assert_ledger_matches_installments();
+    }
+
+    /// The same for the purchase editor: it writes the purchase row before the
+    /// schedule, so a schedule refused after that has to take the row with it.
+    #[test]
+    fn a_refused_reschedule_rolls_the_purchase_row_back_too() {
+        let f = Fixture::new("update_rollback");
+        let detail = seeded_purchase(&f);
+        pay_first(&f, &detail, 250);
+        let before = f.money_snapshot();
+
+        let mut input = f.purchase_input();
+        input.product_label = "Congélateur".into();
+        input.total_price = 2000;
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "AMOUNT_LOCKED");
+
+        let after = build_purchase_detail(&f.db.lock(), detail.purchase.id).unwrap();
+        assert_eq!(after.purchase.total_price, 1000);
+        assert_eq!(
+            after.purchase.product_label, detail.purchase.product_label,
+            "the label is written first and must roll back with the rest"
+        );
+        assert_eq!(f.money_snapshot(), before);
     }
 
     // --- settings ----------------------------------------------------------

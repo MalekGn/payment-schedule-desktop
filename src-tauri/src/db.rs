@@ -311,11 +311,16 @@ pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
 pub const AMOUNT_LOCKED: &str = "AMOUNT_LOCKED";
 pub const DUE_DATE_LOCKED: &str = "DUE_DATE_LOCKED";
 pub const DUE_DATE_OUT_OF_ORDER: &str = "DUE_DATE_OUT_OF_ORDER";
+pub const SCHEDULE_VIA_PURCHASE: &str = "SCHEDULE_VIA_PURCHASE";
 pub const PAID_ABOVE_AMOUNT: &str = "PAID_ABOVE_AMOUNT";
 pub const NO_PAYMENT_TO_DATE: &str = "NO_PAYMENT_TO_DATE";
+pub const PAYMENT_DATE_LOCKED: &str = "PAYMENT_DATE_LOCKED";
 pub const FUTURE_PAID_DATE: &str = "FUTURE_PAID_DATE";
 pub const PREVIOUS_UNPAID: &str = "PREVIOUS_UNPAID";
 pub const BELOW_PAID: &str = "BELOW_PAID";
+/// Raised by the purchase editor in the frontend, not by any Rust guard — see
+/// [`rebalance_amounts`]. Kept here so the code inventory stays complete.
+#[allow(dead_code)]
 pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
@@ -406,6 +411,7 @@ pub fn split_amounts(total: i64, n: i64) -> Vec<i64> {
 /// negative, or an even split lands under someone's `paid_amount` — which would
 /// break the `paid_amount <= amount` invariant the outstanding aggregates rely
 /// on.
+#[allow(dead_code)] // Parity anchor; see `rebalance_amounts`.
 fn apply_pool(
     amounts: &[i64],
     paid_amounts: &[i64],
@@ -441,6 +447,15 @@ fn apply_pool(
 /// Returns `None` when neither absorber set can take the change; the caller
 /// turns that into `NO_REBALANCE_ROOM`. Mirrors `rebalanceAmounts` in
 /// `src/lib/finance.ts`, and is covered by the shared parity fixture.
+///
+/// No Rust command calls it any more: a schedule edit now arrives from
+/// `update_purchase` as a whole schedule whose sum is checked outright, so
+/// there is no single-row delta left to absorb. It stays because it is one half
+/// of a cross-language pair — `finance.ts` still runs this exact algorithm to
+/// redistribute the purchase editor's rows as they are typed, and
+/// `tests/fixtures/finance-parity.json` is what proves the two agree. Deleting
+/// it would leave that fixture checking the TS side against nothing.
+#[allow(dead_code)]
 pub fn rebalance_amounts(
     amounts: &[i64],
     paid_amounts: &[i64],

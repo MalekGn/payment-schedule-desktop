@@ -274,7 +274,7 @@ test("editing a purchase's label from the Achats list", async (page) => {
   assertEqual(await page.locator("table.table tbody tr").count(), 8, "still 8 purchases");
 });
 
-test("a purchase with payments locks its schedule fields in the editor", async (page) => {
+test("the purchase editor locks a settled tranche but not the rest", async (page) => {
   await open(page, "/achats");
   await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
 
@@ -287,13 +287,59 @@ test("a purchase with payments locks its schedule fields in the editor", async (
   const note = modal.locator(".locked-note");
   await note.waitFor({ state: "visible", timeout: 5000 });
   const text = (await note.innerText()).trim();
-  assert(/paiement/i.test(text), `expected the locked reason, got: ${text}`);
+  assert(/sold/i.test(text), `expected the settled-tranche reason, got: ${text}`);
 
-  assertEqual(await modal.locator("#np-total").isDisabled(), true, "total is locked");
+  // The anchor fields regenerate every date, settled rows included, so they go.
   assertEqual(await modal.locator("#np-count").isDisabled(), true, "installment count is locked");
   assertEqual(await modal.locator("#np-interval").isDisabled(), true, "interval is locked");
-  // ...but the label is not.
+  // The total and the label are not the schedule, and stay open.
+  assertEqual(await modal.locator("#np-total").isDisabled(), false, "total stays editable");
   assertEqual(await modal.locator("#np-product").isDisabled(), false, "label stays editable");
+
+  // Row 1 is settled and frozen; the tranches still owed remain editable — this
+  // is the path that replaced schedule editing in the tranche modal.
+  const amounts = modal.locator(".inst-row .inst-amount");
+  assertEqual(await amounts.nth(0).isDisabled(), true, "the settled tranche is locked");
+  assertEqual(await amounts.nth(1).isDisabled(), false, "an unpaid tranche stays editable");
+});
+
+test("rescheduling an unpaid tranche from the purchase editor holds the total", async (page) => {
+  await open(page, "/achats");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  const row = page.locator("table.table tbody tr", { hasText: "Samsung" });
+  await row.locator('button[title="Modifier"]').click();
+  const modal = page.locator('[role="dialog"]');
+  await modal.waitFor({ state: "visible", timeout: 5000 });
+
+  // Tranche 2 is unpaid. Typing a new amount redistributes the rest so the sum
+  // still matches the total — the same rule the backend enforces.
+  const amounts = modal.locator(".inst-row .inst-amount");
+  await amounts.nth(1).fill("600");
+  await amounts.nth(1).blur();
+
+  const sum = modal.locator(".inst-sum");
+  await sum.waitFor({ state: "visible", timeout: 5000 });
+  assert(
+    (await sum.getAttribute("class")).includes("ok"),
+    `the tranches must still add up, got: ${await sum.innerText()}`,
+  );
+
+  await modal.getByRole("button", { name: "Enregistrer les modifications" }).click();
+  await modal.waitFor({ state: "hidden", timeout: 5000 });
+
+  // The change persisted, and the purchase total did not move.
+  await open(page, "/achats/1");
+  await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
+  const after = (await page.locator(".inst-table tbody tr td:nth-child(3)").allInnerTexts()).map(
+    (s) => parseInt(s.replace(/\D/g, ""), 10),
+  );
+  assertEqual(after[1], 600, "tranche 2 took the new amount");
+  assertEqual(
+    after.reduce((a, b) => a + b, 0),
+    2400,
+    "purchase total unchanged",
+  );
 });
 
 test("archiving a purchase with payments is refused before the user can confirm", async (page) => {
@@ -482,35 +528,24 @@ test("record a payment on a tranche through the update modal", async (page) => {
   assert(/250/.test(remaining), `remaining column should read 250, got: ${remaining}`);
 });
 
-test("editing a tranche rebalances the others and holds the purchase total", async (page) => {
+test("the tranche modal offers no schedule fields at all", async (page) => {
   await open(page, "/achats/1");
   await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
 
-  const amounts = async () =>
-    (await page.locator(".inst-table tbody tr td:nth-child(3)").allInnerTexts()).map((s) =>
-      s.trim(),
-    );
-  assertEqual((await amounts()).join("|"), Array(6).fill("400 TND").join("|"), "6 x 400");
-
-  // Tranche 3, whose predecessor is unpaid — the schedule ignores that gate.
+  // Tranche 3, unpaid — and still not editable here: what it owes, and when,
+  // moved to the purchase editor.
   await page.locator(".inst-table tbody tr").nth(2).locator(".btn--primary").click();
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
-  assert(!(await page.locator("#inst-amount").isDisabled()), "the amount must stay editable");
 
-  await page.locator("#inst-amount").fill("600");
-  // The preview names every tranche the change moves, before it is saved.
-  const preview = page.locator(".rebalance");
-  await preview.waitFor({ state: "visible", timeout: 5000 });
-  assertEqual(await preview.locator("li").count(), 3, "tranches 4-6 absorb the change");
+  assertEqual(await page.locator("#inst-amount").count(), 0, "no amount input");
+  assertEqual(await dialog.locator(".rebalance").count(), 0, "no rebalance preview");
 
-  await dialog.getByRole("button", { name: "Enregistrer" }).click();
-  await dialog.waitFor({ state: "hidden", timeout: 5000 });
-
-  const after = await amounts();
-  const total = after.reduce((s, v) => s + parseInt(v.replace(/\D/g, ""), 10), 0);
-  assertEqual(after[2], "600 TND", "the edited tranche took the new amount");
-  assertEqual(total, 2400, "purchase total unchanged");
+  // The figures are still shown, read-only, with a pointer to where they move.
+  const info = await dialog.locator(".edit-info").innerText();
+  assert(/400/.test(info), `the amount should still be displayed, got: ${info}`);
+  const note = await dialog.locator(".edit-note").innerText();
+  assert(/achat/i.test(note), `the note should point at the purchase, got: ${note}`);
 });
 
 test("a tranche whose predecessor is unpaid locks only its money fields", async (page) => {
@@ -524,12 +559,11 @@ test("a tranche whose predecessor is unpaid locks only its money fields", async 
   await dialog.waitFor({ state: "visible", timeout: 5000 });
 
   assert(await page.locator("#inst-paid").isDisabled(), "paid amount must be disabled");
-  assert(!(await page.locator("#inst-amount").isDisabled()), "amount must stay enabled");
   const note = await dialog.locator(".lock-note").first().innerText();
   assert(/tranche 2/i.test(note), `the reason should name tranche 2, got: ${note}`);
 });
 
-test("a paid tranche locks its schedule and warns before changing collected money", async (page) => {
+test("a paid tranche keeps its collected money editable and its date frozen", async (page) => {
   await open(page, "/achats/1");
   await page.locator(".inst-table tbody tr").first().waitFor({ timeout: 10000 });
 
@@ -538,8 +572,11 @@ test("a paid tranche locks its schedule and warns before changing collected mone
   const dialog = page.locator('[role="dialog"]');
   await dialog.waitFor({ state: "visible", timeout: 5000 });
 
-  assert(await page.locator("#inst-amount").isDisabled(), "amount must be disabled once paid");
   assert(!(await page.locator("#inst-paid").isDisabled()), "paid amount must stay editable");
+  // The payment date is already on record, so it opens only once a new figure
+  // is being entered — a recorded date is never rewritten.
+  const dateTrigger = dialog.locator(".field", { hasText: "Date paiement" }).locator(".dp-trigger");
+  assert(await dateTrigger.isDisabled(), "a recorded payment date must be locked");
 
   // Collecting more than the tranche is worth is refused as it is typed.
   await page.locator("#inst-paid").fill("900");

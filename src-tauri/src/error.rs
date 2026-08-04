@@ -44,18 +44,21 @@
 //! | `CLIENT_ARCHIVED`             | New purchase for an archived client            |
 //! | `CLIENT_NOT_FOUND`            | No such client                                 |
 //! | `PURCHASE_NOT_FOUND`          | No such purchase                               |
-//! | `PURCHASE_HAS_PAYMENTS:{n}`   | Archive/reschedule of a purchase already paid  |
+//! | `PURCHASE_HAS_PAYMENTS:{n}`   | Archive of a purchase already paid, or a       |
+//! |                               | reschedule that would drop a row carrying cash |
 //! | `PURCHASE_ARCHIVED`           | Payment on, or edit of, an archived purchase   |
 //! | `PURCHASE_NOT_ARCHIVED`       | Permanent delete before archiving              |
 //! | `INSTALLMENT_NOT_FOUND`       | No such installment                            |
 //! | `AMOUNT_LOCKED`               | Amount edit on a settled installment           |
 //! | `DUE_DATE_LOCKED`             | Due-date edit on a settled installment         |
-//! | `DUE_DATE_OUT_OF_ORDER`       | Due date outside its neighbours' dates         |
+//! | `DUE_DATE_OUT_OF_ORDER`       | Schedule due dates are not in position order   |
+//! | `SCHEDULE_VIA_PURCHASE`       | Amount/due date sent to the installment editor |
 //! | `FUTURE_PAID_DATE`            | Payment date later than today                  |
 //! | `PREVIOUS_UNPAID:{index}`     | Money edit while installment `index` is owing  |
 //! | `BELOW_PAID:{paid}`           | Amount below what that row already collected   |
 //! | `PAID_ABOVE_AMOUNT:{amount}`  | Collected more than the installment is worth   |
 //! | `NO_PAYMENT_TO_DATE`          | Payment date with no ledger entry to carry it  |
+//! | `PAYMENT_DATE_LOCKED`         | Re-dating a payment already recorded           |
 //! | `NO_REBALANCE_ROOM`           | No other installment can absorb the change     |
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |

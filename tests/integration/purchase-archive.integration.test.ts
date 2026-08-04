@@ -263,12 +263,13 @@ describe("editing a purchase", () => {
     expect(updated.installments.map((i) => i.id)).toEqual(before.installments.map((i) => i.id));
   });
 
-  it("refuses to reschedule a purchase that has payments", async () => {
+  it("refuses to regenerate the schedule of a purchase with a settled tranche", async () => {
     const paid = await paidPurchase();
 
     // `installments: null` so the split is recomputed from the new total —
     // otherwise the stale manual list fails the sum check first, which is the
-    // right error but not the one under test here.
+    // right error but not the one under test here. The recomputed split cannot
+    // agree with the tranche already settled, and that row is history.
     expect(
       await failureOf(async () =>
         api.updatePurchase(
@@ -276,7 +277,7 @@ describe("editing a purchase", () => {
           await payloadFor(paid.id, { totalPrice: 99_999, installments: null }),
         ),
       ),
-    ).toMatch(/^PURCHASE_HAS_PAYMENTS:\d+$/);
+    ).toMatch(/^(AMOUNT_LOCKED|DUE_DATE_LOCKED)$/);
 
     const after = await api.getPurchaseDetail(paid.id);
     expect(after.purchase.totalPrice).not.toBe(99_999);

@@ -208,6 +208,8 @@ describe("every code maps to a localized sentence", () => {
     "BELOW_PAID:100",
     "PAID_ABOVE_AMOUNT:250",
     "NO_PAYMENT_TO_DATE",
+    "PAYMENT_DATE_LOCKED",
+    "SCHEDULE_VIA_PURCHASE",
     "NO_REBALANCE_ROOM",
     "INVALID_DATE",
     "INVALID_TOTAL_PRICE",

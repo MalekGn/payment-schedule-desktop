@@ -1,30 +1,37 @@
-// Integration suite — updating a single installment.
+// Integration suite — the two installment editors, and the line between them.
 //
-// `updatePurchase` is refused the moment a payment exists: saving there deletes
-// and reinserts the installment rows, and those rows own the payments through
-// an `ON DELETE CASCADE`. `updateInstallment` is the path that stays open, and
-// it is now the *only* editor of an installment — it absorbed the old payment
-// modal, so it moves both what is owed and what has been collected.
+// Editing is split by *which fields* it may touch, not by how much has been
+// paid:
 //
-// What these tests pin down is that the extra reach costs none of the money
-// invariants the rest of the app leans on:
+//   * `updatePurchase` is the only writer of `amount` and `dueDate`. It applies
+//     a whole resolved schedule onto the stored rows position by position, so a
+//     purchase carrying payments can still be rescheduled — the rows survive,
+//     and the `payment` ledger hanging off them with it.
+//   * `updateInstallment` deals only in money. An `amount` or `dueDate` sent
+//     there is refused outright, which is what makes "the schedule is edited in
+//     one place" a property of the backend rather than a habit of the UI.
 //
-//   * `SUM(amount) === purchase.totalPrice` — never written, always rebalanced;
+// The three product rules asserted here:
+//
+//   1. A settled installment's amount and due date are immutable from anywhere.
+//      Its collected figure stays editable.
+//   2. A recorded payment date is immutable. Setting one the first time is not.
+//   3. An unsettled installment's amount and due date move only through the
+//      purchase editor.
+//
+// The money invariants the rest of the app leans on have to survive all of it:
+//
+//   * `SUM(amount) === purchase.totalPrice`;
 //   * `paidAmount <= amount` on every row, which keeps the outstanding and
 //     overdue aggregates from going negative;
 //   * `SUM(payments) === SUM(paidAmount)` — the dashboard's "Amount collected"
 //     is the only money figure read from the ledger, so a paid-amount edit that
 //     skipped the ledger would make that tile contradict every other total.
 //
-// The four product rules are asserted alongside: the schedule (amount, due
-// date) is editable until the installment settles and ignores its neighbours;
-// the money (paid amount, payment date) is gated on the previous installment
-// and ignores this one's own status.
-//
 // Run with:  npm run test:integration   (NOT part of the default `npm test`).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PurchaseDetail } from "@/types/models";
+import type { InstallmentInput, PurchaseDetail } from "@/types/models";
 
 let api: typeof import("@/api").api;
 
@@ -64,6 +71,36 @@ async function freshPurchase(): Promise<PurchaseDetail> {
 }
 
 const amountsOf = (d: PurchaseDetail): number[] => d.installments.map((i) => i.amount);
+const datesOf = (d: PurchaseDetail): string[] => d.installments.map((i) => i.dueDate);
+
+/**
+ * Save `rows` as the purchase's schedule — the only route an amount or a due
+ * date can travel. The total follows the rows, since the two have to agree.
+ */
+async function reschedule(
+  detail: PurchaseDetail,
+  rows: [amount: number, dueDate: string][],
+): Promise<PurchaseDetail> {
+  const installments: InstallmentInput[] = rows.map(([amount, dueDate], i) => ({
+    index: i + 1,
+    amount,
+    dueDate,
+  }));
+  return api.updatePurchase(detail.purchase.id, {
+    clientId: detail.purchase.clientId,
+    productLabel: detail.purchase.productLabel,
+    totalPrice: rows.reduce((s, [amount]) => s + amount, 0),
+    installmentCount: rows.length,
+    intervalKind: detail.purchase.intervalKind,
+    intervalDays: detail.purchase.intervalDays,
+    purchaseDate: detail.purchase.purchaseDate,
+    installments,
+  });
+}
+
+/** The stored schedule as `reschedule` wants it, for edits that keep most rows. */
+const rowsOf = (d: PurchaseDetail): [number, string][] =>
+  d.installments.map((i) => [i.amount, i.dueDate]);
 
 /** Assert every invariant that must survive an edit, ledger included. */
 async function expectConsistent(detail: PurchaseDetail): Promise<void> {
@@ -72,6 +109,10 @@ async function expectConsistent(detail: PurchaseDetail): Promise<void> {
     expect(inst.paidAmount).toBeLessThanOrEqual(inst.amount);
     expect(Number.isInteger(inst.amount)).toBe(true);
   }
+  // Due dates run in position order — the sequential money rule is stated in
+  // terms of "the previous installment" and means both readings at once.
+  const dates = datesOf(detail);
+  expect([...dates].sort()).toEqual(dates);
   // The ledger has to agree with the cache, or the dashboard's "Amount
   // collected" silently disagrees with every purchase and client total.
   const payments = await api.listPaymentsForPurchase(detail.purchase.id);
@@ -91,93 +132,267 @@ async function settle(detail: PurchaseDetail, pos: number, amount?: number): Pro
   });
 }
 
-describe("the schedule half — editable until the installment settles", () => {
-  it("absorbs a changed amount into the later tranches, holding the total", async () => {
-    const detail = await freshPurchase();
-    expect(amountsOf(detail)).toEqual([250, 250, 250, 250]);
-
-    const updated = await api.updateInstallment(detail.installments[0].id, { amount: 400 });
-
-    expect(amountsOf(updated)).toEqual([400, 200, 200, 200]);
-    expect(updated.purchase.totalPrice).toBe(1000);
-    await expectConsistent(updated);
-  });
-
-  it("ignores the previous tranche entirely", async () => {
-    // Requirement 4: the sequential gate is on the money, not the schedule.
-    const detail = await freshPurchase();
-
-    const updated = await api.updateInstallment(detail.installments[2].id, {
-      amount: 400,
-      dueDate: "2024-04-01",
-    });
-
-    expect(amountsOf(updated)).toEqual([250, 250, 400, 100]);
-    expect(updated.installments[2].dueDate).toBe("2024-04-01");
-    await expectConsistent(updated);
-  });
-
-  it("settles a tranche that is zeroed before anything is collected on it", async () => {
-    const detail = await freshPurchase();
-
-    const updated = await api.updateInstallment(detail.installments[0].id, { amount: 0 });
-
-    expect(amountsOf(updated)).toEqual([0, 333, 333, 334]);
-    expect(updated.installments[0].status).toBe("paid");
-    expect(updated.installments[0].paidDate).toBeNull();
-    await expectConsistent(updated);
-  });
-
-  it("locks both schedule fields once the tranche is paid", async () => {
-    // Requirement 3.
+describe("rule 3 — the schedule is not the installment editor's to touch", () => {
+  it("refuses an amount or a due date whatever the tranche's state", async () => {
     const detail = await freshPurchase();
     await settle(detail, 0);
-    const id = detail.installments[0].id;
 
-    expect(await failureOf(() => api.updateInstallment(id, { amount: 400 }))).toBe("AMOUNT_LOCKED");
-    expect(await failureOf(() => api.updateInstallment(id, { dueDate: "2024-01-20" }))).toBe(
-      "DUE_DATE_LOCKED",
-    );
+    // Settled (tranche 1) and unsettled (tranche 3) alike.
+    for (const pos of [0, 2]) {
+      const id = detail.installments[pos].id;
+      expect(await failureOf(() => api.updateInstallment(id, { amount: 400 }))).toBe(
+        "SCHEDULE_VIA_PURCHASE",
+      );
+      expect(await failureOf(() => api.updateInstallment(id, { dueDate: "2024-06-01" }))).toBe(
+        "SCHEDULE_VIA_PURCHASE",
+      );
+    }
 
-    // Resending the values it already has is not a change, so not a refusal.
-    await api.updateInstallment(id, { amount: 250, dueDate: "2024-01-15" });
+    // Even a value identical to what is stored: sending the field at all is a
+    // caller that still believes this command owns it.
+    expect(
+      await failureOf(() => api.updateInstallment(detail.installments[2].id, { amount: 250 })),
+    ).toBe("SCHEDULE_VIA_PURCHASE");
+
     expect(amountsOf(await api.getPurchaseDetail(detail.purchase.id))).toEqual([
       250, 250, 250, 250,
     ]);
   });
 
-  it("keeps a due date between its neighbours", async () => {
-    // This clamp is what makes position order and chronological order the same
-    // thing, so "the previous installment" is unambiguous.
-    const detail = await freshPurchase();
-    const id = detail.installments[2].id; // between 2024-02-15 and 2024-04-15
-
-    for (const outside of ["2024-02-01", "2024-05-01"]) {
-      expect(await failureOf(() => api.updateInstallment(id, { dueDate: outside }))).toBe(
-        "DUE_DATE_OUT_OF_ORDER",
-      );
-    }
-    // The neighbours' own dates are inclusive bounds.
-    for (const edge of ["2024-02-15", "2024-04-15"]) {
-      await api.updateInstallment(id, { dueDate: edge });
-    }
-    // The outer tranches are unbounded on their missing side.
-    await api.updateInstallment(detail.installments[0].id, { dueDate: "2020-01-01" });
-    await api.updateInstallment(detail.installments[3].id, { dueDate: "2030-12-31" });
+  it("refuses before it has even looked the installment up", async () => {
+    // The unknown id would otherwise be INSTALLMENT_NOT_FOUND, so the schedule
+    // guard demonstrably runs first — and never reaches the store.
+    expect(await failureOf(() => api.updateInstallment(999_999, { amount: 1 }))).toBe(
+      "SCHEDULE_VIA_PURCHASE",
+    );
   });
 
-  it("refuses when no other tranche can absorb the change", async () => {
+  it("moves an unsettled tranche's amount and due date through the purchase", async () => {
     const detail = await freshPurchase();
-    for (const pos of [0, 1, 2]) await settle(detail, pos);
 
-    expect(
-      await failureOf(() => api.updateInstallment(detail.installments[3].id, { amount: 100 })),
-    ).toBe("NO_REBALANCE_ROOM");
-    await expectConsistent(await api.getPurchaseDetail(detail.purchase.id));
+    const updated = await reschedule(detail, [
+      [250, "2024-01-15"],
+      [400, "2024-03-01"],
+      [200, "2024-04-01"],
+      [150, "2024-05-01"],
+    ]);
+
+    expect(amountsOf(updated)).toEqual([250, 400, 200, 150]);
+    expect(datesOf(updated)).toEqual(["2024-01-15", "2024-03-01", "2024-04-01", "2024-05-01"]);
+    expect(updated.purchase.totalPrice).toBe(1000);
+    await expectConsistent(updated);
+
+    // And it persists: re-read rather than trusting the returned detail.
+    expect(amountsOf(await api.getPurchaseDetail(detail.purchase.id))).toEqual([
+      250, 400, 200, 150,
+    ]);
+  });
+
+  it("still moves the unpaid tranches once a payment exists", async () => {
+    // The whole point of applying in place: the old editor refused outright
+    // here, which left the unpaid tranches frozen the moment a sibling was paid.
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+    const ids = detail.installments.map((i) => i.id);
+
+    const updated = await reschedule(detail, [
+      [250, "2024-01-15"],
+      [400, "2024-03-01"],
+      [200, "2024-04-01"],
+      [150, "2024-05-01"],
+    ]);
+
+    expect(amountsOf(updated)).toEqual([250, 400, 200, 150]);
+    // In place, not regenerated — which is what kept the payment attached.
+    expect(updated.installments.map((i) => i.id)).toEqual(ids);
+    expect(updated.totalPaid).toBe(250);
+    expect(await api.listPaymentsForPurchase(detail.purchase.id)).toHaveLength(1);
+    await expectConsistent(updated);
   });
 });
 
-describe("the money half — editable only in payment order", () => {
+describe("rule 1 — a settled tranche's schedule is history", () => {
+  it("refuses to move its amount or its due date from the purchase editor", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+    const rows = rowsOf(detail);
+
+    expect(await failureOf(() => reschedule(detail, [[400, "2024-01-15"], ...rows.slice(1)]))).toBe(
+      "AMOUNT_LOCKED",
+    );
+    expect(await failureOf(() => reschedule(detail, [[250, "2024-01-20"], ...rows.slice(1)]))).toBe(
+      "DUE_DATE_LOCKED",
+    );
+
+    const after = await api.getPurchaseDetail(detail.purchase.id);
+    expect(amountsOf(after)).toEqual([250, 250, 250, 250]);
+    expect(after.installments[0].dueDate).toBe("2024-01-15");
+    await expectConsistent(after);
+  });
+
+  it("leaves the purchase row alone when the schedule is refused", async () => {
+    // The purchase row is written before the schedule, so a late refusal has to
+    // take it back with it.
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+
+    await failureOf(() =>
+      api.updatePurchase(detail.purchase.id, {
+        clientId: detail.purchase.clientId,
+        productLabel: "Congélateur",
+        totalPrice: 2000,
+        installmentCount: 4,
+        intervalKind: "monthly",
+        intervalDays: null,
+        purchaseDate: "2024-01-15",
+      }),
+    );
+
+    const after = await api.getPurchaseDetail(detail.purchase.id);
+    expect(after.purchase.totalPrice).toBe(1000);
+    expect(after.purchase.productLabel).toBe("Réfrigérateur");
+  });
+
+  it("keeps its collected figure editable — only the schedule froze", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+
+    const updated = await api.updateInstallment(detail.installments[0].id, { paidAmount: 180 });
+
+    expect(updated.installments[0].paidAmount).toBe(180);
+    expect(updated.installments[0].amount).toBe(250);
+    // No longer settled, so the derived date goes with it.
+    expect(updated.installments[0].paidDate).toBeNull();
+    await expectConsistent(updated);
+  });
+
+  it("still allows a partially paid tranche to be rescheduled, down to what it collected", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0, 100);
+
+    const updated = await reschedule(detail, [
+      [150, "2024-01-15"],
+      [300, "2024-02-15"],
+      [300, "2024-03-15"],
+      [250, "2024-04-15"],
+    ]);
+    expect(amountsOf(updated)).toEqual([150, 300, 300, 250]);
+    await expectConsistent(updated);
+
+    // But never below it: `amount - paidAmount` feeds every outstanding total.
+    expect(
+      await failureOf(() =>
+        reschedule(updated, [
+          [50, "2024-01-15"],
+          [350, "2024-02-15"],
+          [350, "2024-03-15"],
+          [250, "2024-04-15"],
+        ]),
+      ),
+    ).toBe("BELOW_PAID:100");
+  });
+
+  it("settles a tranche rescheduled onto its collected figure, date and all", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0, 100);
+
+    const updated = await reschedule(detail, [
+      [100, "2024-01-15"],
+      [300, "2024-02-15"],
+      [300, "2024-03-15"],
+      [300, "2024-04-15"],
+    ]);
+
+    expect(updated.installments[0].status).toBe("paid");
+    // Derived from the ledger, not invented.
+    expect(updated.installments[0].paidDate).toBe("2024-02-01");
+    await expectConsistent(updated);
+  });
+});
+
+describe("rule 2 — a recorded payment date is history", () => {
+  it("refuses to re-date an entry already on record", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+
+    expect(
+      await failureOf(() =>
+        api.updateInstallment(detail.installments[0].id, { paymentDate: "2024-03-05" }),
+      ),
+    ).toBe("PAYMENT_DATE_LOCKED");
+
+    const payments = await api.listPaymentsForPurchase(detail.purchase.id);
+    expect(payments).toHaveLength(1);
+    expect(payments[0].paymentDate).toBe("2024-02-01");
+    const after = await api.getPurchaseDetail(detail.purchase.id);
+    expect(after.installments[0].paidDate).toBe("2024-02-01");
+  });
+
+  it("still dates the entry it arrives with — setting one is not changing one", async () => {
+    const detail = await freshPurchase();
+
+    const updated = await api.updateInstallment(detail.installments[0].id, {
+      paidAmount: 250,
+      paymentDate: "2024-03-05",
+    });
+    expect(updated.installments[0].paidDate).toBe("2024-03-05");
+
+    // A later correction dates its own entry without touching the first: the
+    // ledger accumulates rather than being rewritten.
+    const corrected = await api.updateInstallment(detail.installments[0].id, {
+      paidAmount: 200,
+      paymentDate: "2024-04-01",
+    });
+    expect(corrected.installments[0].paidAmount).toBe(200);
+    const payments = await api.listPaymentsForPurchase(detail.purchase.id);
+    expect(payments).toHaveLength(2);
+    expect(payments.map((p) => p.paymentDate).sort()).toEqual(["2024-03-05", "2024-04-01"]);
+    await expectConsistent(corrected);
+  });
+
+  it("refuses a date with no entry to carry it rather than dropping it", async () => {
+    const detail = await freshPurchase();
+    expect(
+      await failureOf(() =>
+        api.updateInstallment(detail.installments[0].id, { paymentDate: "2024-03-05" }),
+      ),
+    ).toBe("NO_PAYMENT_TO_DATE");
+  });
+
+  it("cannot be in the future", async () => {
+    const detail = await freshPurchase();
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    expect(
+      await failureOf(() =>
+        api.updateInstallment(detail.installments[0].id, {
+          paidAmount: 250,
+          paymentDate: tomorrow,
+        }),
+      ),
+    ).toBe("FUTURE_PAID_DATE");
+  });
+
+  it("lets a note alone amend the entry already there — only the date is frozen", async () => {
+    const detail = await freshPurchase();
+    await settle(detail, 0);
+
+    await api.updateInstallment(detail.installments[0].id, { note: "chèque" });
+
+    const payments = await api.listPaymentsForPurchase(detail.purchase.id);
+    expect(payments).toHaveLength(1);
+    expect(payments[0].note).toBe("chèque");
+    expect(payments[0].paymentDate).toBe("2024-02-01");
+  });
+
+  it("refuses a note with no payment behind it rather than dropping it", async () => {
+    const detail = await freshPurchase();
+    expect(
+      await failureOf(() => api.updateInstallment(detail.installments[0].id, { note: "x" })),
+    ).toBe("NO_PAYMENT_TO_DATE");
+  });
+});
+
+describe("the money — editable only in payment order", () => {
   it("writes a correction entry when the collected figure goes up", async () => {
     const detail = await freshPurchase();
     await settle(detail, 0, 100);
@@ -215,19 +430,7 @@ describe("the money half — editable only in payment order", () => {
     await expectConsistent(updated);
   });
 
-  it("reverses the whole ledger for a tranche set back to zero", async () => {
-    const detail = await freshPurchase();
-    await settle(detail, 0);
-
-    const updated = await api.updateInstallment(detail.installments[0].id, { paidAmount: 0 });
-
-    expect(updated.installments[0].paidAmount).toBe(0);
-    expect(updated.totalPaid).toBe(0);
-    await expectConsistent(updated);
-  });
-
   it("is gated on the previous tranche", async () => {
-    // Requirement 4: cash cannot be recorded out of order.
     const detail = await freshPurchase();
 
     expect(
@@ -252,72 +455,129 @@ describe("the money half — editable only in payment order", () => {
     ).toBe("INVALID_AMOUNT");
   });
 
-  it("reports the same constraint against whichever field moved", async () => {
+  it("leaves the ledger alone when a combined edit is refused", async () => {
     const detail = await freshPurchase();
-    await settle(detail, 0, 100);
 
     expect(
-      await failureOf(() => api.updateInstallment(detail.installments[0].id, { amount: 50 })),
-    ).toBe("BELOW_PAID:100");
+      await failureOf(() =>
+        api.updateInstallment(detail.installments[1].id, { paidAmount: 50, note: "acompte" }),
+      ),
+    ).toBe("PREVIOUS_UNPAID:1");
 
-    // Lowering both together resolves the conflict, and must be accepted.
-    const updated = await api.updateInstallment(detail.installments[0].id, {
-      amount: 50,
-      paidAmount: 50,
-    });
-    expect(updated.installments[0].amount).toBe(50);
-    expect(updated.installments[0].paidAmount).toBe(50);
-    await expectConsistent(updated);
+    expect(await api.listPaymentsForPurchase(detail.purchase.id)).toHaveLength(0);
+    await expectConsistent(await api.getPurchaseDetail(detail.purchase.id));
   });
 });
 
-describe("the payment date", () => {
-  it("re-dates the latest ledger entry when nothing else moved", async () => {
+describe("changing the length of the schedule", () => {
+  it("drops tranches nobody has paid into", async () => {
     const detail = await freshPurchase();
     await settle(detail, 0);
+    const firstId = detail.installments[0].id;
 
-    const updated = await api.updateInstallment(detail.installments[0].id, {
-      paymentDate: "2024-03-05",
-    });
+    const updated = await reschedule(detail, [
+      [250, "2024-01-15"],
+      [250, "2024-02-15"],
+    ]);
 
-    expect(updated.installments[0].paidDate).toBe("2024-03-05");
-    const payments = await api.listPaymentsForPurchase(detail.purchase.id);
-    expect(payments).toHaveLength(1);
-    expect(payments[0].paymentDate).toBe("2024-03-05");
+    expect(amountsOf(updated)).toEqual([250, 250]);
+    expect(updated.installments[0].id).toBe(firstId);
+    expect(updated.purchase.totalPrice).toBe(500);
+    expect(updated.totalPaid).toBe(250);
     await expectConsistent(updated);
   });
 
-  it("lets a note alone amend the entry already there", async () => {
+  it("refuses to drop one that carries cash", async () => {
     const detail = await freshPurchase();
-    await settle(detail, 0);
+    // Cash is recorded in order, so every earlier tranche settles first.
+    for (const pos of [0, 1, 2, 3]) await settle(detail, pos);
 
-    await api.updateInstallment(detail.installments[0].id, { note: "chèque" });
-
-    const payments = await api.listPaymentsForPurchase(detail.purchase.id);
-    expect(payments).toHaveLength(1);
-    expect(payments[0].note).toBe("chèque");
-  });
-
-  it("refuses a note with no payment behind it rather than dropping it", async () => {
-    const detail = await freshPurchase();
     expect(
-      await failureOf(() => api.updateInstallment(detail.installments[0].id, { note: "x" })),
-    ).toBe("NO_PAYMENT_TO_DATE");
+      await failureOf(() =>
+        reschedule(detail, [
+          [250, "2024-01-15"],
+          [250, "2024-02-15"],
+          [250, "2024-03-15"],
+        ]),
+      ),
+    ).toBe("PURCHASE_HAS_PAYMENTS:1");
+    expect((await api.getPurchaseDetail(detail.purchase.id)).installments).toHaveLength(4);
   });
 
-  it("needs something to date, and cannot be in the future", async () => {
+  it("refuses to drop one corrected back down to zero — the entries are still there", async () => {
     const detail = await freshPurchase();
-    const id = detail.installments[0].id;
+    for (const pos of [0, 1, 2, 3]) await settle(detail, pos);
+    await api.updateInstallment(detail.installments[3].id, { paidAmount: 0 });
 
-    expect(await failureOf(() => api.updateInstallment(id, { paymentDate: "2024-03-05" }))).toBe(
-      "NO_PAYMENT_TO_DATE",
-    );
+    const after = await api.getPurchaseDetail(detail.purchase.id);
+    expect(after.installments[3].paidAmount).toBe(0);
+    expect(await api.listPaymentsForPurchase(detail.purchase.id)).toHaveLength(5);
 
+    // The collected figure is zero, but erasing the row would take the entry
+    // that took the money and the one that gave it back with it.
+    expect(
+      await failureOf(() =>
+        reschedule(detail, [
+          [250, "2024-01-15"],
+          [250, "2024-02-15"],
+          [250, "2024-03-15"],
+        ]),
+      ),
+    ).toBe("PURCHASE_HAS_PAYMENTS:1");
+    expect(await api.listPaymentsForPurchase(detail.purchase.id)).toHaveLength(5);
+  });
+
+  it("appends new tranches past the ones already stored", async () => {
+    const detail = await freshPurchase();
     await settle(detail, 0);
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
-    expect(await failureOf(() => api.updateInstallment(id, { paymentDate: tomorrow }))).toBe(
-      "FUTURE_PAID_DATE",
-    );
+    const ids = detail.installments.map((i) => i.id);
+
+    const updated = await reschedule(detail, [
+      [250, "2024-01-15"],
+      [200, "2024-02-15"],
+      [200, "2024-03-15"],
+      [200, "2024-04-15"],
+      [150, "2024-05-15"],
+    ]);
+
+    expect(amountsOf(updated)).toEqual([250, 200, 200, 200, 150]);
+    expect(updated.installments.slice(0, 4).map((i) => i.id)).toEqual(ids);
+    expect(updated.installments[4].index).toBe(5);
+    expect(updated.totalPaid).toBe(250);
+    await expectConsistent(updated);
+  });
+
+  it("refuses a schedule whose dates run backwards, on create as on update", async () => {
+    const detail = await freshPurchase();
+
+    expect(
+      await failureOf(() =>
+        reschedule(detail, [
+          [500, "2024-03-15"],
+          [500, "2024-02-15"],
+        ]),
+      ),
+    ).toBe("DUE_DATE_OUT_OF_ORDER");
+    expect((await api.getPurchaseDetail(detail.purchase.id)).installments).toHaveLength(4);
+
+    const client = (await api.listClients())[0];
+    expect(
+      await failureOf(() =>
+        api.createPurchase({
+          clientId: client.id,
+          productLabel: "Four",
+          totalPrice: 1000,
+          installmentCount: 2,
+          intervalKind: "monthly",
+          intervalDays: null,
+          purchaseDate: "2024-01-15",
+          installments: [
+            { index: 1, amount: 500, dueDate: "2024-03-15" },
+            { index: 2, amount: 500, dueDate: "2024-02-15" },
+          ],
+        }),
+      ),
+    ).toBe("DUE_DATE_OUT_OF_ORDER");
   });
 });
 
@@ -327,46 +587,39 @@ describe("guards shared with the rest of the purchase surface", () => {
     await api.archivePurchase(detail.purchase.id);
 
     expect(
-      await failureOf(() => api.updateInstallment(detail.installments[0].id, { amount: 300 })),
+      await failureOf(() => api.updateInstallment(detail.installments[0].id, { paidAmount: 250 })),
     ).toBe("PURCHASE_ARCHIVED");
   });
 
   it("refuses an unknown installment and a malformed date without writing", async () => {
     const detail = await freshPurchase();
 
-    expect(await failureOf(() => api.updateInstallment(999_999, { amount: 300 }))).toBe(
+    expect(await failureOf(() => api.updateInstallment(999_999, { paidAmount: 300 }))).toBe(
       "INSTALLMENT_NOT_FOUND",
     );
     expect(
-      await failureOf(() => api.updateInstallment(detail.installments[0].id, { dueDate: "31/12" })),
-    ).toBe("INVALID_DATE");
-    expect(amountsOf(await api.getPurchaseDetail(detail.purchase.id))).toEqual([
-      250, 250, 250, 250,
-    ]);
-  });
-
-  it("leaves everything alone when one half of a combined edit is refused", async () => {
-    const detail = await freshPurchase();
-
-    // The amount alone would be fine; the money half is gated on tranche 1.
-    expect(
       await failureOf(() =>
-        api.updateInstallment(detail.installments[1].id, { amount: 150, paidAmount: 50 }),
+        api.updateInstallment(detail.installments[0].id, {
+          paidAmount: 100,
+          paymentDate: "31/12",
+        }),
       ),
-    ).toBe("PREVIOUS_UNPAID:1");
-
-    const after = await api.getPurchaseDetail(detail.purchase.id);
-    expect(amountsOf(after)).toEqual([250, 250, 250, 250]);
-    await expectConsistent(after);
+    ).toBe("INVALID_DATE");
+    expect(await api.listPaymentsForPurchase(detail.purchase.id)).toHaveLength(0);
   });
 });
 
 describe("the rest of the app follows an edit", () => {
-  it("keeps the outstanding total unchanged by a pure rebalance", async () => {
+  it("keeps the outstanding total unchanged by a pure reshuffle of the tranches", async () => {
     const detail = await freshPurchase();
     const before = (await api.getDashboard()).stats.totalOutstanding;
 
-    await api.updateInstallment(detail.installments[0].id, { amount: 400 });
+    await reschedule(detail, [
+      [400, "2024-01-15"],
+      [200, "2024-02-15"],
+      [200, "2024-03-15"],
+      [200, "2024-04-15"],
+    ]);
 
     // Money moved between tranches, not into or out of the books.
     expect((await api.getDashboard()).stats.totalOutstanding).toBe(before);
@@ -383,12 +636,14 @@ describe("the rest of the app follows an edit", () => {
     expect((await api.getDashboard()).stats.totalCollected).toBe(before + 40);
   });
 
-  it("shows the edited amount and remaining on the schedule", async () => {
+  it("shows the rescheduled amount and date on the échéances list", async () => {
     const detail = await freshPurchase();
-    await api.updateInstallment(detail.installments[0].id, {
-      amount: 400,
-      dueDate: "2020-06-30",
-    });
+    await reschedule(detail, [
+      [400, "2020-06-30"],
+      [200, "2024-02-15"],
+      [200, "2024-03-15"],
+      [200, "2024-04-15"],
+    ]);
 
     const row = (await api.listSchedule()).find(
       (r) => r.installmentId === detail.installments[0].id,

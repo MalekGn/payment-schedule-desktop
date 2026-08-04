@@ -165,21 +165,20 @@
       "submit": "Enregistrer l'achat",
       "editTitle": "Modifier l'achat",
       "saveEdit": "Enregistrer les modifications",
-      "lockedByPayments": "{count} paiement(s) déjà enregistré(s) : le montant, les échéances et la date ne sont plus modifiables. Seul le libellé du produit peut changer."
+      "settledRowsLocked": "{count} tranche(s) soldée(s) : leur montant et leur échéance ne changent plus, ni la date d'achat, le nombre de tranches ou la fréquence. Le reste de l'échéancier reste modifiable.",
+      "rowLocked": "Tranche soldée"
     },
     "installmentEdit": {
       "title": "Mettre à jour le paiement — Tranche {index}/{count}",
       "saved": "Tranche mise à jour.",
-      "scheduleSection": "Ce qui est dû",
       "moneySection": "Ce qui a été encaissé",
       "negativeAmount": "Le montant ne peut pas être négatif.",
       "paidAmountHint": "Le total encaissé sur cette tranche à ce jour. La différence est enregistrée comme un paiement.",
-      "settledNote": "Cette tranche est soldée : ni son montant ni son échéance ne peuvent plus changer.",
       "lockedByPrevious": "La tranche {index} doit être soldée avant d'enregistrer un paiement ici.",
-      "rebalanceTitle": "Les autres tranches deviennent",
-      "rebalanceNote": "Le total de l'achat reste identique.",
       "confirmTitle": "Modifier une tranche payée",
-      "confirmText": "La tranche {index} est déjà payée. Vous êtes sur le point de modifier ce qui a été encaissé. Continuer ?"
+      "confirmText": "La tranche {index} est déjà payée. Vous êtes sur le point de modifier ce qui a été encaissé. Continuer ?",
+      "scheduleElsewhere": "Le montant et l'échéance de cette tranche se modifient depuis « Modifier l'achat ».",
+      "paymentDateRecorded": "Date déjà enregistrée. Elle ne changera que si vous saisissez un nouveau montant encaissé."
     },
     "interval": {
       "weekly": "Hebdomadaire",
@@ -448,7 +447,9 @@
     "paidAboveAmount": "Supérieur au montant de cette tranche ({amount}).",
     "noPaymentToDate": "Aucun paiement n'a encore été encaissé sur cette tranche : il n'y a pas de date à modifier.",
     "licenseRequired": "Cette fonctionnalité nécessite une licence active.",
-    "invalidLicense": "Fichier de licence refusé ({status}). La licence actuelle est conservée."
+    "invalidLicense": "Fichier de licence refusé ({status}). La licence actuelle est conservée.",
+    "scheduleViaPurchase": "Le montant et l'échéance d'une tranche se modifient depuis la fiche achat, pas ici.",
+    "paymentDateLocked": "La date de ce paiement est déjà enregistrée : elle ne peut plus être modifiée."
   },
   "filters": {
     "date": "Filtrer par date",

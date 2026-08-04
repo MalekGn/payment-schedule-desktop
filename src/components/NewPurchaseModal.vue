@@ -9,7 +9,7 @@ import { useUiStore } from "@/stores/ui";
 import { useStatsStore } from "@/stores/stats";
 import { toUserMessage } from "@/lib/errors";
 import { api } from "@/api";
-import { addInterval, splitAmounts, todayIso } from "@/lib/finance";
+import { addInterval, rebalanceAmounts, splitAmounts, todayIso } from "@/lib/finance";
 import type { ClientSummary, IntervalKind, PurchaseDetail } from "@/types/models";
 
 /** Editing when a purchase is supplied, creating otherwise (cf. `ClientForm`). */
@@ -18,14 +18,21 @@ const emit = defineEmits<{ close: []; saved: [detail: PurchaseDetail] }>();
 
 const editing = computed(() => props.purchase != null);
 /**
- * Everything the schedule is derived from locks once a payment is recorded:
- * applying a change would regenerate the installment rows, and those rows own
- * the payments. Only the product label stays editable.
+ * This form is the one place an installment's amount or due date changes — the
+ * tranche editor deals only in money — so it stays usable after cash has been
+ * taken, unlike before.
+ *
+ * What locks is narrower than it used to be. A *settled* tranche is history and
+ * neither of its numbers may move (the backend refuses `AMOUNT_LOCKED` /
+ * `DUE_DATE_LOCKED`), which in turn locks everything the whole schedule is
+ * regenerated from: the anchor date, the count and the cadence all rewrite
+ * every row's due date, settled ones included. The total price stays open — the
+ * difference is absorbed by the tranches that are still owed.
  */
-const paidCount = computed(
-  () => props.purchase?.installments.filter((i) => i.paidAmount > 0).length ?? 0,
+const settledCount = computed(
+  () => props.purchase?.installments.filter((i) => i.paidAmount >= i.amount).length ?? 0,
 );
-const scheduleLocked = computed(() => (props.purchase?.totalPaid ?? 0) > 0);
+const anchorLocked = computed(() => settledCount.value > 0);
 
 const { t } = useI18n();
 const fmt = useFormat();
@@ -49,10 +56,20 @@ const inlineClient = reactive({ firstName: "", lastName: "", phone: "", address:
 interface Row {
   amount: number;
   dueDate: string;
+  /** What has been collected on this tranche; 0 on a purchase being created. */
+  paidAmount: number;
+  /** Settled, so neither number may move. */
+  locked: boolean;
 }
 const rows = ref<Row[]>([]);
 const manualAmounts = ref(false);
 const errors = reactive<Record<string, string>>({});
+
+/**
+ * The amounts as last agreed on, so a typed row can be rebalanced against what
+ * the others were *before* the keystroke rather than after it.
+ */
+const committed = ref<number[]>([]);
 
 onMounted(async () => {
   // Explicit rather than relying on the gateway default: an archived client
@@ -65,7 +82,10 @@ onMounted(async () => {
     rows.value = props.purchase.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,
+      paidAmount: i.paidAmount,
+      locked: i.paidAmount >= i.amount,
     }));
+    committed.value = rows.value.map((r) => r.amount);
     manualAmounts.value = true;
     return;
   }
@@ -79,33 +99,96 @@ function rebuild() {
     manualAmounts.value && rows.value.length === count
       ? rows.value.map((r) => r.amount)
       : splitAmounts(total, count);
-  rows.value = Array.from({ length: count }, (_, i) => ({
-    amount: amounts[i] ?? 0,
-    dueDate: addInterval(form.purchaseDate, form.intervalKind, form.intervalDays, i),
-  }));
+  const previous = rows.value;
+  rows.value = Array.from({ length: count }, (_, i) => {
+    // A settled tranche is history and is not ours to regenerate, whatever the
+    // anchor fields above say. They are disabled in that case anyway; this is
+    // the belt to their braces.
+    const prior = previous[i];
+    if (prior?.locked) return prior;
+    return {
+      amount: amounts[i] ?? 0,
+      dueDate: addInterval(form.purchaseDate, form.intervalKind, form.intervalDays, i),
+      paidAmount: prior?.paidAmount ?? 0,
+      locked: false,
+    };
+  });
+  committed.value = rows.value.map((r) => r.amount);
 }
 
+// Only the fields the *dates* derive from rebuild the rows. The total is not one
+// of them: rebuilding on it would regenerate every due date from the anchor and
+// throw away the ones typed by hand, which now matters because this form is the
+// only place a due date can be typed at all.
 watch(
-  () => [
-    form.totalPrice,
-    form.installmentCount,
-    form.intervalKind,
-    form.intervalDays,
-    form.purchaseDate,
-  ],
+  () => [form.installmentCount, form.intervalKind, form.intervalDays, form.purchaseDate],
   rebuild,
 );
 
-function onAmountEdit() {
+// A new total re-splits the amounts only while they are still automatic; once a
+// row has been typed the sum check asks the user to reconcile it, or `recompute`
+// does it for them.
+watch(
+  () => form.totalPrice,
+  () => {
+    if (!manualAmounts.value) rebuild();
+  },
+);
+
+/**
+ * Absorb a typed amount into the other tranches so the purchase total holds.
+ *
+ * Only while editing: a purchase being created has no settled rows and no total
+ * worth defending yet, so free typing plus the sum check below reads better.
+ * `rebalanceAmounts` is the same routine the backend mirrors — it spends the
+ * later tranches first and never asks a settled one to give anything up. When
+ * it cannot (`null`), the typed figure is left standing and the sum check
+ * explains why it does not add up.
+ */
+function onAmountEdit(index: number) {
   manualAmounts.value = true;
+  if (!editing.value) return;
+  const typed = Math.round(Number(rows.value[index].amount) || 0);
+  const next = rebalanceAmounts(
+    committed.value,
+    rows.value.map((r) => r.paidAmount),
+    index,
+    typed,
+  );
+  if (!next) return;
+  rows.value.forEach((row, i) => {
+    row.amount = next[i];
+  });
+  committed.value = next;
 }
+
+/**
+ * Re-split the total evenly. Settled tranches keep what they are worth, so only
+ * the pool left over after them is shared out.
+ */
 function recompute() {
-  manualAmounts.value = false;
-  rebuild();
+  const locked = rows.value.filter((r) => r.locked);
+  if (locked.length === 0) {
+    manualAmounts.value = false;
+    rebuild();
+    return;
+  }
+  const pool = Math.max(
+    0,
+    Math.round(form.totalPrice ?? 0) - locked.reduce((s, r) => s + r.amount, 0),
+  );
+  const open = rows.value.filter((r) => !r.locked);
+  const parts = splitAmounts(pool, open.length);
+  open.forEach((row, i) => {
+    row.amount = parts[i];
+  });
+  committed.value = rows.value.map((r) => r.amount);
 }
 
 const sum = computed(() => rows.value.reduce((s, r) => s + (Number(r.amount) || 0), 0));
 const sumMatches = computed(() => sum.value === Math.round(form.totalPrice ?? 0));
+/** A tranche can never be worth less than what has already been collected on it. */
+const belowPaid = computed(() => rows.value.find((r) => (Number(r.amount) || 0) < r.paidAmount));
 
 function validate(): boolean {
   for (const k of Object.keys(errors)) delete errors[k];
@@ -124,6 +207,9 @@ function validate(): boolean {
   if (form.intervalKind === "custom" && (!form.intervalDays || form.intervalDays < 1))
     errors.intervalDays = t("validation.positive");
   if (!sumMatches.value) errors.sum = t("validation.sumMismatch");
+  else if (belowPaid.value) {
+    errors.sum = t("errors.belowPaid", { paidAmount: belowPaid.value.paidAmount });
+  }
   return Object.keys(errors).length === 0;
 }
 
@@ -211,14 +297,14 @@ async function submit() {
         </div>
         <div class="field">
           <label>{{ t("achats.form.purchaseDate") }}</label>
-          <DatePicker v-model="form.purchaseDate" :disabled="scheduleLocked" />
+          <DatePicker v-model="form.purchaseDate" :disabled="anchorLocked" />
         </div>
       </div>
 
-      <!-- Why half the form is read-only, said once rather than per field. -->
-      <p v-if="scheduleLocked" class="locked-note">
+      <!-- Why part of the form is read-only, said once rather than per field. -->
+      <p v-if="anchorLocked" class="locked-note">
         <AppIcon name="alert" :size="16" />
-        {{ t("achats.form.lockedByPayments", { count: paidCount }) }}
+        {{ t("achats.form.settledRowsLocked", { count: settledCount }) }}
       </p>
 
       <div v-if="!editing && form.clientId === 'new'" class="inline-client">
@@ -280,7 +366,6 @@ async function submit() {
             min="1"
             class="input"
             :class="{ 'input--error': errors.totalPrice }"
-            :disabled="scheduleLocked"
           />
           <span v-if="errors.totalPrice" class="field-error">{{ errors.totalPrice }}</span>
         </div>
@@ -294,7 +379,7 @@ async function submit() {
             max="60"
             class="input"
             :class="{ 'input--error': errors.installmentCount }"
-            :disabled="scheduleLocked"
+            :disabled="anchorLocked"
           />
           <span v-if="errors.installmentCount" class="field-error">{{
             errors.installmentCount
@@ -306,7 +391,7 @@ async function submit() {
             id="np-interval"
             v-model="form.intervalKind"
             class="select"
-            :disabled="scheduleLocked"
+            :disabled="anchorLocked"
           >
             <option value="weekly">{{ t("achats.interval.weekly") }}</option>
             <option value="monthly">{{ t("achats.interval.monthly") }}</option>
@@ -323,7 +408,7 @@ async function submit() {
             type="number"
             min="1"
             class="input"
-            :disabled="scheduleLocked || form.intervalKind !== 'custom'"
+            :disabled="anchorLocked || form.intervalKind !== 'custom'"
             :class="{ 'input--error': errors.intervalDays }"
           />
         </div>
@@ -337,30 +422,46 @@ async function submit() {
           </button>
         </div>
         <div class="inst-rows">
-          <div v-for="(r, i) in rows" :key="i" class="inst-row">
+          <!-- A settled tranche is shown but not editable: seeing what it is
+               worth is the point, and the backend refuses to move it anyway. -->
+          <div v-for="(r, i) in rows" :key="i" class="inst-row" :class="{ locked: r.locked }">
             <span class="inst-idx tabular">{{ i + 1 }}/{{ rows.length }}</span>
             <input
               v-model.number="r.amount"
               type="number"
-              min="0"
+              :min="r.paidAmount"
               class="input inst-amount"
-              @input="onAmountEdit"
+              :disabled="r.locked"
+              @change="onAmountEdit(i)"
             />
-            <DatePicker v-model="r.dueDate" />
+            <DatePicker v-model="r.dueDate" :disabled="r.locked" />
+            <AppIcon
+              v-if="r.locked"
+              name="check"
+              :size="15"
+              class="inst-lock"
+              :aria-label="t('achats.form.rowLocked')"
+            />
           </div>
         </div>
-        <div class="inst-sum" :class="{ ok: sumMatches, bad: !sumMatches }">
+        <div
+          class="inst-sum"
+          :class="{ ok: sumMatches && !belowPaid, bad: !sumMatches || belowPaid }"
+        >
           <span
             >{{ t("achats.form.sumLabel") }}:
             <strong class="tabular">{{ fmt.money(sum) }}</strong></span
           >
-          <span v-if="sumMatches">✓ {{ t("achats.form.sumOk") }}</span>
-          <span v-else>{{
+          <span v-if="!sumMatches">{{
             t("achats.form.sumMismatch", {
               sum: fmt.number(sum),
               total: fmt.number(form.totalPrice ?? 0),
             })
           }}</span>
+          <span v-else-if="belowPaid">{{
+            t("errors.belowPaid", { paidAmount: belowPaid.paidAmount })
+          }}</span>
+          <span v-else>✓ {{ t("achats.form.sumOk") }}</span>
         </div>
       </div>
     </form>
@@ -439,9 +540,17 @@ label.disabled {
 }
 .inst-row {
   display: grid;
-  grid-template-columns: 60px 1fr 1fr;
+  /* The last track holds the settled marker, and stays reserved on every row so
+     the amount and date columns line up whether or not one is locked. */
+  grid-template-columns: 60px 1fr 1fr 18px;
   gap: 10px;
   align-items: center;
+}
+.inst-row.locked {
+  opacity: 0.7;
+}
+.inst-lock {
+  color: var(--success);
 }
 .inst-idx {
   font-weight: 600;
