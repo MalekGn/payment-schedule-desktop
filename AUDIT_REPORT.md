@@ -26,7 +26,7 @@
 | Frontend | **Vue 3.5** + TypeScript, `<script setup>` in **34/34** SFCs, Pinia 2 (4 stores), vue-router 4, vue-i18n 10                           |
 | Build    | Vite 7.3.6, `vue-tsc --noEmit` typecheck, ESLint 10 flat config, Prettier 3, husky + lint-staged                                      |
 | CI       | 3 GitHub Actions workflows (release bundles, CodeQL, security audit), Dependabot on npm/cargo/actions, all actions SHA-pinned         |
-| Tests    | Vitest unit (10 files / 147 cases), Vitest integration (8 files / 99 cases), Playwright E2E (50 scenarios), **126 Rust tests**        |
+| Tests    | Vitest unit (10 files / 147 cases), Vitest integration (8 files / **213** cases), Playwright E2E (50 scenarios), **133 Rust tests**   |
 
 **Local gate status at audit time** (every one actually run, results real):
 
@@ -116,7 +116,7 @@ Ordered most-important first.
 6. **`tests/**` is never typechecked.** `tsconfig.json` includes only `src/**`,
    so `vue-tsc --noEmit` checks 31 files and no test file. The 99-case
    TypeScript integration suite is linted but type-checked by nothing.
-7. **Integration and E2E remain outside CI** — 99 integration cases and 50 E2E
+7. **Integration and E2E remain outside CI** — 213 integration cases and 50 E2E
    scenarios that run only when someone remembers to.
 8. **`rusqlite` is 8 minor versions behind (0.32.1 → 0.40.1)** _(closed in
    `7e592ac`: now 0.39.0, SQLite 3.46.0 → 3.51.3)_, so an older
@@ -144,7 +144,7 @@ Ordered most-important first.
 | **M1** | Data integrity    | ~~Medium~~ **CLOSED** | ~~`total_price` and `InstallmentInput::amount` have no upper bound~~ — fixed: both bounded by `MONEY_RANGE` (`0..=1e9`) before the sum is taken, which makes the wrap unreachable                               | Done; `overflow-checks` deliberately left off                                                               | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
 | **M2** | Tauri security    | **Medium**            | `backup_database` unconditionally `remove_file`s `dest.with_extension("db.part")` with no content check; TOCTOU between `exists()` and `rename`                                                                 | Stage the temp file in app-data and move it, or apply the same SQLite-magic check to `tmp`                  | `commands.rs:2104-2121`, `2129`, `2133-2135`                     |
 | **M3** | Build config      | **Medium**            | `tests/**` is in no TypeScript project — `vue-tsc --noEmit` covers 31 files, none of them tests. `vitest.integration.config.ts` also uncovered                                                                  | Add a `tsconfig.test.json` (or extend `include`) and typecheck it in `npm run build`                        | `tsconfig.json:25-27`; `tsconfig.node.json:11`                   |
-| **M4** | CI / Testing      | **Medium**            | Integration (99 cases) and E2E (50 scenarios) are wired to npm scripts but to no workflow                                                                                                                       | Add a CI job for `test:integration`; run `test:e2e` at least nightly                                        | `.github/workflows/build.yml`; `package.json:17-18`              |
+| **M4** | CI / Testing      | **Medium**            | Integration (213 cases) and E2E (50 scenarios) are wired to npm scripts but to no workflow                                                                                                                      | Add a CI job for `test:integration`; run `test:e2e` at least nightly                                        | `.github/workflows/build.yml`; `package.json:17-18`              |
 | **M5** | Dependencies      | ~~Medium~~ **CLOSED** | ~~`rusqlite` 0.32.1 → `libsqlite3-sys` 0.30.1 bundles an older SQLite~~ — fixed in `7e592ac`: 0.39.0, SQLite **3.46.0 → 3.51.3**. Held below 0.40 because `libsqlite3-sys` 0.38 needs Rust 1.95 (`cfg_select!`) | Plan the bump; breaking API change, so schedule it rather than batching with a feature                      | `Cargo.toml:35`; `Cargo.lock`                                    |
 | **M6** | Input validation  | **Medium**            | No length or format bound on any free-text field: `ClientInput.*`, `SettingsPatch.{language,currency_code,date_format,shop_name,shop_info}`                                                                     | Add length caps; allow-list `language`, `currency_code`, `date_format`                                      | `commands.rs:380-385`, `402-409`, `1908-1924`; `models.rs:46-52` |
 | **L1** | Input validation  | Low                   | `list_all_payments` binds `limit` straight into `LIMIT ?1`; SQLite reads a negative limit as unlimited                                                                                                          | Clamp to e.g. `1..=5000`                                                                                    | `commands.rs:1414`, `1430`                                       |
@@ -764,10 +764,15 @@ intentionally committed (correct for a binary) with a comment explaining why.
 
 | Suite       | Files | Cases | Runs in CI?        |
 | ----------- | ----- | ----- | ------------------ |
-| Rust unit   | —     | 126   | ✅ since `9f9ad6c` |
+| Rust unit   | —     | 133   | ✅ since `9f9ad6c` |
 | Vitest unit | 10    | 147   | ✅ `npm test`      |
-| Integration | 8     | 99    | ❌ no (**M4**)     |
+| Integration | 8     | 213   | ❌ no (**M4**)     |
 | E2E         | 1     | 50    | ❌ no (**M4**)     |
+
+The integration figure is the **runtime** case count, not a count of `it(`
+blocks: `error-contract.integration.test.ts` drives three `it.each` tables — the
+error-code inventory crossed with all three locales — so its 8 blocks expand to
+119 cases. An earlier revision of this report said 99, having counted the blocks.
 
 Coverage is deep on business logic — `finance.ts` (25 tests plus a 5-test
 cross-language parity suite checking a shared fixture against the Rust
