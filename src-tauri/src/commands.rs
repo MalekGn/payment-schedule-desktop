@@ -19,16 +19,16 @@ use tauri::State;
 
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
-    Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS,
+    Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, MONEY_RANGE,
     UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
     CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER,
-    FUTURE_PAID_DATE, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT, INVALID_INSTALLMENT_COUNT,
-    INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE,
-    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT,
-    PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
+    FUTURE_PAID_DATE, INSTALLMENT_COUNT_MISMATCH, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
+    INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE,
+    INVALID_LOGO_TYPE, INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE,
+    OVERPAYMENT, PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
     PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, SCHEDULE_VIA_PURCHASE,
     SUM_MISMATCH,
 };
@@ -599,7 +599,14 @@ pub async fn create_purchase(
 /// before being handed to date math, so unbounded values are a memory- and
 /// crash-amplification path rather than merely bad data.
 fn validate_purchase_input(input: &PurchaseInput) -> DbResult<chrono::NaiveDate> {
-    if input.total_price <= 0 {
+    // Bounded from above as well as below: see [`MONEY_RANGE`] for why an
+    // unbounded total lets a wrapping `i64` sum satisfy the `SUM_MISMATCH`
+    // equality that is supposed to prove the schedule adds up.
+    // A purchase must be worth something, so the lower bound is stricter than
+    // [`MONEY_RANGE`]'s (which admits a zero *share*). The upper bound is the
+    // range's: see its doc for why an unbounded total lets a wrapping `i64` sum
+    // satisfy the `SUM_MISMATCH` equality meant to prove the schedule adds up.
+    if input.total_price <= 0 || input.total_price > *MONEY_RANGE.end() {
         return Err(AppError::validation(INVALID_TOTAL_PRICE));
     }
     if !INSTALLMENT_COUNT_RANGE.contains(&input.installment_count) {
@@ -631,6 +638,30 @@ fn resolve_schedule(
 ) -> DbResult<(Vec<i64>, Vec<String>)> {
     let amounts = match &input.installments {
         Some(list) if !list.is_empty() => {
+            // The list is what actually sizes the schedule — the row vector, the
+            // date vector and the insert loop all follow its length, not
+            // `installment_count`. So the `1..=120` bound `validate_purchase_input`
+            // puts on that field only binds if the two agree; without this a
+            // request declaring `installmentCount: 1` could carry a million
+            // entries and drive exactly the unbounded allocation and insert loop
+            // the bound exists to prevent. It would also leave the stored
+            // `installment_count` lying about the row count, and that figure is
+            // rendered straight to the user as "index/count".
+            if list.len() as i64 != input.installment_count {
+                return Err(AppError::conflict(
+                    INSTALLMENT_COUNT_MISMATCH,
+                    format!("{}:{}", list.len(), input.installment_count),
+                ));
+            }
+            // Bounded before the sum is taken, not after: the sum is the thing
+            // being protected. A negative share is the sharper half — it needs no
+            // overflow at all, sails through the equality below when a sibling
+            // covers it, and then feeds `SUM(amount - paid_amount)` in the
+            // outstanding aggregates, where one client's negative row cancels out
+            // another client's real debt.
+            if list.iter().any(|i| !MONEY_RANGE.contains(&i.amount)) {
+                return Err(AppError::validation(INVALID_AMOUNT));
+            }
             let sum: i64 = list.iter().map(|i| i.amount).sum();
             if sum != input.total_price {
                 return Err(AppError::conflict(
@@ -3627,6 +3658,161 @@ mod tests {
         assert_eq!(code_of(err), "DUE_DATE_OUT_OF_ORDER");
     }
 
+    // --- bounds on the manual schedule ---------------------------------------
+    //
+    // `validate_purchase_input` bounds every scalar field off the IPC boundary,
+    // but the `installments` array bypasses it: it is what actually sizes the
+    // row vector, the date vector and the insert loop. These pin the two guards
+    // that make the scalar bounds bind on it too.
+
+    /// Build a manual schedule of `amounts`, dated one month apart through 2024
+    /// so the ordering check is never what refuses it.
+    fn manual_schedule(amounts: &[i64]) -> Vec<InstallmentInput> {
+        // The dates are formatted as month numbers, so a 13th entry would build
+        // "2024-13-15" and fail on the date parse instead of the guard under
+        // test — a confusing failure worth refusing outright.
+        assert!(
+            amounts.len() <= 12,
+            "manual_schedule holds one year of dates"
+        );
+        amounts
+            .iter()
+            .enumerate()
+            .map(|(i, amount)| InstallmentInput {
+                index: i as i64 + 1,
+                amount: *amount,
+                due_date: format!("2024-{:02}-15", i + 1),
+            })
+            .collect()
+    }
+
+    /// The list length is what sizes the schedule, so the `1..=120` bound on
+    /// `installment_count` only binds while the two agree. Declaring 1 and
+    /// sending many is the shape that drove the unbounded allocation.
+    #[test]
+    fn a_manual_schedule_longer_than_the_declared_count_is_refused() {
+        let f = Fixture::new("bounds_count_mismatch");
+
+        let mut input = f.purchase_input();
+        input.total_price = 1000;
+        input.installment_count = 1;
+        input.installments = Some(manual_schedule(&[1000, 0, 0, 0, 0]));
+
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INSTALLMENT_COUNT_MISMATCH:5:1");
+        assert_eq!(f.count("SELECT COUNT(*) FROM purchase"), 0);
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+    }
+
+    /// Shorter than declared is the same defect from the other side.
+    #[test]
+    fn a_manual_schedule_shorter_than_the_declared_count_is_refused() {
+        let f = Fixture::new("bounds_count_short");
+
+        let mut input = f.purchase_input();
+        input.total_price = 1000;
+        input.installment_count = 4;
+        input.installments = Some(manual_schedule(&[600, 400]));
+
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INSTALLMENT_COUNT_MISMATCH:2:4");
+    }
+
+    /// A negative share needs no overflow: a sibling covers it, the sum matches,
+    /// and the row then subtracts from `SUM(amount - paid_amount)` — the figure
+    /// every outstanding total is built on. Reachable on create, where nothing
+    /// else looks at the amounts.
+    #[test]
+    fn a_negative_installment_amount_is_refused_on_create() {
+        let f = Fixture::new("bounds_negative");
+
+        let mut input = f.purchase_input();
+        input.total_price = 1000;
+        input.installment_count = 2;
+        input.installments = Some(manual_schedule(&[1500, -500]));
+
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INVALID_AMOUNT");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+    }
+
+    /// The same guard has to hold on the update path, which shares
+    /// `resolve_schedule`. Update caught this only incidentally before, via
+    /// `BELOW_PAID` against a zero `paid_amount`.
+    #[test]
+    fn a_negative_installment_amount_is_refused_on_update() {
+        let f = Fixture::new("bounds_negative_update");
+        let detail = seeded_purchase(&f);
+
+        let mut input = f.purchase_input();
+        input.installment_count = 2;
+        input.installments = Some(manual_schedule(&[1500, -500]));
+
+        let err = update_purchase_impl(&mut f.db.lock(), detail.purchase.id, input).unwrap_err();
+        assert_eq!(code_of(err), "INVALID_AMOUNT");
+        assert_eq!(
+            stored_amounts(&f, detail.purchase.id),
+            vec![250, 250, 250, 250]
+        );
+    }
+
+    /// The reason the bound is a bound and not an `overflow-checks` flag: two
+    /// `i64::MAX` terms wrap to -2, and -2 + 1002 is exactly the declared total,
+    /// so the sum check would have proved the schedule adds up when it does not.
+    /// The per-amount range refuses it before the sum is ever taken.
+    #[test]
+    fn a_schedule_whose_sum_wraps_to_the_total_is_refused() {
+        let f = Fixture::new("bounds_wrapping_sum");
+
+        // Guard the arithmetic claim itself, so this test still means something
+        // if the constant or the profile ever changes.
+        assert_eq!(i64::MAX.wrapping_add(i64::MAX).wrapping_add(1002), 1000);
+
+        let mut input = f.purchase_input();
+        input.total_price = 1000;
+        input.installment_count = 3;
+        input.installments = Some(manual_schedule(&[i64::MAX, i64::MAX, 1002]));
+
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INVALID_AMOUNT");
+        assert_eq!(f.count("SELECT COUNT(*) FROM installment"), 0);
+    }
+
+    /// An out-of-range total is refused for the same reason, and reported
+    /// against the field the caller actually sent.
+    #[test]
+    fn a_total_price_beyond_the_money_range_is_refused() {
+        let f = Fixture::new("bounds_total");
+
+        let mut input = f.purchase_input();
+        input.total_price = *MONEY_RANGE.end() + 1;
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INVALID_TOTAL_PRICE");
+
+        // The existing lower bound still reports the same code.
+        let mut input = f.purchase_input();
+        input.total_price = 0;
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), "INVALID_TOTAL_PRICE");
+    }
+
+    /// Zero stays legal: `split_amounts` can produce it for a small total over
+    /// many installments, and a zeroed tranche reads as settled by design. The
+    /// bound must not turn that into a refusal.
+    #[test]
+    fn a_zero_installment_amount_is_still_accepted() {
+        let f = Fixture::new("bounds_zero_ok");
+
+        let mut input = f.purchase_input();
+        input.total_price = 1000;
+        input.installment_count = 3;
+        input.installments = Some(manual_schedule(&[1000, 0, 0]));
+
+        let detail = create_purchase_impl(&mut f.db.lock(), input).unwrap();
+        assert_eq!(amounts_of(&detail), vec![1000, 0, 0]);
+        assert_eq!(detail.installments[1].status, "paid");
+    }
+
     #[test]
     fn rescheduling_regenerates_the_installments_while_unpaid() {
         let f = Fixture::new("update_reschedule");
@@ -3663,6 +3849,10 @@ mod tests {
         let detail = seeded_purchase(&f);
 
         let mut input = f.purchase_input();
+        // The count has to agree with the list, or the length guard refuses it
+        // first and the sum is never reached — which is the wrong failure for
+        // this test.
+        input.installment_count = 2;
         input.installments = Some(vec![
             InstallmentInput {
                 index: 1,

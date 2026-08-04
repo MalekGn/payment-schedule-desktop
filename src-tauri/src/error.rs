@@ -36,8 +36,9 @@
 //! | `INVALID_INSTALLMENT_COUNT`   | Installment count outside 1..=120              |
 //! | `INVALID_INTERVAL_KIND`       | Interval kind not weekly/monthly/custom        |
 //! | `INVALID_INTERVAL_DAYS`       | Custom interval outside 1..=365                |
-//! | `INVALID_AMOUNT`              | Payment amount was not > 0                     |
+//! | `INVALID_AMOUNT`              | A money figure outside the permitted range     |
 //! | `SUM_MISMATCH:{sum}:{total}`  | Manual installments don't add up               |
+//! | `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}` | Manual installment list length disagrees with `installmentCount` |
 //! | `OVERPAYMENT:{remaining}`     | Payment exceeds what the installment still owes|
 //! | `CLIENT_HAS_PURCHASES:{n}`    | Delete of a client that has purchases; archive |
 //! | `ARCHIVE_HAS_OUTSTANDING:{r}` | Archive of a client still owing `r` (whole units)|

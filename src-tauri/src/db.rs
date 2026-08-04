@@ -289,6 +289,22 @@ pub const INSTALLMENT_COUNT_RANGE: std::ops::RangeInclusive<i64> = 1..=120;
 /// Inclusive bounds on the dashboard's "due soon" horizon, in days.
 pub const UPCOMING_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
 
+/// Inclusive bounds on any money figure arriving from the renderer: a purchase
+/// total, or one installment's share of it. Whole currency units, so a billion
+/// is far past anything a shop writes and still leaves enormous headroom.
+///
+/// The headroom is the point. `SUM(amount)` is computed as `i64` in
+/// `resolve_schedule`, and the release profile does not enable
+/// `overflow-checks`, so a wrapping sum could otherwise satisfy the
+/// `SUM_MISMATCH` equality it is meant to prove — `[i64::MAX, i64::MAX, 1002]`
+/// wraps to exactly 1000. Capping each term at 1e9 against a schedule of at most
+/// [`INSTALLMENT_COUNT_RANGE`] entries bounds any sum at 1.2e11, nine orders of
+/// magnitude below `i64::MAX`, so no validated input can reach the wrap at all.
+/// That is why this is a bound and not an `overflow-checks` flag: the flag would
+/// turn the wrap into an abort under `panic = "abort"`, where this makes it
+/// unreachable.
+pub const MONEY_RANGE: std::ops::RangeInclusive<i64> = 0..=1_000_000_000;
+
 // Error codes. Kept as constants so the Rust guard and the doc table in
 // `error.rs` cannot drift apart, and so a typo is a compile error.
 pub const INVALID_DATE: &str = "INVALID_DATE";
@@ -298,6 +314,7 @@ pub const INVALID_INTERVAL_KIND: &str = "INVALID_INTERVAL_KIND";
 pub const INVALID_INTERVAL_DAYS: &str = "INVALID_INTERVAL_DAYS";
 pub const INVALID_AMOUNT: &str = "INVALID_AMOUNT";
 pub const SUM_MISMATCH: &str = "SUM_MISMATCH";
+pub const INSTALLMENT_COUNT_MISMATCH: &str = "INSTALLMENT_COUNT_MISMATCH";
 pub const OVERPAYMENT: &str = "OVERPAYMENT";
 pub const CLIENT_HAS_PURCHASES: &str = "CLIENT_HAS_PURCHASES";
 pub const ARCHIVE_HAS_OUTSTANDING: &str = "ARCHIVE_HAS_OUTSTANDING";

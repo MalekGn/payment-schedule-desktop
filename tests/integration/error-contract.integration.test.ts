@@ -218,6 +218,7 @@ describe("every code maps to a localized sentence", () => {
     "INVALID_INTERVAL_DAYS",
     "INVALID_AMOUNT",
     "SUM_MISMATCH:900:1000",
+    "INSTALLMENT_COUNT_MISMATCH:5:1",
     "OVERPAYMENT:200",
     "INVALID_LOGO_TYPE",
     "LOGO_TOO_LARGE",
@@ -253,6 +254,10 @@ describe("every code maps to a localized sentence", () => {
 
     expect(toUserMessage("SUM_MISMATCH:900:1000", t)).toContain("900");
     expect(toUserMessage("SUM_MISMATCH:900:1000", t)).toContain("1000");
+    // Two positional params again, so a mis-ordered CODE_PARAMS entry would
+    // silently swap "sent" and "declared" in the sentence.
+    expect(toUserMessage("INSTALLMENT_COUNT_MISMATCH:5:1", t)).toContain("5");
+    expect(toUserMessage("INSTALLMENT_COUNT_MISMATCH:5:1", t)).toContain("1");
     expect(toUserMessage("OVERPAYMENT:200", t)).toContain("200");
     expect(toUserMessage("CLIENT_HAS_PURCHASES:3", t)).toContain("3");
     expect(toUserMessage("ARCHIVE_HAS_OUTSTANDING:750", t)).toContain("750");

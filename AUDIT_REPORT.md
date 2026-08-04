@@ -5,8 +5,9 @@
 **Scope:** architecture, security, dependencies, data layer, frontend, build config, hygiene
 **Nature:** read-only review. **No code was changed.** The only file written is this report.
 
-> **Update 2026-08-04 (later same day):** findings **H2** and **M5** were
-> closed after this report was written — commits `7e592ac`, `2edaa7e`, `9f9ad6c`.
+> **Update:** findings **H2**, **M5**, **H3** and **M1** were closed after this
+> report was written — commits `ce038d1`, `9fb54f4`, `06b9165` and the
+> schedule-bounds commit that follows them.
 > Their rows below are annotated inline; everything else stands as audited.
 >
 > This report **replaces** the 2026-07-26 audit (commit `641c7ff`, which audited
@@ -99,13 +100,13 @@ Ordered most-important first.
    `release` depends on `[test, rust-lint]`, where `test` is JS-only and
    `rust-lint` is fmt + clippy. A regression in `commands.rs` reaches an
    installer unchallenged.
-3. **The `installments` array bypasses `INSTALLMENT_COUNT_RANGE`.** The 1..=120
+3. **The `installments` array bypasses `INSTALLMENT_COUNT_RANGE`.** _(Closed.)_ The 1..=120
    cap exists, in the code's own words, so a hostile count "cannot drive an
    unbounded `Vec` allocation and insert loop" — but `resolve_schedule` derives
    the row set from `list.len()` and checks only the _sum_. `installmentCount: 1`
    with a million-element array passes validation and reaches a per-element
    `INSERT` loop. Old finding #4 re-opening through a different door.
-4. **Money arithmetic can wrap silently in release.** `[profile.release]` sets
+4. **Money arithmetic can wrap silently in release.** _(Closed.)_ `[profile.release]` sets
    `panic = "abort"` but not `overflow-checks`, and `total_price` / per-line
    `amount` have no upper bound. A crafted amount set can wrap `i64` to equal
    `total_price` and defeat the `SUM_MISMATCH` check outright.
@@ -139,8 +140,8 @@ Ordered most-important first.
 | ------ | ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | **H1** | Dependencies / CI | **High**              | `npm audit --audit-level=high` exits 1: `brace-expansion` 5.0.8 DoS (GHSA-rgw5-rvv9-x895) via `eslint@10.8.0 → minimatch@10.2.5`                                                                                | `npm audit fix` — resolves in-range, no major bump                                                          | `.github/workflows/security.yml:52-53`                           |
 | **H2** | CI / Testing      | ~~High~~ **CLOSED**   | ~~No workflow runs `cargo test`. 126 Rust tests never gate a release~~ — fixed in `9f9ad6c`: a `rust-test` job runs `cargo test --locked` and `release` depends on it                                           | Add a `cargo test` job to `build.yml`; add it to `release.needs`                                            | `.github/workflows/build.yml:26-52,54-79,133`                    |
-| **H3** | Data integrity    | **High**              | `installments` array length is unbounded and never compared to `installment_count`; only the sum is checked. Bypasses the 1..=120 DoS cap                                                                       | Assert `list.len() as i64 == input.installment_count` in `resolve_schedule`                                 | `commands.rs:605-607`, `632-644`, `686-702`; `db.rs:283-287`     |
-| **M1** | Data integrity    | **Medium**            | `total_price` and `InstallmentInput::amount` have no upper bound; release has `overflow-checks` off, so `.sum()` wraps and can defeat `SUM_MISMATCH`                                                            | Cap both at a domain maximum; `checked_add` in the accumulators; consider `overflow-checks = true`          | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
+| **H3** | Data integrity    | ~~High~~ **CLOSED**   | ~~`installments` array length is unbounded and never compared to `installment_count`~~ — fixed: `resolve_schedule` refuses with `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}`                                  | Done                                                                                                        | `commands.rs:605-607`, `632-644`, `686-702`; `db.rs:283-287`     |
+| **M1** | Data integrity    | ~~Medium~~ **CLOSED** | ~~`total_price` and `InstallmentInput::amount` have no upper bound~~ — fixed: both bounded by `MONEY_RANGE` (`0..=1e9`) before the sum is taken, which makes the wrap unreachable                               | Done; `overflow-checks` deliberately left off                                                               | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
 | **M2** | Tauri security    | **Medium**            | `backup_database` unconditionally `remove_file`s `dest.with_extension("db.part")` with no content check; TOCTOU between `exists()` and `rename`                                                                 | Stage the temp file in app-data and move it, or apply the same SQLite-magic check to `tmp`                  | `commands.rs:2104-2121`, `2129`, `2133-2135`                     |
 | **M3** | Build config      | **Medium**            | `tests/**` is in no TypeScript project — `vue-tsc --noEmit` covers 31 files, none of them tests. `vitest.integration.config.ts` also uncovered                                                                  | Add a `tsconfig.test.json` (or extend `include`) and typecheck it in `npm run build`                        | `tsconfig.json:25-27`; `tsconfig.node.json:11`                   |
 | **M4** | CI / Testing      | **Medium**            | Integration (99 cases) and E2E (50 scenarios) are wired to npm scripts but to no workflow                                                                                                                       | Add a CI job for `test:integration`; run `test:e2e` at least nightly                                        | `.github/workflows/build.yml`; `package.json:17-18`              |
@@ -901,14 +902,13 @@ rustc   MSRV declared 1.88, proven by a dedicated CI job
 
 **Small, contained fixes — an hour or two each**
 
-7. **Assert `list.len() == installment_count` in `resolve_schedule`** (H3). One
-   comparison closes a DoS path the surrounding code already believed was shut.
+7. ~~**Assert `list.len() == installment_count` in `resolve_schedule`** (H3).~~ **Done.**
 8. **Stage the backup temp file in app-data, or magic-check it before removing**
    (M2).
-9. **Bound `total_price` and per-line `amount`** (M1). Consider
-   `overflow-checks = true` as defence in depth — noting it trades a silent wrap
-   for an abort under `panic = "abort"`, so the bounds check should be the
-   primary fix, not the profile flag.
+9. ~~**Bound `total_price` and per-line `amount`** (M1).~~ **Done** — via `MONEY_RANGE`.
+   `overflow-checks` deliberately left off: with `panic = "abort"` it trades a
+   correctness bug for an availability one, and the bounds make the wrap
+   unreachable anyway.
 10. **Add length caps and allow-lists to the free-text inputs** (M6).
 11. **Put `tests/**` in a typechecked TS project** (M3) and add
     `test:integration` to CI (M4).

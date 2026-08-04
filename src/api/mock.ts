@@ -48,6 +48,12 @@ const INTERVAL_KINDS = ["weekly", "monthly", "custom"];
 const INSTALLMENT_COUNT_MAX = 120;
 const INTERVAL_DAYS_MIN = 1;
 const INTERVAL_DAYS_MAX = 365;
+// Mirrors `MONEY_RANGE` in db.rs. The cap is not about plausible shop prices: it
+// keeps any sum of at most INSTALLMENT_COUNT_MAX terms far below the i64 range
+// the Rust side computes it in, so a wrapping sum can never satisfy the
+// SUM_MISMATCH equality that is supposed to prove the schedule adds up.
+const MONEY_MIN = 0;
+const MONEY_MAX = 1_000_000_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Throw `INVALID_DATE` unless `value` is a real `YYYY-MM-DD` calendar date. */
@@ -58,7 +64,9 @@ function assertIsoDate(value: string): void {
 }
 
 function validatePurchaseInput(input: PurchaseInput): void {
-  if (input.totalPrice <= 0) throw new Error("INVALID_TOTAL_PRICE");
+  if (input.totalPrice <= 0 || input.totalPrice > MONEY_MAX) {
+    throw new Error("INVALID_TOTAL_PRICE");
+  }
   if (input.installmentCount < 1 || input.installmentCount > INSTALLMENT_COUNT_MAX) {
     throw new Error("INVALID_INSTALLMENT_COUNT");
   }
@@ -534,6 +542,17 @@ class MockDb {
     let amounts: number[];
     let dueDates: string[];
     if (input.installments && input.installments.length > 0) {
+      // The list, not `installmentCount`, is what sizes the schedule — so the
+      // 1..=120 bound only binds if the two agree. See `resolve_schedule`.
+      if (input.installments.length !== input.installmentCount) {
+        throw new Error(
+          `INSTALLMENT_COUNT_MISMATCH:${input.installments.length}:${input.installmentCount}`,
+        );
+      }
+      // Before the sum, because the sum is the thing being protected.
+      if (input.installments.some((i) => i.amount < MONEY_MIN || i.amount > MONEY_MAX)) {
+        throw new Error("INVALID_AMOUNT");
+      }
       const sum = input.installments.reduce((s, i) => s + i.amount, 0);
       if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
       amounts = input.installments.map((i) => i.amount);
