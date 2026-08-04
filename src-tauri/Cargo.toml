@@ -55,7 +55,7 @@ ed25519-dalek = "2"
 base64 = "0.22"
 # Pinned to 0.10, not the newer 0.11: 0.10.9 is already compiled transitively
 # via `wry`, and matching it keeps `cargo deny`'s duplicate-version check quiet.
-sha2 = "0.10"
+sha2 = "0.11"
 # Reads the per-OS machine identifier (/etc/machine-id, MachineGuid,
 # IOPlatformUUID). MIT. Its only dependencies are platform-gated — nothing at
 # all on Linux, where it is a plain file read.
