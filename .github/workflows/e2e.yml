@@ -1,0 +1,63 @@
+name: E2E
+
+# The Playwright suite: 50 scenarios driving the real Vue app in headless
+# Chromium against the in-memory mock backend.
+#
+# Nightly rather than per-push, deliberately. It needs a ~100 MB browser
+# download and runs for minutes, where the rest of the gate finishes in seconds
+# — and a flaky UI test blocking an unrelated merge trains people to ignore CI.
+# Running it every night still catches a regression within a day, which is the
+# point. `workflow_dispatch` is there for when a change warrants it sooner.
+on:
+  schedule:
+    # 02:00 UTC daily.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Playwright (headless Chromium)
+    # Not pinned to 22.04 like the release job: nothing here needs the old
+    # glibc, and a current image keeps Playwright's system deps supported.
+    runs-on: ubuntu-24.04
+    # The runner has no global timeout of its own, so a hung page.goto would
+    # otherwise sit until GitHub's default job limit.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Node
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      # `playwright` is a plain library dependency here — the @playwright/test
+      # runner is not installed — so no browser is vendored and this step is
+      # required. Only chromium: run.mjs imports nothing else. `--with-deps`
+      # pulls the shared libraries headless Chromium needs on the hosted image.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # No server step: run.mjs spawns its own Vite on port 5199 with
+      # --strictPort and tears it down on exit. Starting one here would collide
+      # and hard-fail.
+      - name: Run E2E suite
+        run: npm run test:e2e
+
+      # Failure screenshots, written per failing test. Only on failure — a green
+      # run produces none.
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failure-screenshots
+          path: tests/e2e/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

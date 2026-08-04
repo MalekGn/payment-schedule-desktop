@@ -30,6 +30,11 @@ Thumbs.db
 # IDE debug configs
 launch.json
 
+# E2E failure screenshots — regenerated on every failing run and collected by
+# the nightly workflow as build artifacts. Eight of these were committed, which
+# meant an uploaded artifact bundle mixed fresh failures with a stale baseline.
+tests/e2e/artifacts/
+
 # logs
 *.log
 npm-debug.log*
