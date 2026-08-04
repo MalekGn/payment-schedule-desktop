@@ -4928,6 +4928,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&staging);
     }
 
+    /// App data and the destination are routinely on different filesystems — the
+    /// user saves a backup to a USB stick — where `rename` fails with `EXDEV`.
+    /// The copy fallback is the only thing that makes those backups work at all,
+    /// and no other test can reach it because temp dirs share a filesystem.
+    ///
+    /// Skipped rather than failed where no second filesystem is available, so
+    /// this does not turn into a flake on a machine or runner without one.
+    ///
+    /// Unix-only: it needs `MetadataExt::dev()` to prove the two paths really
+    /// are on different filesystems, and this project also builds for Windows.
+    #[cfg(unix)]
+    #[test]
+    fn backup_falls_back_to_a_copy_across_filesystems() {
+        let Some(other_fs) = second_filesystem() else {
+            eprintln!("skipped: no second filesystem available to cross");
+            return;
+        };
+
+        let f = Fixture::new("backup_xdev");
+        seeded_purchase(&f);
+
+        // Stage on the *other* filesystem from the destination, so the rename
+        // must fail and the fallback must carry it.
+        let staging = other_fs.join(format!("ps-xdev-{}", std::process::id()));
+        std::fs::create_dir_all(&staging).unwrap();
+        let dest = temp_db_path("backup_xdev_out");
+        assert_ne!(
+            same_device(&staging),
+            same_device(dest.parent().unwrap()),
+            "the two paths must really be on different filesystems"
+        );
+
+        backup_database_impl(&f.db.lock(), &dest, &staging).unwrap();
+
+        let restored = Connection::open(&dest).unwrap();
+        let purchases: i64 = restored
+            .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(purchases, 1, "the copied snapshot must carry the data");
+        drop(restored);
+        assert_eq!(
+            std::fs::read_dir(&staging).unwrap().count(),
+            0,
+            "the staging file must be cleaned up after a cross-device copy"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    #[cfg(unix)]
+    /// The device id of the filesystem holding `path`.
+    fn same_device(path: &std::path::Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).unwrap().dev()
+    }
+
+    #[cfg(unix)]
+    /// A writable directory on a different filesystem from `std::env::temp_dir`,
+    /// or `None` when the machine has only one.
+    fn second_filesystem() -> Option<PathBuf> {
+        let temp_dev = same_device(&std::env::temp_dir());
+        ["/dev/shm", "/run/user/1000"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|c| c.is_dir() && same_device(c) != temp_dev)
+    }
+
     // --- dashboard ---------------------------------------------------------
 
     /// `upcoming_days` used to flow unvalidated into `Duration::days`, which
