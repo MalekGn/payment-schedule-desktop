@@ -2114,12 +2114,27 @@ pub async fn clear_logo(db: State<'_, Db>, lic: State<'_, LicenseState>) -> DbRe
 pub async fn backup_database(
     db: State<'_, Db>,
     lic: State<'_, LicenseState>,
+    app: tauri::AppHandle,
     dest: String,
 ) -> DbResult<()> {
     require_license(&lic)?;
-    use std::io::Read;
+    use tauri::Manager;
 
-    let dest_path = std::path::Path::new(&dest);
+    // Staging happens inside app data, which the app owns outright — see
+    // `backup_database_impl`. `AppHandle` is injected by Tauri, so the renderer
+    // still calls this with `{ dest }` alone.
+    let staging_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&staging_dir)?;
+
+    backup_database_impl(&db.lock(), std::path::Path::new(&dest), &staging_dir)
+}
+
+pub(crate) fn backup_database_impl(
+    conn: &Connection,
+    dest_path: &std::path::Path,
+    staging_dir: &std::path::Path,
+) -> DbResult<()> {
+    use std::io::Read;
 
     // `dest` is untrusted: it normally comes from the native save dialog, but
     // the renderer can call this command with any path. Two guards keep it from
@@ -2146,29 +2161,61 @@ pub async fn backup_database(
         }
     }
 
-    // Write to a sibling temp file and rename into place, so a failed backup
-    // never destroys the snapshot the user already had.
-    let tmp = dest_path.with_extension("db.part");
-    let _ = std::fs::remove_file(&tmp);
+    // Stage inside app data under a name generated per run, never derived from
+    // `dest`. The previous version wrote `dest.with_extension("db.part")` and
+    // `remove_file`d it unconditionally — an unguarded delete of a caller-chosen
+    // path, since the SQLite check above protects `dest` and not its sibling.
+    // Deriving the name was also wrong on its own terms: `with_extension` on
+    // `payment-schedule-2026.08.04.db` yields `…2026.08.db.part`, and two
+    // backups into one directory collided. pid+nanos matches the temp-name
+    // idiom the test helpers already use.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staged = staging_dir.join(format!("backup-{}-{stamp}.part", std::process::id()));
 
-    let conn = db.lock();
-    let vacuum = conn.execute("VACUUM INTO ?1", [&tmp.to_string_lossy().to_string()]);
-    drop(conn);
-
+    let vacuum = conn.execute("VACUUM INTO ?1", [&staged.to_string_lossy().to_string()]);
     if let Err(e) = vacuum {
         log::error!("database backup failed: {e}");
-        let _ = std::fs::remove_file(&tmp);
+        discard(&staged);
         return Err(AppError::validation(BACKUP_FAILED));
     }
 
-    std::fs::rename(&tmp, dest_path).map_err(|e| {
-        log::error!("could not move the backup into place: {e}");
-        let _ = std::fs::remove_file(&tmp);
-        AppError::validation(BACKUP_FAILED)
-    })?;
+    // Rename is atomic and leaves any previous backup intact until the moment it
+    // is replaced — but it only works within one filesystem, and a backup
+    // destination is routinely a USB stick while app data is on the internal
+    // disk. So fall back to a copy.
+    //
+    // Be clear about what that costs: **the copy is not atomic at the
+    // destination**. A failure part-way through leaves a truncated file where a
+    // good backup used to be. That is the price of staging inside app data
+    // rather than beside `dest`, and it is the better trade — staging beside
+    // `dest` is what made this command able to touch files it does not own.
+    // Falling back on any rename error rather than matching `CrossesDevices`
+    // keeps this portable; a permission failure simply fails twice.
+    if std::fs::rename(&staged, dest_path).is_err() {
+        if let Err(e) = std::fs::copy(&staged, dest_path) {
+            log::error!("could not move the backup into place: {e}");
+            discard(&staged);
+            return Err(AppError::validation(BACKUP_FAILED));
+        }
+        log::info!("backup copied across filesystems rather than renamed");
+        discard(&staged);
+    }
 
     log::info!("database backup written");
     Ok(())
+}
+
+/// Remove a staging file we created, logging a failure rather than swallowing
+/// it — an orphan in app data is invisible and grows with every failed backup.
+fn discard(staged: &std::path::Path) {
+    match std::fs::remove_file(staged) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("could not remove the backup staging file: {e}"),
+    }
 }
 
 // ===========================================================================
@@ -4440,21 +4487,23 @@ mod tests {
 
     // --- backup ------------------------------------------------------------
 
+    /// A staging directory of our own, standing in for app data.
+    fn staging_dir(tag: &str) -> PathBuf {
+        let d = temp_db_path(tag).with_extension("staging");
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
     /// The backup must be a real, readable snapshot — and must never destroy
     /// what is already at the destination.
     #[test]
-    fn backup_writes_a_readable_snapshot_without_clobbering_other_files() {
+    fn backup_writes_a_readable_snapshot() {
         let f = Fixture::new("backup");
         seeded_purchase(&f);
 
         let dest = temp_db_path("backup_out");
-        {
-            let conn = f.db.lock();
-            let tmp = dest.with_extension("db.part");
-            conn.execute("VACUUM INTO ?1", [&tmp.to_string_lossy().to_string()])
-                .unwrap();
-            std::fs::rename(&tmp, &dest).unwrap();
-        }
+        let staging = staging_dir("backup_stage");
+        backup_database_impl(&f.db.lock(), &dest, &staging).unwrap();
 
         // The snapshot opens and carries the data.
         let restored = Connection::open(&dest).unwrap();
@@ -4468,20 +4517,105 @@ mod tests {
         assert_eq!(installments, 4);
         drop(restored);
 
-        // A non-SQLite file at the destination must be left untouched — this is
-        // what stops the command being an arbitrary-file-destruction primitive
-        // when the renderer chooses the path.
-        let mut header = [0u8; 16];
-        {
-            use std::io::Read;
-            std::fs::File::open(&dest)
-                .unwrap()
-                .read_exact(&mut header)
-                .unwrap();
-        }
-        assert_eq!(&header, b"SQLite format 3\0");
+        // Staging is left clean: an orphan there is invisible and would grow
+        // with every backup.
+        assert_eq!(
+            std::fs::read_dir(&staging).unwrap().count(),
+            0,
+            "staging directory must be empty after a successful backup"
+        );
 
         let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// The destination guards: it has to be named like a database, and anything
+    /// already there has to *be* one. This is what stops a renderer-chosen path
+    /// turning the command into an arbitrary-file-destruction primitive.
+    #[test]
+    fn backup_refuses_to_clobber_a_file_that_is_not_a_database() {
+        let f = Fixture::new("backup_guard");
+        seeded_purchase(&f);
+        let staging = staging_dir("backup_guard_stage");
+
+        // Wrong extension.
+        let not_db = temp_db_path("backup_guard_out").with_extension("txt");
+        let err = backup_database_impl(&f.db.lock(), &not_db, &staging).unwrap_err();
+        assert_eq!(code_of(err), "BACKUP_FAILED");
+        assert!(
+            !not_db.exists(),
+            "nothing may be created at a rejected path"
+        );
+
+        // Right extension, but the file there is not a database.
+        let occupied = temp_db_path("backup_guard_occupied");
+        std::fs::write(&occupied, b"my dissertation, not a database").unwrap();
+        let err = backup_database_impl(&f.db.lock(), &occupied, &staging).unwrap_err();
+        assert_eq!(code_of(err), "BACKUP_FAILED");
+        assert_eq!(
+            std::fs::read(&occupied).unwrap(),
+            b"my dissertation, not a database",
+            "the existing file must be byte-identical"
+        );
+
+        let _ = std::fs::remove_file(&occupied);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// The defect this rewrite closes: the staging file used to be
+    /// `dest.with_extension("db.part")` and was `remove_file`d unconditionally,
+    /// so a backup to `notes.db` deleted whatever sat at `notes.db.part`. That
+    /// path is chosen by the caller and guarded by nothing.
+    #[test]
+    fn backup_never_touches_a_sibling_of_the_destination() {
+        let f = Fixture::new("backup_sibling");
+        seeded_purchase(&f);
+        let staging = staging_dir("backup_sibling_stage");
+
+        let dest = temp_db_path("backup_sibling_out");
+        let sibling = dest.with_extension("db.part");
+        std::fs::write(&sibling, b"someone else's file").unwrap();
+
+        backup_database_impl(&f.db.lock(), &dest, &staging).unwrap();
+
+        assert_eq!(
+            std::fs::read(&sibling).unwrap(),
+            b"someone else's file",
+            "a file merely named like the old staging path must survive"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&sibling);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// Staging is per-run, so two backups into one directory cannot collide —
+    /// the old derived name could, and `with_extension` also mangled any
+    /// destination whose stem contained a dot.
+    #[test]
+    fn backup_overwrites_an_earlier_snapshot_at_the_same_path() {
+        let f = Fixture::new("backup_twice");
+        seeded_purchase(&f);
+        let staging = staging_dir("backup_twice_stage");
+
+        // A dotted stem: `with_extension` used to turn this into
+        // `payment-schedule-2026.08.db.part`.
+        let dest =
+            temp_db_path("backup_twice_out").with_file_name("payment-schedule-2026.08.04.db");
+
+        backup_database_impl(&f.db.lock(), &dest, &staging).unwrap();
+        backup_database_impl(&f.db.lock(), &dest, &staging).unwrap();
+
+        let restored = Connection::open(&dest).unwrap();
+        let purchases: i64 = restored
+            .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(purchases, 1);
+        drop(restored);
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
     }
 
     // --- dashboard ---------------------------------------------------------
