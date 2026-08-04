@@ -18,6 +18,25 @@ beforeEach(async () => {
   ({ api } = await import("@/api"));
 });
 
+describe("the payment ledger bounds what it will return", () => {
+  it("clamps a hostile limit instead of returning the whole table", async () => {
+    const all = await api.listAllPayments();
+    expect(all.length).toBeGreaterThan(1);
+
+    // SQLite reads a negative LIMIT as *no* limit, so this used to return
+    // everything. The mock had the opposite bug — `.slice(0, -1)` quietly drops
+    // the last row — so mirroring the clamp is what keeps the two agreeing.
+    for (const hostile of [-1, -999, 0]) {
+      expect(await api.listAllPayments(hostile)).toHaveLength(1);
+    }
+
+    // An ordinary request is untouched, and the ceiling is generous enough that
+    // the seeded ledger fits under it.
+    expect(await api.listAllPayments(2)).toHaveLength(2);
+    expect(await api.listAllPayments(1_000_000)).toHaveLength(all.length);
+  });
+});
+
 describe("the dashboard aggregates reconcile with the individual read models", () => {
   it("agrees with impayés, clients, purchases, and payments on the seeded data", async () => {
     const [dash, impayes, clients, purchases, payments] = await Promise.all([

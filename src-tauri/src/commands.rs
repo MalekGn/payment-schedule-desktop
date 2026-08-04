@@ -20,7 +20,8 @@ use tauri::State;
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
     Db, DbResult, CURRENCY_CODES, DATE_FORMATS, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE,
-    INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX, MONEY_RANGE, SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
+    INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX, MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX,
+    UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
@@ -1494,7 +1495,20 @@ pub async fn list_all_payments(
     limit: Option<i64>,
 ) -> DbResult<Vec<Payment>> {
     require_license(&lic)?;
-    let conn = db.lock();
+    list_all_payments_impl(&db.lock(), limit)
+}
+
+pub(crate) fn list_all_payments_impl(
+    conn: &Connection,
+    limit: Option<i64>,
+) -> DbResult<Vec<Payment>> {
+    // Clamped, not rejected — the same treatment `upcoming_days` and
+    // `alert_soon_days` get, since this is a display horizon rather than a
+    // domain value and no user can ask for a bad one through the UI. See
+    // [`PAYMENT_LIMIT_RANGE`] for why the *lower* bound is the one that matters.
+    let limit = limit
+        .unwrap_or(500)
+        .clamp(*PAYMENT_LIMIT_RANGE.start(), *PAYMENT_LIMIT_RANGE.end());
     let mut stmt = conn.prepare(
         "SELECT pay.id, pay.installment_id, pay.amount, pay.payment_date,
                     pay.note, pay.created_at,
@@ -1507,7 +1521,7 @@ pub async fn list_all_payments(
              ORDER BY pay.payment_date DESC, pay.id DESC
              LIMIT ?1",
     )?;
-    let rows = stmt.query_map([limit.unwrap_or(500)], map_payment)?;
+    let rows = stmt.query_map([limit], map_payment)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
 }
 
@@ -2983,6 +2997,56 @@ mod tests {
     /// This used to select `pay.*`. The day a migration adds a `reference`,
     /// `purchase_id` or `idx` column to `payment`, the star would start
     /// shadowing the purchase's value — no compile error, no runtime error,
+    /// SQLite reads a negative `LIMIT` as *no* limit, so binding the caller's
+    /// value straight in made `listAllPayments(-1)` serialize the entire payment
+    /// ledger — a four-table join — across IPC.
+    ///
+    /// The ledger here is deliberately larger than the clamp floor: with fewer
+    /// rows than the limit every case returns everything and the test proves
+    /// nothing about clamping at all.
+    #[test]
+    fn the_payment_limit_is_clamped_rather_than_trusted() {
+        let f = Fixture::new("payment_limit");
+        let detail = seeded_purchase(&f);
+
+        // Twelve partial payments against the first tranche, so "clamped to 1"
+        // and "unbounded" cannot look alike.
+        for i in 0..12 {
+            record_payment_impl(
+                &mut f.db.lock(),
+                PaymentInput {
+                    installment_id: detail.installments[0].id,
+                    amount: 1,
+                    payment_date: format!("2024-02-{:02}", i + 1),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+        let total = f.count("SELECT COUNT(*) FROM payment");
+        assert_eq!(total, 12, "the fixture must have more rows than the floor");
+
+        // Drives the shipped query, not a re-implementation of the clamp — the
+        // point is to prove `list_all_payments` behaves, not that `clamp` does.
+        let listed = |limit: Option<i64>| -> usize {
+            list_all_payments_impl(&f.db.lock(), limit).unwrap().len()
+        };
+
+        // The defect: without the clamp each of these returns all 12.
+        for hostile in [-1, -999, 0, i64::MIN] {
+            assert_eq!(
+                listed(Some(hostile)),
+                1,
+                "a limit of {hostile} must clamp to the floor, not fall through to every row"
+            );
+        }
+
+        // The ceiling holds, and an ordinary request is untouched.
+        assert_eq!(listed(Some(i64::MAX)), 12, "capped at 5000, so all 12 fit");
+        assert_eq!(listed(Some(5)), 5);
+        assert_eq!(listed(None), 12, "the 500 default still returns everything");
+    }
+
     /// just the wrong reference on the payments screen. The migration ladder
     /// makes that a plausible future change rather than a hypothetical one.
     #[test]

@@ -289,6 +289,15 @@ pub const INSTALLMENT_COUNT_RANGE: std::ops::RangeInclusive<i64> = 1..=120;
 /// Inclusive bounds on the dashboard's "due soon" horizon, in days.
 pub const UPCOMING_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
 
+/// Inclusive bounds on how many rows the payment ledger will return at once.
+///
+/// The lower bound is the load-bearing half: **SQLite treats a negative `LIMIT`
+/// as no limit at all**, so binding a caller's value straight in made
+/// `listAllPayments(-1)` return every payment ever recorded — a four-table join
+/// serialized whole across IPC. The upper bound is ordinary good manners; the UI
+/// asks for 500.
+pub const PAYMENT_LIMIT_RANGE: std::ops::RangeInclusive<i64> = 1..=5000;
+
 /// Inclusive bounds on any money figure arriving from the renderer: a purchase
 /// total, or one installment's share of it. Whole currency units, so a billion
 /// is far past anything a shop writes and still leaves enormous headroom.

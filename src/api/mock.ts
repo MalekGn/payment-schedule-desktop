@@ -59,6 +59,8 @@ const MONEY_MAX = 1_000_000_000;
 // give French and Arabic users a different limit from an ASCII one.
 const SHORT_TEXT_MAX = 120;
 const LONG_TEXT_MAX = 500;
+const PAYMENT_LIMIT_MIN = 1;
+const PAYMENT_LIMIT_MAX = 5000;
 const LANGUAGES = ["fr", "en", "ar"];
 const CURRENCY_CODES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
 const DATE_FORMAT_VALUES = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
@@ -948,10 +950,15 @@ class MockDb {
   }
 
   listAllPayments(limit = 500): Payment[] {
+    // Mirrors `PAYMENT_LIMIT_RANGE` in db.rs. Worth mirroring even though the
+    // failure modes differ: a negative LIMIT means *no* limit in SQLite, while
+    // `.slice(0, -1)` here would quietly drop the last row instead. Left alone,
+    // the mock would disagree with the backend in both directions at once.
+    const clamped = Math.min(PAYMENT_LIMIT_MAX, Math.max(PAYMENT_LIMIT_MIN, Math.trunc(limit)));
     return this.payments
       .slice()
       .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id)
-      .slice(0, limit)
+      .slice(0, clamped)
       .map((p) => this.mapPayment(p));
   }
 
