@@ -5,9 +5,10 @@
 **Scope:** architecture, security, dependencies, data layer, frontend, build config, hygiene
 **Nature:** read-only review. **No code was changed.** The only file written is this report.
 
-> **Update:** findings **H2**, **M5**, **H3** and **M1** were closed after this
-> report was written — commits `ce038d1`, `9fb54f4`, `06b9165` and the
-> schedule-bounds commit that follows them.
+> **Update:** every High and Medium finding below has been closed since this
+> report was written — H2, H3, M1, M2, M3, M4, M5 and M6, across commits
+> `ce038d1` … `18f2889`. Closed rows are struck through and annotated inline;
+> the Low and Info findings stand as audited.
 > Their rows below are annotated inline; everything else stands as audited.
 >
 > This report **replaces** the 2026-07-26 audit (commit `641c7ff`, which audited
@@ -111,18 +112,18 @@ Ordered most-important first.
    `amount` have no upper bound. A crafted amount set can wrap `i64` to equal
    `total_price` and defeat the `SUM_MISMATCH` check outright.
 5. **`backup_database` deletes an arbitrary `*.db.part` file with no content
-   check.** The careful "must already be a SQLite file" guard protects
+   check.** _(Closed.)_ The careful "must already be a SQLite file" guard protects
    `dest_path` but not the sibling temp path derived from it.
-6. **`tests/**` is never typechecked.** `tsconfig.json` includes only `src/**`,
+6. **`tests/**` is never typechecked.** _(Closed.)_ `tsconfig.json` includes only `src/**`,
    so `vue-tsc --noEmit` checks 31 files and no test file. The 99-case
    TypeScript integration suite is linted but type-checked by nothing.
-7. **Integration and E2E remain outside CI** — 213 integration cases and 50 E2E
+7. **Integration and E2E remain outside CI** _(Closed.)_ — 213 integration cases and 50 E2E
    scenarios that run only when someone remembers to.
 8. **`rusqlite` is 8 minor versions behind (0.32.1 → 0.40.1)** _(closed in
    `7e592ac`: now 0.39.0, SQLite 3.46.0 → 3.51.3)_, so an older
    SQLite C library is statically compiled into every shipped binary. The one
    dependency gap with a security dimension, and unchanged since the last audit.
-9. **No length bound on any user-supplied string.** `ClientInput` and five
+9. **No length bound on any user-supplied string.** _(Closed.)_ `ClientInput` and five
    `SettingsPatch` fields are written with `.trim()` and nothing else.
 10. **Positives worth stating so they are not "fixed" away**: zero `unsafe`;
     exactly one `expect()` in the whole non-test backend, at startup; no SQL
@@ -136,29 +137,29 @@ Ordered most-important first.
 
 ## 2. Findings table
 
-| #      | Area              | Severity              | Finding                                                                                                                                                                                                         | Recommendation                                                                                              | File / Location                                                  |
-| ------ | ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| **H1** | Dependencies / CI | **High**              | `npm audit --audit-level=high` exits 1: `brace-expansion` 5.0.8 DoS (GHSA-rgw5-rvv9-x895) via `eslint@10.8.0 → minimatch@10.2.5`                                                                                | `npm audit fix` — resolves in-range, no major bump                                                          | `.github/workflows/security.yml:52-53`                           |
-| **H2** | CI / Testing      | ~~High~~ **CLOSED**   | ~~No workflow runs `cargo test`. 126 Rust tests never gate a release~~ — fixed in `9f9ad6c`: a `rust-test` job runs `cargo test --locked` and `release` depends on it                                           | Add a `cargo test` job to `build.yml`; add it to `release.needs`                                            | `.github/workflows/build.yml:26-52,54-79,133`                    |
-| **H3** | Data integrity    | ~~High~~ **CLOSED**   | ~~`installments` array length is unbounded and never compared to `installment_count`~~ — fixed: `resolve_schedule` refuses with `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}`                                  | Done                                                                                                        | `commands.rs:605-607`, `632-644`, `686-702`; `db.rs:283-287`     |
-| **M1** | Data integrity    | ~~Medium~~ **CLOSED** | ~~`total_price` and `InstallmentInput::amount` have no upper bound~~ — fixed: both bounded by `MONEY_RANGE` (`0..=1e9`) before the sum is taken, which makes the wrap unreachable                               | Done; `overflow-checks` deliberately left off                                                               | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
-| **M2** | Tauri security    | **Medium**            | `backup_database` unconditionally `remove_file`s `dest.with_extension("db.part")` with no content check; TOCTOU between `exists()` and `rename`                                                                 | Stage the temp file in app-data and move it, or apply the same SQLite-magic check to `tmp`                  | `commands.rs:2104-2121`, `2129`, `2133-2135`                     |
-| **M3** | Build config      | **Medium**            | `tests/**` is in no TypeScript project — `vue-tsc --noEmit` covers 31 files, none of them tests. `vitest.integration.config.ts` also uncovered                                                                  | Add a `tsconfig.test.json` (or extend `include`) and typecheck it in `npm run build`                        | `tsconfig.json:25-27`; `tsconfig.node.json:11`                   |
-| **M4** | CI / Testing      | **Medium**            | Integration (213 cases) and E2E (50 scenarios) are wired to npm scripts but to no workflow                                                                                                                      | Add a CI job for `test:integration`; run `test:e2e` at least nightly                                        | `.github/workflows/build.yml`; `package.json:17-18`              |
-| **M5** | Dependencies      | ~~Medium~~ **CLOSED** | ~~`rusqlite` 0.32.1 → `libsqlite3-sys` 0.30.1 bundles an older SQLite~~ — fixed in `7e592ac`: 0.39.0, SQLite **3.46.0 → 3.51.3**. Held below 0.40 because `libsqlite3-sys` 0.38 needs Rust 1.95 (`cfg_select!`) | Plan the bump; breaking API change, so schedule it rather than batching with a feature                      | `Cargo.toml:35`; `Cargo.lock`                                    |
-| **M6** | Input validation  | **Medium**            | No length or format bound on any free-text field: `ClientInput.*`, `SettingsPatch.{language,currency_code,date_format,shop_name,shop_info}`                                                                     | Add length caps; allow-list `language`, `currency_code`, `date_format`                                      | `commands.rs:380-385`, `402-409`, `1908-1924`; `models.rs:46-52` |
-| **L1** | Input validation  | Low                   | `list_all_payments` binds `limit` straight into `LIMIT ?1`; SQLite reads a negative limit as unlimited                                                                                                          | Clamp to e.g. `1..=5000`                                                                                    | `commands.rs:1414`, `1430`                                       |
-| **L2** | Licensing         | Low                   | A release binary embedding the development public key only warns; the matching secret is published in `docs/license-format.md`                                                                                  | Make `verifying_key()` return `None` for the dev key when `!cfg!(debug_assertions)`                         | `license.rs:635-650`                                             |
-| **L3** | Tooling           | Low                   | All 14 `security/*` ESLint rules are `warn` and `npm run lint` has no `--max-warnings 0` — findings cannot fail CI or the pre-commit hook                                                                       | Promote the retained high-signal rules to `error`, or add `--max-warnings 0`                                | `eslint.config.js:33`; `package.json:20`                         |
-| **L4** | Licensing         | Low                   | Licence state is evaluated once at startup and cached for the process lifetime; expiry mid-session takes effect only on restart                                                                                 | Re-evaluate on a timer or on window focus, if the business rule requires it                                 | `lib.rs:81`; `license.rs:320-352`                                |
-| **L5** | Rust robustness   | Low                   | `rebalance_amounts`/`apply_pool` validate `index` against `amounts.len()` then index `paid_amounts[index]`; a mismatched-length caller panics                                                                   | Add `debug_assert_eq!(amounts.len(), paid_amounts.len())`                                                   | `db.rs:427`, `430`, `465-481`                                    |
-| **L6** | Input validation  | Low                   | `ImpayeFilter.date_from`/`date_to` never reach `parse_date`; a malformed date yields a silently empty list instead of `INVALID_DATE`                                                                            | Run both through `parse_date`                                                                               | `commands.rs:1505-1514`                                          |
-| **L7** | Logging           | Low                   | `db.rs:272` logs a rejected, frontend-supplied date string verbatim — log noise, bounded by `{:?}` escaping. Local disk only, never IPC                                                                         | Truncate, or log only that parsing failed                                                                   | `db.rs:272`                                                      |
-| **L8** | Architecture      | Low                   | `SettingsView.vue` imports `@tauri-apps/plugin-dialog` directly — the only Tauri import outside the gateway                                                                                                     | Move the dialogs behind `src/api/`, or accept and document it; today it blocks a mechanical lint rule       | `SettingsView.vue:103`, `138`, `170`                             |
-| **L9** | Testing           | Low                   | 28/34 SFCs, 3/4 stores and 4/6 composables have no unit test — including `AppIcon.vue`, the one file with `v-html`. Locale key parity untested                                                                  | Add a locale-parity test (cheap, high value) and component tests for the two modals                         | `src/components/**`, `src/stores/**`, `src/composables/**`       |
-| **I1** | Tauri security    | Info                  | No updater is configured — no `plugin-updater`, no `updater` key. The HTTPS-endpoint and signature checks do not apply                                                                                          | None. Revisit when an updater is added                                                                      | `tauri.conf.json`; `Cargo.toml`                                  |
-| **I2** | Dependencies      | Info                  | 18 RustSec warnings (0 vulnerabilities): 10 GTK3 bindings, 5 `unic-*`, `proc-macro-error`, `glib` unsoundness, `event-listener` unsoundness                                                                     | Nothing actionable — all transitive via `tauri → tao/gtk`, no fixed versions exist. Policy already recorded | `Cargo.lock`; `deny.toml:5-16`                                   |
-| **I3** | Performance       | Info                  | N+1 query pattern survives in `list_purchases` (3 queries per row) and the dashboard; commands are `async` but do blocking DB work                                                                              | Matters only at scale; `spawn_blocking` for `VACUUM INTO` and the listings if the DB grows                  | `commands.rs:564-574`, `1646+`                                   |
+| #      | Area              | Severity              | Finding                                                                                                                                                                                                                           | Recommendation                                                                                              | File / Location                                                  |
+| ------ | ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **H1** | Dependencies / CI | **High**              | `npm audit --audit-level=high` exits 1: `brace-expansion` 5.0.8 DoS (GHSA-rgw5-rvv9-x895) via `eslint@10.8.0 → minimatch@10.2.5`                                                                                                  | `npm audit fix` — resolves in-range, no major bump                                                          | `.github/workflows/security.yml:52-53`                           |
+| **H2** | CI / Testing      | ~~High~~ **CLOSED**   | ~~No workflow runs `cargo test`. 126 Rust tests never gate a release~~ — fixed in `9f9ad6c`: a `rust-test` job runs `cargo test --locked` and `release` depends on it                                                             | Add a `cargo test` job to `build.yml`; add it to `release.needs`                                            | `.github/workflows/build.yml:26-52,54-79,133`                    |
+| **H3** | Data integrity    | ~~High~~ **CLOSED**   | ~~`installments` array length is unbounded and never compared to `installment_count`~~ — fixed: `resolve_schedule` refuses with `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}`                                                    | Done                                                                                                        | `commands.rs:605-607`, `632-644`, `686-702`; `db.rs:283-287`     |
+| **M1** | Data integrity    | ~~Medium~~ **CLOSED** | ~~`total_price` and `InstallmentInput::amount` have no upper bound~~ — fixed: both bounded by `MONEY_RANGE` (`0..=1e9`) before the sum is taken, which makes the wrap unreachable                                                 | Done; `overflow-checks` deliberately left off                                                               | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
+| **M2** | Tauri security    | ~~Medium~~ **CLOSED** | ~~`backup_database` unconditionally `remove_file`s `dest.with_extension("db.part")`~~ — fixed in `c080804`: staging moved inside app data under a per-run name, so nothing outside a directory the app owns is created or deleted | Done; copy fallback for cross-filesystem destinations is documented as non-atomic                           | `commands.rs:2104-2121`, `2129`, `2133-2135`                     |
+| **M3** | Build config      | ~~Medium~~ **CLOSED** | ~~`tests/**` is in no TypeScript project~~ — fixed in `63fa249`: `tsconfig.test.json` + a `typecheck` script wired into `npm run build`                                                                                           | Done; `tests/e2e/run.mjs` stays unchecked (plain JS) by explicit decision                                   | `tsconfig.json:25-27`; `tsconfig.node.json:11`                   |
+| **M4** | CI / Testing      | ~~Medium~~ **CLOSED** | ~~Integration and E2E are wired to npm scripts but to no workflow~~ — fixed in `18f2889`. The finding understated it: **build.yml fired only on version tags**, so no gate ran on a push at all                                   | Done; ci.yml on push/PR, build.yml calls it via `workflow_call`, E2E nightly                                | `.github/workflows/build.yml`; `package.json:17-18`              |
+| **M5** | Dependencies      | ~~Medium~~ **CLOSED** | ~~`rusqlite` 0.32.1 → `libsqlite3-sys` 0.30.1 bundles an older SQLite~~ — fixed in `7e592ac`: 0.39.0, SQLite **3.46.0 → 3.51.3**. Held below 0.40 because `libsqlite3-sys` 0.38 needs Rust 1.95 (`cfg_select!`)                   | Plan the bump; breaking API change, so schedule it rather than batching with a feature                      | `Cargo.toml:35`; `Cargo.lock`                                    |
+| **M6** | Input validation  | ~~Medium~~ **CLOSED** | ~~No length or format bound on any free-text field~~ — fixed in `ff969bf`: caps counted in `chars()`, and the three coded settings held to the frontend's own vocabularies                                                        | Done                                                                                                        | `commands.rs:380-385`, `402-409`, `1908-1924`; `models.rs:46-52` |
+| **L1** | Input validation  | Low                   | `list_all_payments` binds `limit` straight into `LIMIT ?1`; SQLite reads a negative limit as unlimited                                                                                                                            | Clamp to e.g. `1..=5000`                                                                                    | `commands.rs:1414`, `1430`                                       |
+| **L2** | Licensing         | Low                   | A release binary embedding the development public key only warns; the matching secret is published in `docs/license-format.md`                                                                                                    | Make `verifying_key()` return `None` for the dev key when `!cfg!(debug_assertions)`                         | `license.rs:635-650`                                             |
+| **L3** | Tooling           | Low                   | All 14 `security/*` ESLint rules are `warn` and `npm run lint` has no `--max-warnings 0` — findings cannot fail CI or the pre-commit hook                                                                                         | Promote the retained high-signal rules to `error`, or add `--max-warnings 0`                                | `eslint.config.js:33`; `package.json:20`                         |
+| **L4** | Licensing         | Low                   | Licence state is evaluated once at startup and cached for the process lifetime; expiry mid-session takes effect only on restart                                                                                                   | Re-evaluate on a timer or on window focus, if the business rule requires it                                 | `lib.rs:81`; `license.rs:320-352`                                |
+| **L5** | Rust robustness   | Low                   | `rebalance_amounts`/`apply_pool` validate `index` against `amounts.len()` then index `paid_amounts[index]`; a mismatched-length caller panics                                                                                     | Add `debug_assert_eq!(amounts.len(), paid_amounts.len())`                                                   | `db.rs:427`, `430`, `465-481`                                    |
+| **L6** | Input validation  | Low                   | `ImpayeFilter.date_from`/`date_to` never reach `parse_date`; a malformed date yields a silently empty list instead of `INVALID_DATE`                                                                                              | Run both through `parse_date`                                                                               | `commands.rs:1505-1514`                                          |
+| **L7** | Logging           | Low                   | `db.rs:272` logs a rejected, frontend-supplied date string verbatim — log noise, bounded by `{:?}` escaping. Local disk only, never IPC                                                                                           | Truncate, or log only that parsing failed                                                                   | `db.rs:272`                                                      |
+| **L8** | Architecture      | Low                   | `SettingsView.vue` imports `@tauri-apps/plugin-dialog` directly — the only Tauri import outside the gateway                                                                                                                       | Move the dialogs behind `src/api/`, or accept and document it; today it blocks a mechanical lint rule       | `SettingsView.vue:103`, `138`, `170`                             |
+| **L9** | Testing           | Low                   | 28/34 SFCs, 3/4 stores and 4/6 composables have no unit test — including `AppIcon.vue`, the one file with `v-html`. Locale key parity untested                                                                                    | Add a locale-parity test (cheap, high value) and component tests for the two modals                         | `src/components/**`, `src/stores/**`, `src/composables/**`       |
+| **I1** | Tauri security    | Info                  | No updater is configured — no `plugin-updater`, no `updater` key. The HTTPS-endpoint and signature checks do not apply                                                                                                            | None. Revisit when an updater is added                                                                      | `tauri.conf.json`; `Cargo.toml`                                  |
+| **I2** | Dependencies      | Info                  | 18 RustSec warnings (0 vulnerabilities): 10 GTK3 bindings, 5 `unic-*`, `proc-macro-error`, `glib` unsoundness, `event-listener` unsoundness                                                                                       | Nothing actionable — all transitive via `tauri → tao/gtk`, no fixed versions exist. Policy already recorded | `Cargo.lock`; `deny.toml:5-16`                                   |
+| **I3** | Performance       | Info                  | N+1 query pattern survives in `list_purchases` (3 queries per row) and the dashboard; commands are `async` but do blocking DB work                                                                                                | Matters only at scale; `spawn_blocking` for `VACUUM INTO` and the listings if the DB grows                  | `commands.rs:564-574`, `1646+`                                   |
 
 ---
 
@@ -762,12 +763,12 @@ intentionally committed (correct for a binary) with a comment explaining why.
 
 **Tests.**
 
-| Suite       | Files | Cases | Runs in CI?        |
-| ----------- | ----- | ----- | ------------------ |
-| Rust unit   | —     | 133   | ✅ since `9f9ad6c` |
-| Vitest unit | 10    | 147   | ✅ `npm test`      |
-| Integration | 8     | 213   | ❌ no (**M4**)     |
-| E2E         | 1     | 50    | ❌ no (**M4**)     |
+| Suite       | Files | Cases | Runs in CI?                 |
+| ----------- | ----- | ----- | --------------------------- |
+| Rust unit   | —     | 143   | ✅ since `9f9ad6c`          |
+| Vitest unit | 10    | 147   | ✅ `npm test`               |
+| Integration | 8     | 222   | ✅ since `18f2889`          |
+| E2E         | 1     | 50    | ✅ nightly, since `18f2889` |
 
 The integration figure is the **runtime** case count, not a count of `it(`
 blocks: `error-contract.integration.test.ts` drives three `it.each` tables — the
@@ -908,15 +909,14 @@ rustc   MSRV declared 1.88, proven by a dedicated CI job
 **Small, contained fixes — an hour or two each**
 
 7. ~~**Assert `list.len() == installment_count` in `resolve_schedule`** (H3).~~ **Done.**
-8. **Stage the backup temp file in app-data, or magic-check it before removing**
-   (M2).
+8. ~~**Stage the backup temp file in app-data** (M2).~~ **Done — `c080804`.**
 9. ~~**Bound `total_price` and per-line `amount`** (M1).~~ **Done** — via `MONEY_RANGE`.
    `overflow-checks` deliberately left off: with `panic = "abort"` it trades a
    correctness bug for an availability one, and the bounds make the wrap
    unreachable anyway.
-10. **Add length caps and allow-lists to the free-text inputs** (M6).
-11. **Put `tests/**` in a typechecked TS project** (M3) and add
-    `test:integration` to CI (M4).
+10. ~~**Add length caps and allow-lists to the free-text inputs** (M6).~~ **Done — `ff969bf`.**
+11. ~~**Put `tests/**` in a typechecked TS project** (M3) and add
+    `test:integration` to CI (M4).~~ **Done — `63fa249`, `18f2889`.**
 
 **Larger — schedule deliberately**
 
