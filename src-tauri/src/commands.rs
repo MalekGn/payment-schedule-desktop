@@ -19,18 +19,18 @@ use tauri::State;
 
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
-    Db, DbResult, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, MONEY_RANGE,
-    UPCOMING_DAYS_RANGE,
+    Db, DbResult, CURRENCY_CODES, DATE_FORMATS, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE,
+    INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX, MONEY_RANGE, SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
     CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER,
     FUTURE_PAID_DATE, INSTALLMENT_COUNT_MISMATCH, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
     INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE,
-    INVALID_LOGO_TYPE, INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE,
-    OVERPAYMENT, PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
-    PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, SCHEDULE_VIA_PURCHASE,
-    SUM_MISMATCH,
+    INVALID_LOGO_TYPE, INVALID_SETTING_VALUE, INVALID_TOTAL_PRICE, LICENSE_REQUIRED,
+    LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT, PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED,
+    PREVIOUS_UNPAID, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED,
+    PURCHASE_NOT_FOUND, SCHEDULE_VIA_PURCHASE, SUM_MISMATCH, TEXT_REQUIRED, TEXT_TOO_LONG,
 };
 use crate::license::{self, LicenseInfo, LicenseState, LicenseStatus};
 use crate::models::*;
@@ -69,6 +69,51 @@ fn require_license(lic: &LicenseState) -> DbResult<()> {
 // ===========================================================================
 // Row mappers & shared helpers
 // ===========================================================================
+
+/// Reject a free-text field that is longer than `max` **characters**.
+///
+/// Byte length would be the wrong unit here: the same 40-character address
+/// costs 40 bytes in ASCII, more in French and more again in Arabic, so a byte
+/// cap silently gives different users different limits.
+fn bounded(value: &str, max: usize) -> DbResult<()> {
+    if value.chars().count() > max {
+        return Err(AppError::conflict(TEXT_TOO_LONG, max));
+    }
+    Ok(())
+}
+
+/// Reject a field that must carry something once trimmed.
+fn required(value: &str) -> DbResult<()> {
+    if value.is_empty() {
+        return Err(AppError::validation(TEXT_REQUIRED));
+    }
+    Ok(())
+}
+
+/// Validate a client as it arrives off the IPC boundary.
+///
+/// Everything here was previously `.trim()` and nothing else, so the renderer
+/// could store a nameless client, or a megabyte of text in a field that is then
+/// rendered into every list, export and dashboard card. The "names are required"
+/// rule existed only in `ClientForm.vue`, which is a statement of intent rather
+/// than a control — the WebView belongs to the user.
+///
+/// Takes the already-trimmed values so the caller cannot validate one string and
+/// store a different one.
+fn validate_client_input(input: &ClientInput) -> DbResult<()> {
+    let first = input.first_name.trim();
+    let last = input.last_name.trim();
+    required(first)?;
+    required(last)?;
+    bounded(first, SHORT_TEXT_MAX)?;
+    bounded(last, SHORT_TEXT_MAX)?;
+    bounded(input.phone.trim(), SHORT_TEXT_MAX)?;
+    bounded(input.address.trim(), LONG_TEXT_MAX)?;
+    if let Some(email) = &input.email {
+        bounded(email.trim(), SHORT_TEXT_MAX)?;
+    }
+    Ok(())
+}
 
 fn map_client(row: &rusqlite::Row) -> rusqlite::Result<Client> {
     Ok(Client {
@@ -372,6 +417,7 @@ pub async fn create_client(
     input: ClientInput,
 ) -> DbResult<Client> {
     require_license(&lic)?;
+    validate_client_input(&input)?;
     let conn = db.lock();
     conn.execute(
         "INSERT INTO client (first_name, last_name, phone, address, email)
@@ -395,6 +441,7 @@ pub async fn update_client(
     input: ClientInput,
 ) -> DbResult<Client> {
     require_license(&lic)?;
+    validate_client_input(&input)?;
     let conn = db.lock();
     conn.execute(
         "UPDATE client SET first_name = ?1, last_name = ?2, phone = ?3,
@@ -609,6 +656,8 @@ fn validate_purchase_input(input: &PurchaseInput) -> DbResult<chrono::NaiveDate>
     if input.total_price <= 0 || input.total_price > *MONEY_RANGE.end() {
         return Err(AppError::validation(INVALID_TOTAL_PRICE));
     }
+    // The label is free text and lands in every list, export and dashboard card.
+    bounded(input.product_label.trim(), SHORT_TEXT_MAX)?;
     if !INSTALLMENT_COUNT_RANGE.contains(&input.installment_count) {
         return Err(AppError::validation(INVALID_INSTALLMENT_COUNT));
     }
@@ -1931,26 +1980,67 @@ pub(crate) fn update_settings_impl(
     conn: &mut Connection,
     patch: SettingsPatch,
 ) -> DbResult<Settings> {
+    // Resolve and validate every field before the transaction opens, so a
+    // rejected patch never writes and the guards cannot be read as applying to
+    // one value while a different one is stored.
+    //
+    // The three coded fields have tiny closed vocabularies on the frontend —
+    // all three are `<select>` elements — and were accepted as arbitrary strings
+    // here. A junk `language` leaves the UI silently falling back to French; a
+    // junk `date_format` is substituted into every date the app renders. Neither
+    // can execute anything (`formatDatePattern` is a plain `String.replace` and
+    // Vue escapes its interpolations), so this is data hygiene rather than an
+    // injection fix — but a closed set on the frontend deserves a closed set
+    // here, since the renderer is not what enforces it.
+    let language = patch.language.map(|v| v.trim().to_string());
+    if let Some(v) = &language {
+        if !LANGUAGES.contains(&v.as_str()) {
+            return Err(AppError::validation(INVALID_SETTING_VALUE));
+        }
+    }
+    let currency_code = patch.currency_code.map(|v| v.trim().to_string());
+    if let Some(v) = &currency_code {
+        if !CURRENCY_CODES.contains(&v.as_str()) {
+            return Err(AppError::validation(INVALID_SETTING_VALUE));
+        }
+    }
+    let date_format = patch.date_format.map(|v| v.trim().to_string());
+    if let Some(v) = &date_format {
+        if !DATE_FORMATS.contains(&v.as_str()) {
+            return Err(AppError::validation(INVALID_SETTING_VALUE));
+        }
+    }
+    // Free text, so bounded rather than enumerated. Neither was even trimmed
+    // before.
+    let shop_name = patch.shop_name.map(|v| v.trim().to_string());
+    if let Some(v) = &shop_name {
+        bounded(v, SHORT_TEXT_MAX)?;
+    }
+    let shop_info = patch.shop_info.map(|v| v.trim().to_string());
+    if let Some(v) = &shop_info {
+        bounded(v, LONG_TEXT_MAX)?;
+    }
+
     // One transaction for the whole patch. Applied one upsert at a time, a
     // mid-way failure left settings half-written — worst case `language`
     // committed but `language_is_default = "0"` not, which permanently
     // re-enables OS-locale detection over the user's explicit choice.
     let tx = conn.transaction()?;
-    if let Some(v) = patch.language {
+    if let Some(v) = language {
         put_setting(&tx, "language", &v)?;
         // A manual language choice ends OS-locale auto-detection.
         put_setting(&tx, "language_is_default", "0")?;
     }
-    if let Some(v) = patch.currency_code {
+    if let Some(v) = currency_code {
         put_setting(&tx, "currency_code", &v)?;
     }
-    if let Some(v) = patch.date_format {
+    if let Some(v) = date_format {
         put_setting(&tx, "date_format", &v)?;
     }
-    if let Some(v) = patch.shop_name {
+    if let Some(v) = shop_name {
         put_setting(&tx, "shop_name", &v)?;
     }
-    if let Some(v) = patch.shop_info {
+    if let Some(v) = shop_info {
         put_setting(&tx, "shop_info", &v)?;
     }
     if let Some(v) = patch.alert_soon_days {
@@ -4437,6 +4527,226 @@ mod tests {
             "the label is written first and must roll back with the rest"
         );
         assert_eq!(f.money_snapshot(), before);
+    }
+
+    // --- free-text bounds ----------------------------------------------------
+    //
+    // Every one of these fields was `.trim()` and nothing else, so the renderer
+    // could store a nameless client or a megabyte of text that is then read back
+    // into every list, export and dashboard card.
+
+    fn client_input() -> ClientInput {
+        ClientInput {
+            first_name: "Mohamed".into(),
+            last_name: "Trabelsi".into(),
+            phone: "+216 20 123 456".into(),
+            address: "Cité El Ghazala, Ariana".into(),
+            email: Some("mohamed.trabelsi@email.tn".into()),
+        }
+    }
+
+    #[test]
+    fn a_client_must_carry_a_name() {
+        for blank in ["", "   "] {
+            let mut input = client_input();
+            input.first_name = blank.into();
+            assert_eq!(
+                code_of(validate_client_input(&input).unwrap_err()),
+                "TEXT_REQUIRED"
+            );
+
+            let mut input = client_input();
+            input.last_name = blank.into();
+            assert_eq!(
+                code_of(validate_client_input(&input).unwrap_err()),
+                "TEXT_REQUIRED"
+            );
+        }
+    }
+
+    #[test]
+    fn client_text_fields_are_bounded() {
+        let long = "x".repeat(SHORT_TEXT_MAX + 1);
+        for mutate in [
+            (|i: &mut ClientInput, v: String| i.first_name = v) as fn(&mut ClientInput, String),
+            |i: &mut ClientInput, v: String| i.last_name = v,
+            |i: &mut ClientInput, v: String| i.phone = v,
+            |i: &mut ClientInput, v: String| i.email = Some(v),
+        ] {
+            let mut input = client_input();
+            mutate(&mut input, long.clone());
+            assert_eq!(
+                code_of(validate_client_input(&input).unwrap_err()),
+                format!("TEXT_TOO_LONG:{SHORT_TEXT_MAX}")
+            );
+        }
+
+        // The address is prose and gets the longer allowance.
+        let mut input = client_input();
+        input.address = "x".repeat(LONG_TEXT_MAX);
+        validate_client_input(&input).unwrap();
+        input.address = "x".repeat(LONG_TEXT_MAX + 1);
+        assert_eq!(
+            code_of(validate_client_input(&input).unwrap_err()),
+            format!("TEXT_TOO_LONG:{LONG_TEXT_MAX}")
+        );
+    }
+
+    /// Counted in characters, not bytes — otherwise the same field would hold
+    /// fewer letters in Arabic or French than in English.
+    #[test]
+    fn the_text_cap_counts_characters_not_bytes() {
+        let mut input = client_input();
+        // Each of these is multi-byte, so a byte cap would reject it well before
+        // the character cap does.
+        input.first_name = "é".repeat(SHORT_TEXT_MAX);
+        assert!(
+            input.first_name.len() > SHORT_TEXT_MAX,
+            "multi-byte on purpose"
+        );
+        validate_client_input(&input).unwrap();
+
+        input.first_name = "م".repeat(SHORT_TEXT_MAX + 1);
+        assert_eq!(
+            code_of(validate_client_input(&input).unwrap_err()),
+            format!("TEXT_TOO_LONG:{SHORT_TEXT_MAX}")
+        );
+    }
+
+    /// The seeded demo data has to stay inside the caps, or a fresh install
+    /// would ship values the app now refuses to edit.
+    #[test]
+    fn the_seeded_clients_are_within_the_caps() {
+        let f = Fixture::new("seed_bounds");
+        crate::seed::seed(&f.db.lock()).unwrap();
+        let conn = f.db.lock();
+        let mut stmt = conn
+            .prepare("SELECT first_name, last_name, phone, address, COALESCE(email,'') FROM client")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .unwrap();
+        let mut seen = 0;
+        for row in rows {
+            let (first, last, phone, address, email) = row.unwrap();
+            for short in [&first, &last, &phone, &email] {
+                assert!(short.chars().count() <= SHORT_TEXT_MAX, "{short:?}");
+            }
+            assert!(address.chars().count() <= LONG_TEXT_MAX, "{address:?}");
+            seen += 1;
+        }
+        assert!(seen > 0, "the seed must have written clients");
+    }
+
+    #[test]
+    fn a_product_label_is_bounded() {
+        let f = Fixture::new("label_bounds");
+        let mut input = f.purchase_input();
+        input.product_label = "x".repeat(SHORT_TEXT_MAX + 1);
+        let err = create_purchase_impl(&mut f.db.lock(), input).unwrap_err();
+        assert_eq!(code_of(err), format!("TEXT_TOO_LONG:{SHORT_TEXT_MAX}"));
+    }
+
+    /// The three coded settings are `<select>` elements on the frontend, i.e.
+    /// closed sets — but the renderer is not what enforces that.
+    #[test]
+    fn coded_settings_are_held_to_their_vocabulary() {
+        let f = Fixture::new("settings_vocab");
+
+        for patch in [
+            SettingsPatch {
+                language: Some("klingon".into()),
+                ..blank_patch()
+            },
+            SettingsPatch {
+                currency_code: Some("XXX".into()),
+                ..blank_patch()
+            },
+            SettingsPatch {
+                date_format: Some("yyyy/yyyy/yyyy".into()),
+                ..blank_patch()
+            },
+        ] {
+            let err = update_settings_impl(&mut f.db.lock(), patch).unwrap_err();
+            assert_eq!(code_of(err), "INVALID_SETTING_VALUE");
+        }
+
+        // Every legal value is still accepted, and surrounding space forgiven.
+        for lang in LANGUAGES {
+            update_settings_impl(
+                &mut f.db.lock(),
+                SettingsPatch {
+                    language: Some(format!("  {lang}  ")),
+                    ..blank_patch()
+                },
+            )
+            .unwrap();
+        }
+        for code in CURRENCY_CODES {
+            update_settings_impl(
+                &mut f.db.lock(),
+                SettingsPatch {
+                    currency_code: Some(code.into()),
+                    ..blank_patch()
+                },
+            )
+            .unwrap();
+        }
+        for fmt in DATE_FORMATS {
+            update_settings_impl(
+                &mut f.db.lock(),
+                SettingsPatch {
+                    date_format: Some(fmt.into()),
+                    ..blank_patch()
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn shop_text_is_bounded_and_a_refusal_writes_nothing() {
+        let f = Fixture::new("settings_text");
+        let before = update_settings_impl(&mut f.db.lock(), blank_patch()).unwrap();
+
+        let err = update_settings_impl(
+            &mut f.db.lock(),
+            SettingsPatch {
+                // A legal language alongside an illegal shop_info: the whole
+                // patch must be refused, not applied up to the bad field.
+                language: Some("en".into()),
+                shop_info: Some("x".repeat(LONG_TEXT_MAX + 1)),
+                ..blank_patch()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(code_of(err), format!("TEXT_TOO_LONG:{LONG_TEXT_MAX}"));
+
+        let after = update_settings_impl(&mut f.db.lock(), blank_patch()).unwrap();
+        assert_eq!(
+            after.language, before.language,
+            "nothing may have been written"
+        );
+        assert_eq!(after.shop_info, before.shop_info);
+    }
+
+    fn blank_patch() -> SettingsPatch {
+        SettingsPatch {
+            language: None,
+            currency_code: None,
+            date_format: None,
+            shop_name: None,
+            shop_info: None,
+            alert_soon_days: None,
+        }
     }
 
     // --- settings ----------------------------------------------------------

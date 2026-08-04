@@ -39,6 +39,9 @@
 //! | `INVALID_AMOUNT`              | A money figure outside the permitted range     |
 //! | `SUM_MISMATCH:{sum}:{total}`  | Manual installments don't add up               |
 //! | `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}` | Manual installment list length disagrees with `installmentCount` |
+//! | `TEXT_TOO_LONG:{max}`         | A free-text field exceeded `max` characters    |
+//! | `TEXT_REQUIRED`               | A required free-text field was empty           |
+//! | `INVALID_SETTING_VALUE`       | Language/currency/date format outside its set  |
 //! | `OVERPAYMENT:{remaining}`     | Payment exceeds what the installment still owes|
 //! | `CLIENT_HAS_PURCHASES:{n}`    | Delete of a client that has purchases; archive |
 //! | `ARCHIVE_HAS_OUTSTANDING:{r}` | Archive of a client still owing `r` (whole units)|

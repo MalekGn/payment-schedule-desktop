@@ -54,7 +54,38 @@ const INTERVAL_DAYS_MAX = 365;
 // SUM_MISMATCH equality that is supposed to prove the schedule adds up.
 const MONEY_MIN = 0;
 const MONEY_MAX = 1_000_000_000;
+// Mirrors SHORT_TEXT_MAX / LONG_TEXT_MAX and the three vocabularies in db.rs.
+// Counted in code points, matching the Rust side's `chars()` — a byte cap would
+// give French and Arabic users a different limit from an ASCII one.
+const SHORT_TEXT_MAX = 120;
+const LONG_TEXT_MAX = 500;
+const LANGUAGES = ["fr", "en", "ar"];
+const CURRENCY_CODES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
+const DATE_FORMAT_VALUES = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Throw `TEXT_TOO_LONG:{max}` when `value` exceeds `max` code points. */
+function assertBounded(value: string, max: number): void {
+  if ([...value].length > max) throw new Error(`TEXT_TOO_LONG:${max}`);
+}
+
+/** Throw `TEXT_REQUIRED` when a field that must carry something is empty. */
+function assertRequired(value: string): void {
+  if (value === "") throw new Error("TEXT_REQUIRED");
+}
+
+/** Mirrors `validate_client_input` in commands.rs, guard for guard. */
+function validateClientInput(input: ClientInput): void {
+  const first = input.firstName.trim();
+  const last = input.lastName.trim();
+  assertRequired(first);
+  assertRequired(last);
+  assertBounded(first, SHORT_TEXT_MAX);
+  assertBounded(last, SHORT_TEXT_MAX);
+  assertBounded(input.phone.trim(), SHORT_TEXT_MAX);
+  assertBounded(input.address.trim(), LONG_TEXT_MAX);
+  if (input.email != null) assertBounded(input.email.trim(), SHORT_TEXT_MAX);
+}
 
 /** Throw `INVALID_DATE` unless `value` is a real `YYYY-MM-DD` calendar date. */
 function assertIsoDate(value: string): void {
@@ -67,6 +98,7 @@ function validatePurchaseInput(input: PurchaseInput): void {
   if (input.totalPrice <= 0 || input.totalPrice > MONEY_MAX) {
     throw new Error("INVALID_TOTAL_PRICE");
   }
+  assertBounded(input.productLabel.trim(), SHORT_TEXT_MAX);
   if (input.installmentCount < 1 || input.installmentCount > INSTALLMENT_COUNT_MAX) {
     throw new Error("INVALID_INSTALLMENT_COUNT");
   }
@@ -452,6 +484,7 @@ class MockDb {
   }
 
   createClient(input: ClientInput): Client {
+    validateClientInput(input);
     const id = this.nextId("client");
     const row: ClientRow = {
       id,
@@ -468,6 +501,7 @@ class MockDb {
   }
 
   updateClient(id: number, input: ClientInput): Client {
+    validateClientInput(input);
     const row = this.clients.find((c) => c.id === id);
     if (!row) throw new Error("CLIENT_NOT_FOUND");
     Object.assign(row, {
@@ -1048,14 +1082,34 @@ class MockDb {
   }
 
   updateSettings(patch: SettingsPatch): Settings {
-    if (patch.language !== undefined) {
-      this.settings.language = patch.language;
+    // Resolve and validate everything before writing anything, as the Rust side
+    // does before opening its transaction — a rejected patch must not leave
+    // half the settings applied.
+    const language = patch.language?.trim();
+    if (language !== undefined && !LANGUAGES.includes(language)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const currencyCode = patch.currencyCode?.trim();
+    if (currencyCode !== undefined && !CURRENCY_CODES.includes(currencyCode)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const dateFormat = patch.dateFormat?.trim();
+    if (dateFormat !== undefined && !DATE_FORMAT_VALUES.includes(dateFormat)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const shopName = patch.shopName?.trim();
+    if (shopName !== undefined) assertBounded(shopName, SHORT_TEXT_MAX);
+    const shopInfo = patch.shopInfo?.trim();
+    if (shopInfo !== undefined) assertBounded(shopInfo, LONG_TEXT_MAX);
+
+    if (language !== undefined) {
+      this.settings.language = language;
       this.settings.language_is_default = "0";
     }
-    if (patch.currencyCode !== undefined) this.settings.currency_code = patch.currencyCode;
-    if (patch.dateFormat !== undefined) this.settings.date_format = patch.dateFormat;
-    if (patch.shopName !== undefined) this.settings.shop_name = patch.shopName;
-    if (patch.shopInfo !== undefined) this.settings.shop_info = patch.shopInfo;
+    if (currencyCode !== undefined) this.settings.currency_code = currencyCode;
+    if (dateFormat !== undefined) this.settings.date_format = dateFormat;
+    if (shopName !== undefined) this.settings.shop_name = shopName;
+    if (shopInfo !== undefined) this.settings.shop_info = shopInfo;
     if (patch.alertSoonDays !== undefined) {
       // Mirror the backend's defensive clamp (1..90).
       this.settings.alert_soon_days = String(

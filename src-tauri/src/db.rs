@@ -305,6 +305,38 @@ pub const UPCOMING_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
 /// unreachable.
 pub const MONEY_RANGE: std::ops::RangeInclusive<i64> = 0..=1_000_000_000;
 
+/// Inclusive caps on free-text fields arriving from the renderer, **counted in
+/// `chars()` and not bytes** — `Médina`, `Réfrigérateur` and the Arabic locale
+/// would make a byte cap behave differently depending on the alphabet.
+///
+/// Nothing here is validated by SQLite: `TEXT` columns are unbounded and a
+/// `VARCHAR(n)` would be ignored. Without a cap the renderer can persist a
+/// multi-megabyte name, which is then read back into every list view, every
+/// export and every dashboard card. The real data these bound is tiny — the
+/// longest address in use is 29 characters and the longest product label 26 —
+/// so these are generous by two orders of magnitude and exist only to stop the
+/// pathological case.
+pub const SHORT_TEXT_MAX: usize = 120;
+/// As [`SHORT_TEXT_MAX`], for the two fields that are genuinely prose: a postal
+/// address and the shop's free-form contact block.
+pub const LONG_TEXT_MAX: usize = 500;
+
+/// The languages the app ships translations for. Mirrors `SUPPORTED_LOCALES` in
+/// `src/i18n/index.ts`; a value outside it leaves the UI falling back to French
+/// forever with no way to tell why.
+pub const LANGUAGES: [&str; 3] = ["fr", "en", "ar"];
+
+/// The currencies the settings page offers. Mirrors `CURRENCIES` in
+/// `src/stores/settings.ts`. An allow-list rather than an `[A-Z]{3}` shape
+/// check, because `FCFA` is four characters.
+pub const CURRENCY_CODES: [&str; 6] = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
+
+/// The date patterns the settings page offers. Mirrors `DATE_FORMATS` in
+/// `src/stores/settings.ts`. `formatDatePattern` substitutes into these for
+/// every date the app renders, so an unrecognised pattern is repeated into
+/// every row of every table.
+pub const DATE_FORMATS: [&str; 4] = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
+
 // Error codes. Kept as constants so the Rust guard and the doc table in
 // `error.rs` cannot drift apart, and so a typo is a compile error.
 pub const INVALID_DATE: &str = "INVALID_DATE";
@@ -315,6 +347,9 @@ pub const INVALID_INTERVAL_DAYS: &str = "INVALID_INTERVAL_DAYS";
 pub const INVALID_AMOUNT: &str = "INVALID_AMOUNT";
 pub const SUM_MISMATCH: &str = "SUM_MISMATCH";
 pub const INSTALLMENT_COUNT_MISMATCH: &str = "INSTALLMENT_COUNT_MISMATCH";
+pub const TEXT_TOO_LONG: &str = "TEXT_TOO_LONG";
+pub const TEXT_REQUIRED: &str = "TEXT_REQUIRED";
+pub const INVALID_SETTING_VALUE: &str = "INVALID_SETTING_VALUE";
 pub const OVERPAYMENT: &str = "OVERPAYMENT";
 pub const CLIENT_HAS_PURCHASES: &str = "CLIENT_HAS_PURCHASES";
 pub const ARCHIVE_HAS_OUTSTANDING: &str = "ARCHIVE_HAS_OUTSTANDING";
