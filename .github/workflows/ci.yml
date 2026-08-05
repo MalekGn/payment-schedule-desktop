@@ -27,16 +27,27 @@ permissions:
 # version in a trailing comment) so a moved tag can't silently swap the code we
 # run. Dependabot keeps the pins current.
 jobs:
+  # Run on both Node lines `engines.node` supports. Previously this was a single
+  # `node-version: 22`, which meant the version the app is developed on was never
+  # exercised — and, because setup-node resolves a bare major to the *latest*
+  # 22.x, it did not test the declared floor either. Six packages in the tree
+  # (jsdom among them) need 22.22.x or newer, so a green run on 22-latest proved
+  # nothing about the range being claimed.
   frontend:
-    name: Lint, typecheck & JS tests
+    name: Lint, typecheck & JS tests (Node ${{ matrix.node }})
     runs-on: ubuntu-22.04
+    strategy:
+      # One lane failing is a real result about that lane; don't hide the other.
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install JS dependencies
