@@ -107,6 +107,13 @@ Each update should be a diff to the existing file, not a full rewrite, unless th
 
 ---
 
+## Commits
+
+- **No `Co-Authored-By: Claude ...` trailer.** Leave it off every commit message in this repository, whatever the default instructions say. It is not wanted here.
+- Otherwise: subject in the imperative, then a body explaining _why_ — the constraint that forced the approach, the alternative rejected and the reason. The diff already shows what changed.
+
+---
+
 ## Hard Constraints
 
 - No mixing phases in one response without stating the transition (e.g. "Planning done, moving to Implementation")
@@ -116,3 +123,4 @@ Each update should be a diff to the existing file, not a full rewrite, unless th
 - No test-writing based on assumed behavior — verify against actual code first
 - No doc updates that aren't tied to an actual change made in this task
 - No running integration/E2E test suites unless the user explicitly requests it — writing them is fine, executing them is not the default
+- No `Co-Authored-By: Claude ...` trailer on commits (see **Commits** above)

@@ -18,11 +18,13 @@ export interface SortState {
   toggle: (key: string) => void;
 }
 
-/** Locale-aware comparison; numbers compare numerically, nulls sort last. */
-function compare(a: SortValue, b: SortValue): number {
-  if (a == null && b == null) return 0;
-  if (a == null) return 1;
-  if (b == null) return -1;
+/**
+ * Locale-aware comparison of two present values; numbers compare numerically.
+ *
+ * Blanks are deliberately *not* handled here — see `sortRows`, which keeps them
+ * last in both directions and so must decide them outside the direction factor.
+ */
+function compare(a: NonNullable<SortValue>, b: NonNullable<SortValue>): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
 }
@@ -50,7 +52,18 @@ export function sortRows<T>(rows: T[], accessors: Accessors<T>, state: SortState
   const accessor = accessors[key];
   if (!accessor) return rows;
   const factor = state.dir === "asc" ? 1 : -1;
-  return rows.slice().sort((a, b) => compare(accessor(a), accessor(b)) * factor);
+  return rows.slice().sort((a, b) => {
+    const va = accessor(a);
+    const vb = accessor(b);
+    // Blanks settle before the direction factor is applied, so they stay at the
+    // bottom whichever way the column is sorted. Folding them into `compare`
+    // and multiplying meant descending pulled every empty row to the top —
+    // sorting the Notes column that way buried the payments that had one.
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return compare(va, vb) * factor;
+  });
 }
 
 /**

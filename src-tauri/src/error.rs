@@ -36,26 +36,33 @@
 //! | `INVALID_INSTALLMENT_COUNT`   | Installment count outside 1..=120              |
 //! | `INVALID_INTERVAL_KIND`       | Interval kind not weekly/monthly/custom        |
 //! | `INVALID_INTERVAL_DAYS`       | Custom interval outside 1..=365                |
-//! | `INVALID_AMOUNT`              | Payment amount was not > 0                     |
+//! | `INVALID_AMOUNT`              | A money figure outside the permitted range     |
 //! | `SUM_MISMATCH:{sum}:{total}`  | Manual installments don't add up               |
+//! | `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}` | Manual installment list length disagrees with `installmentCount` |
+//! | `TEXT_TOO_LONG:{max}`         | A free-text field exceeded `max` characters    |
+//! | `TEXT_REQUIRED`               | A required free-text field was empty           |
+//! | `INVALID_SETTING_VALUE`       | Language/currency/date format outside its set  |
 //! | `OVERPAYMENT:{remaining}`     | Payment exceeds what the installment still owes|
 //! | `CLIENT_HAS_PURCHASES:{n}`    | Delete of a client that has purchases; archive |
 //! | `ARCHIVE_HAS_OUTSTANDING:{r}` | Archive of a client still owing `r` (whole units)|
 //! | `CLIENT_ARCHIVED`             | New purchase for an archived client            |
 //! | `CLIENT_NOT_FOUND`            | No such client                                 |
 //! | `PURCHASE_NOT_FOUND`          | No such purchase                               |
-//! | `PURCHASE_HAS_PAYMENTS:{n}`   | Archive/reschedule of a purchase already paid  |
+//! | `PURCHASE_HAS_PAYMENTS:{n}`   | Archive of a purchase already paid, or a       |
+//! |                               | reschedule that would drop a row carrying cash |
 //! | `PURCHASE_ARCHIVED`           | Payment on, or edit of, an archived purchase   |
 //! | `PURCHASE_NOT_ARCHIVED`       | Permanent delete before archiving              |
 //! | `INSTALLMENT_NOT_FOUND`       | No such installment                            |
 //! | `AMOUNT_LOCKED`               | Amount edit on a settled installment           |
 //! | `DUE_DATE_LOCKED`             | Due-date edit on a settled installment         |
-//! | `DUE_DATE_OUT_OF_ORDER`       | Due date outside its neighbours' dates         |
+//! | `DUE_DATE_OUT_OF_ORDER`       | Schedule due dates are not in position order   |
+//! | `SCHEDULE_VIA_PURCHASE`       | Amount/due date sent to the installment editor |
 //! | `FUTURE_PAID_DATE`            | Payment date later than today                  |
 //! | `PREVIOUS_UNPAID:{index}`     | Money edit while installment `index` is owing  |
 //! | `BELOW_PAID:{paid}`           | Amount below what that row already collected   |
 //! | `PAID_ABOVE_AMOUNT:{amount}`  | Collected more than the installment is worth   |
 //! | `NO_PAYMENT_TO_DATE`          | Payment date with no ledger entry to carry it  |
+//! | `PAYMENT_DATE_LOCKED`         | Re-dating a payment already recorded           |
 //! | `NO_REBALANCE_ROOM`           | No other installment can absorb the change     |
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |

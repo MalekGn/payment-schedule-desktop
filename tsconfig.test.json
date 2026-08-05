@@ -1,0 +1,20 @@
+{
+  // The integration suite was checked by no compiler: `tsconfig.json` includes
+  // `src/**` only, so `vue-tsc --noEmit` never saw 2 000-odd lines of test code
+  // that binds itself tightly to `src/api`'s shape — `typeof import("@/api").api`
+  // appears in almost every file, and would rot silently as the gateway changed.
+  //
+  // Inherits the strictness of the root config rather than restating it; the
+  // tests are held to the same bar as the app. `include` covers only the tests
+  // because the compiler follows their imports into `src/` on its own.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Three suites import `@/locales/*.json` to assert the error contract
+    // resolves to prose in fr/en/ar.
+    "resolveJsonModule": true,
+    // The tests import `describe`/`it`/`expect` explicitly, but `globals: true`
+    // in the vitest config means the ambient forms are legal too.
+    "types": ["vite/client", "vitest/globals"]
+  },
+  "include": ["tests/integration/**/*.ts"]
+}

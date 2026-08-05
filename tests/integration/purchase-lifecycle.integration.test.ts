@@ -99,6 +99,130 @@ describe("creating a purchase wires the finance split into the backend", () => {
   });
 });
 
+describe("the manual installment list is bounded, not just summed", () => {
+  // `validate_purchase_input` bounds every scalar field off the IPC boundary,
+  // but the `installments` array is what actually sizes the schedule — the row
+  // vector, the date vector and the insert loop all follow its length. These
+  // pin the two guards that make the scalar bounds bind on it too.
+
+  /** The code a rejected call produced, or throw if it unexpectedly resolved. */
+  async function codeOf(call: () => Promise<unknown>): Promise<string> {
+    try {
+      await call();
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    throw new Error("expected the call to fail, but it resolved");
+  }
+
+  const line = (amount: number, month: number) => ({
+    index: month,
+    amount,
+    dueDate: `2026-${String(month).padStart(2, "0")}-01`,
+  });
+
+  it("refuses a list longer than the declared count", async () => {
+    // The shape that drove the unbounded allocation: declare one installment,
+    // send many. The 1..=120 bound on installmentCount cannot see the list.
+    const code = await codeOf(() =>
+      api.createPurchase(
+        newPurchase({
+          totalPrice: 1000,
+          installmentCount: 1,
+          installments: [line(1000, 1), line(0, 2), line(0, 3), line(0, 4), line(0, 5)],
+        }),
+      ),
+    );
+    expect(code).toBe("INSTALLMENT_COUNT_MISMATCH:5:1");
+  });
+
+  it("refuses a list shorter than the declared count", async () => {
+    const code = await codeOf(() =>
+      api.createPurchase(
+        newPurchase({
+          totalPrice: 1000,
+          installmentCount: 4,
+          installments: [line(600, 1), line(400, 2)],
+        }),
+      ),
+    );
+    expect(code).toBe("INSTALLMENT_COUNT_MISMATCH:2:4");
+  });
+
+  it("refuses a negative share even when a sibling makes the sum add up", async () => {
+    // No overflow needed. The sum is exactly 1000, so SUM_MISMATCH passes — and
+    // the stored row would then subtract from SUM(amount - paidAmount), the
+    // figure every outstanding total is built on.
+    const code = await codeOf(() =>
+      api.createPurchase(
+        newPurchase({
+          totalPrice: 1000,
+          installmentCount: 2,
+          installments: [line(1500, 1), line(-500, 2)],
+        }),
+      ),
+    );
+    expect(code).toBe("INVALID_AMOUNT");
+  });
+
+  it("refuses a total beyond the permitted range", async () => {
+    const code = await codeOf(() =>
+      api.createPurchase(newPurchase({ totalPrice: 1_000_000_001, installmentCount: 1 })),
+    );
+    expect(code).toBe("INVALID_TOTAL_PRICE");
+  });
+
+  it("still accepts a zero share, which stays legal by design", async () => {
+    const detail = await api.createPurchase(
+      newPurchase({
+        totalPrice: 1000,
+        installmentCount: 3,
+        installments: [line(1000, 1), line(0, 2), line(0, 3)],
+      }),
+    );
+    expect(detail.installments.map((i) => i.amount)).toEqual([1000, 0, 0]);
+    // Nothing owed reads as settled — status is derived, not written.
+    expect(detail.installments[1].status).toBe("paid");
+  });
+
+  it("applies the same bounds on the update path, which shares resolve_schedule", async () => {
+    const detail = await api.createPurchase(newPurchase({ totalPrice: 1000, installmentCount: 2 }));
+    const base = {
+      clientId: detail.purchase.clientId,
+      productLabel: detail.purchase.productLabel,
+      intervalKind: detail.purchase.intervalKind,
+      intervalDays: detail.purchase.intervalDays,
+      purchaseDate: detail.purchase.purchaseDate,
+    };
+
+    expect(
+      await codeOf(() =>
+        api.updatePurchase(detail.purchase.id, {
+          ...base,
+          totalPrice: 1000,
+          installmentCount: 1,
+          installments: [line(600, 1), line(400, 2)],
+        }),
+      ),
+    ).toBe("INSTALLMENT_COUNT_MISMATCH:2:1");
+
+    expect(
+      await codeOf(() =>
+        api.updatePurchase(detail.purchase.id, {
+          ...base,
+          totalPrice: 1000,
+          installmentCount: 2,
+          installments: [line(1500, 1), line(-500, 2)],
+        }),
+      ),
+    ).toBe("INVALID_AMOUNT");
+
+    // Nothing was written by either refusal.
+    const after = await api.getPurchaseDetail(detail.purchase.id);
+    expect(after.installments.map((i) => i.amount)).toEqual([500, 500]);
+  });
+});
+
 describe("recording payments drives installment and purchase status transitions", () => {
   it("moves an installment pending → partial → paid and the purchase to in_progress", async () => {
     const created = await api.createPurchase(

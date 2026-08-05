@@ -6,6 +6,194 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-04 — Installment immutability: paid rows, payment dates, and one schedule editor
+
+### Summary
+
+Three business rules were enforced, and enforcing them moved the boundary
+between the two editors:
+
+1. A **settled** installment (`paid_amount >= amount`) has an immutable `amount`
+   and `due_date` from anywhere. Its `paid_amount` stays editable.
+2. A **recorded payment date is immutable**. Setting one the first time — which
+   is what recording a payment is — is untouched.
+3. An **unsettled** installment's `amount` and `due_date` move only through the
+   Edit Purchase flow. The tranche editor no longer offers them.
+
+Rule 3 forced a change to `update_purchase`. It regenerated the schedule by
+`DELETE` + re-`INSERT` and so refused outright (`PURCHASE_HAS_PAYMENTS`) once
+any payment existed — which, combined with rule 3, would have frozen every
+unpaid tranche the moment one sibling was paid. It now applies the schedule
+**in place** via `apply_schedule_in_place`, so the rows and the ledger hanging
+off them survive, and unpaid tranches stay editable on a purchase that has taken
+cash. This relaxes a rule `architecture.md` previously stated as absolute; the
+doc has been rewritten accordingly.
+
+Enforcement is in Rust (`commands.rs`), mirrored guard-for-guard in
+`src/api/mock.ts`. The UI mirrors it to explain, not to enforce. Two new error
+codes: `SCHEDULE_VIA_PURCHASE` and `PAYMENT_DATE_LOCKED`, both localized in
+fr/en/ar (key parity verified: 375 leaf keys, identical sets).
+
+**Executed:** Rust `cargo test` **126 passed**, `cargo fmt --check`,
+`cargo clippy --all-targets -D warnings` — all clean. Frontend `npm test`
+**147 passed** (10 files), `npm run lint`, `npm run build` (`vue-tsc --noEmit`)
+— all clean.
+
+**NOT executed:** integration and E2E, per the `CLAUDE.md` Phase 4 constraint.
+They are written and typecheck/lint clean but have not been run. See
+_Recommendations_.
+
+### Test cases
+
+#### Rust unit — `src-tauri/src/commands.rs` (executed, 126 passed)
+
+New:
+
+- `the_installment_editor_refuses_the_schedule_fields` — `amount` and `due_date`
+  each rejected with `SCHEDULE_VIA_PURCHASE` on a settled _and_ an unsettled
+  row, including a value identical to what is stored.
+- `the_schedule_refusal_precedes_every_lookup` — the guard beats
+  `INSTALLMENT_NOT_FOUND` on an unknown id, proving it runs before the
+  transaction opens.
+- `a_recorded_payment_date_cannot_be_rewritten` — `PAYMENT_DATE_LOCKED`; the
+  ledger row and the derived `paid_date` are unchanged.
+- `a_payment_date_still_dates_the_entry_it_arrives_with` — a date travelling
+  with a moved figure dates the new entry; a second correction adds its own.
+- `a_settled_tranche_keeps_its_collected_figure_editable` — rule 1's open half.
+- `rescheduling_moves_the_unpaid_tranches_around_a_settled_one` — row ids and
+  the payment survive; the schedule moves.
+- `regenerating_the_schedule_is_refused_once_a_tranche_is_settled` —
+  `AMOUNT_LOCKED` / `DUE_DATE_LOCKED` per anchor field, nothing written.
+- `rescheduling_below_what_a_tranche_collected_is_refused` — `BELOW_PAID:100`.
+- `rescheduling_onto_the_collected_figure_settles_the_tranche` — derived
+  `paid_date` comes from the ledger.
+- `shortening_the_schedule_past_a_paid_tranche_is_refused`,
+  `shortening_past_a_row_corrected_back_to_zero_is_refused`,
+  `shortening_the_schedule_drops_only_empty_tranches`,
+  `lengthening_the_schedule_appends_new_tranches`.
+- `a_schedule_whose_dates_run_backwards_is_refused` — on create and on update.
+- `a_refused_reschedule_rolls_the_purchase_row_back_too` — the label is written
+  before the schedule and must roll back with it.
+
+Rewritten: the former "schedule half" block, which tested amount/due-date
+editing through `update_installment_impl`; `the_gate_does_not_reach_the_schedule_fields`
+became `the_gate_does_not_reach_the_purchase_editor`; the bad-argument and
+archived-purchase guards now drive money fields.
+
+#### Integration — `tests/integration/` (written, NOT run)
+
+`installment-edit.integration.test.ts` rewritten around the new split, with a
+`reschedule()` helper that saves a whole schedule through `api.updatePurchase`:
+
+- _Rule 3_ — schedule fields refused whatever the tranche's state and before the
+  lookup; amount/due date accepted and **persisted** through the purchase
+  editor; still accepted once a payment exists, with row ids and the ledger
+  intact.
+- _Rule 1_ — `AMOUNT_LOCKED` / `DUE_DATE_LOCKED` from the purchase editor;
+  purchase row rolled back on refusal; collected figure still editable;
+  partially-paid rows still reschedulable down to `BELOW_PAID`.
+- _Rule 2_ — `PAYMENT_DATE_LOCKED`; setting one the first time still works; a
+  second correction dates its own entry; `NO_PAYMENT_TO_DATE`; `FUTURE_PAID_DATE`;
+  a note alone still amends.
+- Length changes: drop empty rows, refuse dropping rows with ledger history
+  (including one corrected back to zero), append past the stored rows, refuse
+  backwards dates.
+- `expectConsistent` now also asserts due dates run in position order.
+
+`error-contract.integration.test.ts` — the two new codes added to the inventory
+so they must resolve to localized prose in all three locales.
+
+`purchase-archive.integration.test.ts` — the "refuses to reschedule a purchase
+that has payments" case now expects `AMOUNT_LOCKED` / `DUE_DATE_LOCKED`, since
+the refusal moved from a purchase-wide gate to a per-row one.
+
+#### E2E — `tests/e2e/run.mjs` (written, NOT run)
+
+- `the purchase editor locks a settled tranche but not the rest` (rewritten) —
+  count/interval locked, total and label open, row 1 disabled, row 2 enabled.
+- `rescheduling an unpaid tranche from the purchase editor holds the total`
+  (new) — type 600 into row 2, sum stays green, save, re-read the detail page.
+- `the tranche modal offers no schedule fields at all` (rewritten) — no
+  `#inst-amount`, no `.rebalance`, figures shown read-only with a pointer note.
+- `a paid tranche keeps its collected money editable and its date frozen`
+  (rewritten) — `#inst-paid` enabled, the payment-date trigger disabled.
+- `a tranche whose predecessor is unpaid locks only its money fields` — the
+  amount assertion dropped; the rest stands.
+
+### Issues found
+
+1. **Ledger history could be silently destroyed (found in self-review, fixed).**
+   The first cut of `apply_schedule_in_place` guarded dropped rows on
+   `paid_amount > 0`. A row corrected back down to zero still holds the entries
+   that took the money and gave it back; both would have cascaded away on a
+   shortening reschedule. Because they net to zero, `SUM(payment.amount) ==
+SUM(installment.paid_amount)` would still have held — no total would ever have
+   surfaced the loss. The guard now counts `payment` rows. Pinned by
+   `shortening_past_a_row_corrected_back_to_zero_is_refused` and its integration
+   twin.
+
+2. **Typed due dates were being discarded (found in self-review, fixed).**
+   `NewPurchaseModal.rebuild()` regenerates every unlocked row's due date from
+   the anchor fields, and it was watched on `totalPrice` too — so changing the
+   total threw away hand-typed dates. Pre-existing, but it only became load-
+   bearing now that this form is the only place a due date can be typed. The
+   watcher is split: dates rebuild on count/interval/purchase-date, and a new
+   total re-splits amounts only while they are still automatic.
+
+3. **Payment-date field defaulted to the date already on record (fixed).**
+   `EditInstallmentModal` seeded it from `installment.paidDate`, which under the
+   new rule would back-date a correction made today to the original payment's
+   date. It now defaults to today and stays editable, so a payment taken last
+   week can still be dated honestly.
+
+4. **`rebalance_amounts` lost its only Rust caller (accepted, documented).**
+   A schedule now arrives whole and its sum is checked outright, so there is no
+   single-row delta to absorb. It is kept under `#[allow(dead_code)]` with a
+   comment: it is one half of a cross-language pair, `finance.ts` still runs the
+   same algorithm in the purchase editor, and `tests/fixtures/finance-parity.json`
+   is what proves the two agree. Deleting the Rust half would leave the fixture
+   checking nothing. `NO_REBALANCE_ROOM` is likewise Rust-unreachable but still
+   raised by the frontend.
+
+### Risks and edge cases
+
+- **Behaviour relaxation.** A purchase carrying payments can now be rescheduled
+  where the whole editor used to be locked. Intended, and confirmed with the
+  user before implementation, but it is a real widening of what a shopkeeper can
+  change after taking cash. The per-row guards are the only thing standing
+  between that and a rewritten history.
+- **Auto-split against settled rows.** `resolve_schedule`'s generated path
+  (`installments: null`) ignores settled rows entirely, so it will usually
+  disagree with one and refuse. The UI never sends that shape on an edit — it
+  always sends the displayed rows — but a direct IPC caller would see
+  `AMOUNT_LOCKED` where "recompute the split" was meant. Correct, if terse.
+- **`splitAmounts` remainder placement.** The purchase editor's `recompute` puts
+  the rounding remainder on the last _unsettled_ row rather than the last row
+  overall. Exact, but a shopkeeper re-splitting a purchase with a settled tail
+  will see the odd unit land somewhere new.
+- **Arabic/RTL not visually verified.** The read-only figures row gained a
+  fourth item and wraps (`flex-wrap`), and the tranche rows gained a fourth grid
+  track for the settled marker. Key parity is verified programmatically; the
+  mirrored layout is not.
+- **No component-level tests** for either modal — their behaviour is covered
+  only by E2E, which has not been run. `EditInstallmentModal` got simpler here,
+  but `NewPurchaseModal` got materially more complex (locked rows, `committed`
+  snapshot, split watchers).
+
+### Recommendations
+
+1. **Run the integration and E2E suites** (`npm run test:integration`,
+   `npm run test:e2e`). They are the only coverage of the three rules end to end
+   through the gateway, and of every UI assertion above. Nothing in this pass
+   executed them.
+2. Verify the Arabic layout by hand: the tranche modal's figures row and the
+   purchase editor's locked-row marker.
+3. Consider a component test for `NewPurchaseModal` covering the locked-row
+   pinning in `rebuild()` and the `rebalanceAmounts` redistribution — the two
+   places where this change added real logic to the frontend.
+
+---
+
 ## 2026-07-30 (c) — The sidebar's new-purchase shortcut steps aside on Achats
 
 ### Summary

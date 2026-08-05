@@ -1,33 +1,99 @@
 # paymentSchedule — Development Audit Report
 
-**Date:** 2026-07-26
-**Commit audited:** `eb86a6a` (branch `dev`, working tree clean)
+**Date:** 2026-08-04
+**Commit audited:** `b38a402` (branch `dev`, working tree clean)
 **Scope:** architecture, security, dependencies, data layer, frontend, build config, hygiene
 **Nature:** read-only review. **No code was changed.** The only file written is this report.
 
+> **Update:** every **High and Medium** finding below is closed, plus **L1** and
+> **L9** — H1, H2, H3, M1–M6, L1 and L9, across commits `ce038d1` … `6875d83`.
+> Closed rows are struck through and annotated inline; L2–L8 and the Info rows
+> stand as audited.
+>
+> L9 was worth doing for more than the coverage number: writing the comparator
+> test it asked for uncovered a live sorting bug (`6c1df84`), which is the
+> argument for the finding rather than a footnote to it.
+>
+> One correction worth carrying forward: H1's recommendation here (_"run
+> `npm audit fix`"_) was **wrong**. npm reports the advisory but proposes no
+> change, because the pinned version already satisfies the range its parent
+> declares and npm will not bump a transitive dependency inside its own range.
+> `npm update <pkg>` is what moves it.
+> Their rows below are annotated inline; everything else stands as audited.
+>
+> This report **replaces** the 2026-07-26 audit (commit `641c7ff`, which audited
+> `eb86a6a`). That version is recoverable with
+> `git show 641c7ff:AUDIT_REPORT.md`. Its findings were closed by `1a474a1` and
+> `37187e2`; §0 records what actually happened to each one, so the history is
+> not lost by rewriting.
+
 **Stack as actually found**
 
-| Layer    | What is there                                                                                                          |
-| -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Shell    | **Tauri 2** (`tauri 2.11.5`, `tauri-build 2.6.3`, config `$schema: schema.tauri.app/config/2`)                         |
-| Backend  | Rust, edition 2021, 1 895 LOC across `src-tauri/src/{lib,commands,db,models,seed}.rs`                                  |
-| Database | **`rusqlite 0.32.1`, `features = ["bundled"]`** (SQLite compiled into the binary). No SQL plugin, no ORM               |
-| Frontend | **Vue 3.5** + TypeScript, `<script setup>` everywhere (16/16 SFCs), Pinia 2, vue-router 4, vue-i18n 10                 |
-| Build    | Vite 7.3.6, `vue-tsc --noEmit` typecheck, ESLint 10 flat config, Prettier 3, husky + lint-staged                       |
-| CI       | 3 GitHub Actions workflows (release bundles, CodeQL, security audit), Dependabot on npm/cargo/actions                  |
-| Tests    | Vitest unit (5 files / 56 tests), Vitest integration (3 files), Playwright E2E (`tests/e2e/run.mjs`), 3 Rust `#[test]` |
+| Layer    | What is there                                                                                                                         |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Shell    | **Tauri 2** (`tauri 2.11.5`, `tauri-build 2.6.3`, config `$schema: schema.tauri.app/config/2`) — current with crates.io               |
+| Backend  | Rust, edition 2021, MSRV **1.88** (CI-proven), `src-tauri/src/{lib,main,commands,db,models,error,seed,license}.rs`                    |
+| Database | **`rusqlite 0.39.0`, `features = ["bundled"]`** (SQLite compiled into the binary). No SQL plugin, no ORM, no `@tauri-apps/plugin-sql` |
+| Frontend | **Vue 3.5** + TypeScript, `<script setup>` in **34/34** SFCs, Pinia 2 (4 stores), vue-router 4, vue-i18n 10                           |
+| Build    | Vite 7.3.6, `vue-tsc --noEmit` typecheck, ESLint 10 flat config, Prettier 3, husky + lint-staged                                      |
+| CI       | 3 GitHub Actions workflows (release bundles, CodeQL, security audit), Dependabot on npm/cargo/actions, all actions SHA-pinned         |
+| Tests    | Vitest unit (18 files / 224 cases), Vitest integration (8 files / **213** cases), Playwright E2E (50 scenarios), **133 Rust tests**   |
 
-**Local gate status at audit time** (all run, all results real):
+**Local gate status at audit time** (every one actually run, results real):
 
-| Gate                                        | Result                                                                                                                    |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `npx eslint .`                              | ✅ clean (exit 0)                                                                                                         |
-| `npx vue-tsc --noEmit`                      | ✅ clean (exit 0)                                                                                                         |
-| `npx vitest run`                            | ✅ 5 files, 56 tests passed                                                                                               |
-| `cargo fmt --check`                         | ✅ clean                                                                                                                  |
-| `cargo clippy --all-targets -- -D warnings` | ✅ clean                                                                                                                  |
-| `cargo audit`                               | ✅ **0 vulnerabilities**, ⚠️ 17 unmaintained/unsound warnings                                                             |
-| `npm audit --audit-level=high`              | ❌ **exit 1** — 8 high advisories (dev chain). _This is the CI gate in `.github/workflows/security.yml`; it fails today._ |
+| Gate                                        | Result                                                                                  |
+| ------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `npm run lint`                              | ✅ clean                                                                                |
+| `npm run build` (`vue-tsc --noEmit` + vite) | ✅ clean                                                                                |
+| `npm test`                                  | ✅ **18 files, 224 cases** passed on Node 24.16.0 (was 10/147)                          |
+| `cargo fmt --check`                         | ✅ clean                                                                                |
+| `cargo clippy --all-targets -- -D warnings` | ✅ clean                                                                                |
+| `cargo test`                                | ✅ 126 passed — CI job added since (H2 closed)                                          |
+| `cargo audit`                               | ✅ **0 vulnerabilities**, ⚠️ 18 unmaintained/unsound warnings (all transitive via GTK3) |
+| `npm audit --audit-level=high`              | ✅ **exit 0** — 0 vulnerabilities since `c780434` (was 1 high)                          |
+
+---
+
+## 0. Status of the 2026-07-26 audit
+
+30 findings were raised then. Verified against the current tree:
+
+| Old # | Finding                                   | Status today                                                                                                                    |
+| ----- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `fs:*` over `$APPDATA/**`, DB in scope    | ✅ **Fixed.** No `fs` plugin; no `fs:*` permission; `assetProtocol.scope` narrowed to `$APPDATA/logo.*`                         |
+| 2     | `upcoming_days` → `Duration::days` panic  | ✅ **Fixed.** Clamped to `1..=365` (`commands.rs:1660-1662`), rationale recorded in-comment                                     |
+| 3     | `interval_days` overflow                  | ✅ **Fixed.** `INTERVAL_DAYS_RANGE 1..=365` + `add_interval` fully overflow-saturating (`db.rs:339-358`)                        |
+| 4     | `installment_count` unbounded             | ⚠️ **Partial.** Range check added — but the `installments` array bypasses it. See **H3**                                        |
+| 5     | Raw `rusqlite` error text shown to users  | ✅ **Fixed.** `AppError` + stable codes; `Internal` collapses to `"INTERNAL"` (`error.rs:120-127`); frontend maps codes to i18n |
+| 6     | `set_logo` unvalidated                    | ✅ **Fixed.** Extension allow-list, `is_file()`, 5 MiB cap, magic-byte sniff (`commands.rs:1990-2023`)                          |
+| 7     | Sync commands on IPC thread; N+1 queries  | ⚠️ **Partial.** All 27 commands are now `async` ✅; the N+1 pattern remains (`commands.rs:564-574`). See **I3**                 |
+| 8     | No WAL / `busy_timeout` / single-instance | ✅ **Fixed.** All four PRAGMAs set and test-asserted (`db.rs:29-34`); `tauri-plugin-single-instance` registered first           |
+| 9     | No schema versioning                      | ✅ **Fixed.** `PRAGMA user_version` ladder, transactional, forward-refusing (`db.rs:96-150`); `backup_database` added           |
+| 10    | Manual `due_date` written unparsed        | ✅ **Fixed.** Every manual date goes through `parse_date` (`commands.rs:646-655`)                                               |
+| 11    | `update_settings` non-transactional       | ✅ **Fixed.** One transaction over the whole patch (`commands.rs:1903+`)                                                        |
+| 12    | Unlimited overpayment                     | ✅ **Fixed.** `OVERPAYMENT:{remaining}` guard (`commands.rs:1332-1335`)                                                         |
+| 13    | `total_price` never validated             | ⚠️ **Partial.** `> 0` enforced; still no **upper** bound. See **M1**                                                            |
+| 14    | `lock().unwrap()` poisoning               | ✅ **Fixed.** `unwrap_or_else(\|e\| e.into_inner())` (`db.rs:52-54`)                                                            |
+| 15    | 8 high npm advisories                     | ⚠️ **Now 1, different package.** Same gate still red. See **H1**                                                                |
+| 16    | `rusqlite` 0.32.1 vs 0.40.1               | ✅ **Fixed since.** Now 0.39.0; bundled SQLite 3.46.0 → 3.51.3. See **M5**                                                      |
+| 17    | Zero backend logging                      | ✅ **Fixed.** `log` + `tauri-plugin-log`; PII-free by policy (`lib.rs:34-37`), verified                                         |
+| 18    | Unhandled load paths                      | ✅ **Fixed.** `useLoader` composable + `LoadError` across all list views                                                        |
+| 19    | 3 Rust tests, no backend coverage         | ✅ **Fixed.** 126 Rust tests, and CI now runs them. See **H2**                                                                  |
+| 20    | MSRV wrong (1.77 vs 1.88)                 | ✅ **Fixed.** `rust-version = "1.88"` + a dedicated CI job proving it; `engines.node >= 22`                                     |
+| 21    | CSV quoting + formula injection           | ✅ **Fixed.** Quote-doubling + `FORMULA_TRIGGER` guard (`src/lib/csv.ts:32,57-58`), 19 unit tests                               |
+| 22    | `clear_logo` discards `remove_file` error | ✅ **Fixed.** Now `log::warn!`s                                                                                                 |
+| 23    | Unreachable `delete_client` `force` guard | ✅ **Fixed.** Parameter removed; the refusal is terminal                                                                        |
+| 24    | `SELECT *` + name-based mapping           | ✅ **Fixed.** Queries name their columns                                                                                        |
+| 25    | 17 RustSec unmaintained warnings          | ➖ **Accepted, now 18.** All transitive via GTK3; policy recorded in `deny.toml`                                                |
+| 26    | Frontend majors behind                    | ❌ **Still open.** See §4.2                                                                                                     |
+| 27    | No licence declared                       | ✅ **Fixed.** `LICENSE` + `license-file` + `"UNLICENSED"` + `deny.toml`                                                         |
+| 28    | `.gitignore` missing `*.db`               | ✅ **Fixed.** Covers `*.db`, `-wal`, `-shm`, `-journal`, `.part`, `*.sqlite*`, with a PII rationale                             |
+| 29    | CSP `style-src 'unsafe-inline'`           | ➖ **Accepted.** Unchanged and still correct for Vue                                                                            |
+| 30    | One `v-html` in `AppIcon.vue`             | ➖ **No change needed.** Re-verified: static `ICONS` map, key lookup only                                                       |
+
+**Score: 22 fixed, 3 partial, 2 still open, 3 accepted.** That is a strong
+remediation record. Every finding below is either new, or the residue of a
+partial fix.
 
 ---
 
@@ -35,114 +101,119 @@
 
 Ordered most-important first.
 
-1. **The WebView is granted direct read _and write_ access to the app-data directory, which is where the SQLite database lives** — `fs:default` + `fs:allow-write-file` scoped to `$APPDATA/**` (`src-tauri/capabilities/default.json:17-26`) plus `assetProtocol.scope: ["$APPDATA/**", …]` (`src-tauri/tauri.conf.json:28-31`). `payment_schedule.db` is created at `app_data_dir()/payment_schedule.db` (`src-tauri/src/lib.rs:23-25`), i.e. inside that scope. This directly contradicts the project's own stated invariant ("the frontend never touches the DB or filesystem directly") at the capability level. **Nothing in `src/` imports `@tauri-apps/plugin-fs`** — the permission and the plugin are pure attack surface with zero callers.
-2. **Unvalidated numbers from the frontend reach `chrono` date math that panics, and the release profile is `panic = "abort"`** — so a bad IPC argument terminates the process. Confirmed panic paths: `get_dashboard`'s `upcoming_days` (`commands.rs:706`) and `add_interval`'s `interval_days` for `interval_kind: "custom"` (`db.rs:146`). `installment_count` is only checked for `< 1` (`commands.rs:305`), so a large value drives an unbounded `Vec` allocation + insert loop.
-3. **Raw backend error strings are shown verbatim to end users** — `ui.notify(String(e), "error")` at `ClientsView.vue:84`, `ClientForm.vue:52`, `NewPurchaseModal.vue:136`, and `error.value = String(e)` at `PaymentModal.vue:51`. Every Rust error is `rusqlite::Error::to_string()` (~90 `map_err(|e| e.to_string())` call sites), so SQL text, column names and constraint details surface in a toast, unlocalized. `CLAUDE.md` explicitly classes this as a Code Review blocker.
-4. **`set_logo` is an arbitrary-file-read primitive** — it `std::fs::copy`s any `source_path` the frontend sends into app data with no path, type, or size validation (`commands.rs:921-937`). Combined with finding 1 (app data is readable by the WebView via `asset:` and `fs:read`), a compromised renderer can copy e.g. `~/.ssh/id_rsa` to `logo.rsa` and then read it back.
-5. **All 20 commands are synchronous, so they execute inline on the IPC/main event-loop thread**, and several are N+1 query loops (`list_purchases` → `build_purchase_summary` per row → 3 queries each, `commands.rs:268-295`; `get_client_detail`, `commands.rs:187-193`; `get_dashboard` runs 7 aggregates + 5 summaries + a detail + `build_impayes`). The UI will freeze under load; there is no `spawn_blocking` and no async anywhere in the backend.
-6. **The data layer has no durability hardening**: no WAL, no `busy_timeout`, no single-instance guard (`db.rs:21-31`). Two launched copies of the app both open the same file and will hit `SQLITE_BUSY`, surfaced as a raw SQL toast (finding 3).
-7. **The schema has no version tracking** — `migrate()` is `CREATE TABLE IF NOT EXISTS` only (`db.rs:70-127`), no `PRAGMA user_version`, no migration table. Any future column change has no upgrade path for databases already in the field, and this app's data (a shop's receivables) is not reproducible.
-8. **Dev-dependency chain is failing its own CI security gate**: 8 high npm advisories, all from `brace-expansion` (GHSA-mh99-v99m-4gvg) reached via `vue-tsc 2.2.12` → `@vue/language-core` → `minimatch`, and via `@vue/test-utils` → `js-beautify`. Fix requires `vue-tsc@3.x` (major). `rusqlite` is 8 minor versions behind (0.32.1 vs 0.40.1), which also means an older SQLite C library is compiled into every shipped binary.
-9. **Rust behaviour is effectively untested** — 3 `#[test]` functions total, and both the integration and E2E suites drive `src/api/mock.ts`, not the Rust commands. Transactions, cascade deletes, overpayment, and the `finance.ts` ↔ `db.rs` parity invariant have no backend coverage.
-10. **Positives worth stating**: no SQL string interpolation of user data anywhere; money is integer end-to-end; CSP is defined and restrictive for scripts; no `shell` plugin and no `Command::new`; devtools are not force-enabled for release; capabilities are per-window and mostly narrow (`opener` is scoped to `tel:*`/`sms:*` only); actions are SHA-pinned; all three locale files are exactly in sync (264 keys each); lint/format/typecheck/clippy are all clean.
+1. **The `npm audit --audit-level=high` CI gate is red right now** _(Closed.)_ — one high
+   advisory (`brace-expansion` 5.0.8, GHSA-rgw5-rvv9-x895) reached through
+   `eslint@10.8.0 → minimatch@10.2.5`. `npm audit fix` resolves it within the
+   declared ranges. One command, and the highest-value action in this report.
+2. **`cargo test` runs in no CI workflow.** _(Closed in `9f9ad6c`.)_ 126 Rust tests exist — covering the
+   money invariants, the licence gate, the migration ladder and most of the
+   guards discussed below — and not one is exercised before a release is cut.
+   `release` depends on `[test, rust-lint]`, where `test` is JS-only and
+   `rust-lint` is fmt + clippy. A regression in `commands.rs` reaches an
+   installer unchallenged.
+3. **The `installments` array bypasses `INSTALLMENT_COUNT_RANGE`.** _(Closed.)_ The 1..=120
+   cap exists, in the code's own words, so a hostile count "cannot drive an
+   unbounded `Vec` allocation and insert loop" — but `resolve_schedule` derives
+   the row set from `list.len()` and checks only the _sum_. `installmentCount: 1`
+   with a million-element array passes validation and reaches a per-element
+   `INSERT` loop. Old finding #4 re-opening through a different door.
+4. **Money arithmetic can wrap silently in release.** _(Closed.)_ `[profile.release]` sets
+   `panic = "abort"` but not `overflow-checks`, and `total_price` / per-line
+   `amount` have no upper bound. A crafted amount set can wrap `i64` to equal
+   `total_price` and defeat the `SUM_MISMATCH` check outright.
+5. **`backup_database` deletes an arbitrary `*.db.part` file with no content
+   check.** _(Closed.)_ The careful "must already be a SQLite file" guard protects
+   `dest_path` but not the sibling temp path derived from it.
+6. **`tests/**` is never typechecked.** _(Closed.)_ `tsconfig.json` includes only `src/**`,
+   so `vue-tsc --noEmit` checks 31 files and no test file. The 99-case
+   TypeScript integration suite is linted but type-checked by nothing.
+7. **Integration and E2E remain outside CI** _(Closed.)_ — 213 integration cases and 50 E2E
+   scenarios that run only when someone remembers to.
+8. **`rusqlite` is 8 minor versions behind (0.32.1 → 0.40.1)** _(closed in
+   `7e592ac`: now 0.39.0, SQLite 3.46.0 → 3.51.3)_, so an older
+   SQLite C library is statically compiled into every shipped binary. The one
+   dependency gap with a security dimension, and unchanged since the last audit.
+9. **No length bound on any user-supplied string.** _(Closed.)_ `ClientInput` and five
+   `SettingsPatch` fields are written with `.trim()` and nothing else.
+10. **Positives worth stating so they are not "fixed" away**: zero `unsafe`;
+    exactly one `expect()` in the whole non-test backend, at startup; no SQL
+    injection anywhere; no shell, no network client, no updater; errors cannot
+    leak SQL or paths across IPC by construction; licence validation is
+    signature-before-parse with `verify_strict`; migrations are transactional and
+    forward-refusing; all four SQLite PRAGMAs including `foreign_keys` are set
+    _and asserted_; zero TODO/FIXME, zero `any`, zero `@ts-ignore`, zero secrets.
 
 ---
 
 ## 2. Findings table
 
-| #   | Area             | Severity | Finding                                                                                                                                                                                                                | Recommendation                                                                                                                                                                   | File / Location                                                                                                                    |
-| --- | ---------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Tauri security   | High     | WebView granted `fs` read **and write** over `$APPDATA/**`, which contains the SQLite DB; plugin has no callers in `src/`                                                                                              | Remove `tauri_plugin_fs`, the npm `@tauri-apps/plugin-fs` dep, and all `fs:*` permissions. Narrow `assetProtocol.scope` to `$APPDATA/logo.*`                                     | `capabilities/default.json:17-26`; `tauri.conf.json:28-31`; `lib.rs:17`                                                            |
-| 2   | Rust robustness  | High     | Frontend-supplied `upcoming_days` flows into `chrono::Duration::days` → panics on overflow; `panic = "abort"` kills the app                                                                                            | Clamp to a sane range (e.g. 1..=365) before the date math; or use `checked_add_signed`                                                                                           | `commands.rs:706`; `Cargo.toml:38`                                                                                                 |
-| 3   | Rust robustness  | High     | `interval_days` unbounded for `interval_kind: "custom"`: `interval_days * k` overflows (wraps in release), then `Duration::days`/`NaiveDate + Duration` panic                                                          | Validate `interval_days` (e.g. 1..=365) and `interval_kind` against the three known values; use checked arithmetic                                                               | `db.rs:143-152` (line 146); `commands.rs:358-364`                                                                                  |
-| 4   | Data integrity   | High     | `installment_count` only checked `< 1`; `split_amounts` then allocates a `Vec` of that size and the loop inserts that many rows                                                                                        | Add an upper bound (e.g. ≤ 120) alongside the existing `< 1` check                                                                                                               | `commands.rs:305-307`; `db.rs:189-198`                                                                                             |
-| 5   | Error handling   | High     | Raw `rusqlite` error text rendered to users in toasts / modal errors (project-declared blocker)                                                                                                                        | Return typed error codes from Rust (the `CLIENT_HAS_PURCHASES:`/`SUM_MISMATCH:` style, applied consistently), map to i18n keys on the frontend, log detail to console only       | `ClientsView.vue:84`; `ClientForm.vue:52`; `NewPurchaseModal.vue:136`; `PaymentModal.vue:51`; ~90 `map_err` sites in `commands.rs` |
-| 6   | Tauri security   | Medium   | `set_logo` copies any `source_path` into app data; no extension allow-list, no size cap, no image sniff, no path containment                                                                                           | Validate the extension against the dialog's filter list, cap the file size, and reject paths outside the user's home/pictures dirs                                               | `commands.rs:920-937`                                                                                                              |
-| 7   | Performance / UX | Medium   | All commands are sync → run on the IPC/main thread; N+1 query patterns in list/dashboard paths                                                                                                                         | Make read commands `async` (Tauri then runs them off the main thread) and/or `spawn_blocking`; replace per-row loops with set-based SQL + `GROUP BY`                             | `commands.rs:268-295`, `187-193`, `701-841`                                                                                        |
-| 8   | SQLite           | Medium   | No WAL, no `busy_timeout`, no single-instance guard — two app instances share one DB file                                                                                                                              | `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL` at open; add `tauri-plugin-single-instance`                                                       | `db.rs:21-31`; `lib.rs:22-30`                                                                                                      |
-| 9   | SQLite           | Medium   | No schema versioning or migration mechanism; irreversible cascade deletes with no backup/export of the DB                                                                                                              | Add `PRAGMA user_version` + ordered migration steps; add a "backup database" action (file copy) before destructive operations                                                    | `db.rs:70-127`; `commands.rs:246-261`                                                                                              |
-| 10  | Data integrity   | Medium   | Manual `installments[].due_date` is written to the DB **unparsed**; a malformed date then silently degrades status to `"pending"` forever                                                                              | Run every incoming date through `parse_date` before insert                                                                                                                       | `commands.rs:349-372`; silent fallback at `commands.rs:65-67`, `672-674`                                                           |
-| 11  | Data integrity   | Medium   | `update_settings` performs up to 7 separate writes with no transaction — a failure mid-way leaves settings half-applied                                                                                                | Wrap the whole patch in one `conn.transaction()`                                                                                                                                 | `commands.rs:890-916`                                                                                                              |
-| 12  | Data integrity   | Medium   | `record_payment` accepts unlimited overpayment: `new_paid = paid + amount` with no cap, and marks the installment paid                                                                                                 | Reject `amount > (amount_due - paid)`, or explicitly allow with a distinct code path and UI confirmation                                                                         | `commands.rs:394-437` (line 411)                                                                                                   |
-| 13  | Data integrity   | Medium   | `total_price` is never validated — a negative or zero total produces negative installments and negative KPIs                                                                                                           | Require `total_price > 0` in `create_purchase`                                                                                                                                   | `commands.rs:304-347`                                                                                                              |
-| 14  | Concurrency      | Medium   | `db.conn.lock().unwrap()` at 20 call sites: in a debug build one panic poisons the mutex and every later command panics                                                                                                | Use `lock().unwrap_or_else(                                                                                                                                                      | e                                                                                                                                  | e.into_inner())` or a non-poisoning mutex (`parking_lot`) | `commands.rs:139,171,208,226,247,269,299,310,380,400,460,482,504,532,654,703,885,891,934,941`; `db.rs:41` |
-| 15  | Dependencies     | Medium   | 8 high npm advisories (`brace-expansion` GHSA-mh99-v99m-4gvg) via `vue-tsc 2.2.12` and `@vue/test-utils`; the `npm audit --audit-level=high` CI job fails today (verified exit 1)                                      | Upgrade `vue-tsc` to 3.x (breaking; also unblocks `@vue/language-core`) and refresh `@vue/test-utils`; re-run the gate                                                           | `package.json:44,55`; `.github/workflows/security.yml:47-56`                                                                       |
-| 16  | Dependencies     | Medium   | `rusqlite` 0.32.1 vs latest 0.40.1 → `libsqlite3-sys 0.30.1` bundles an ~2-year-old SQLite into every shipped binary                                                                                                   | Plan a `rusqlite` 0.40 upgrade so the bundled SQLite tracks upstream fixes                                                                                                       | `Cargo.toml:27`; `Cargo.lock`                                                                                                      |
-| 17  | Observability    | Medium   | Zero logging in the backend — no `log`/`tracing`, no output on any failure path; frontend has one `console.error`                                                                                                      | Add `tauri-plugin-log` or `tracing`; log command failures at `warn`/`error` with no PII (names/phones are PII here)                                                              | whole of `src-tauri/src/`; only logger call: `useContactActions.ts:73`                                                             |
-| 18  | Error handling   | Medium   | Several load paths have no error handling: `ClientsView.load()` leaves `loading = true` forever on failure; `stats.refresh()` swallows silently; `main.ts` uses `.finally()` so a settings-load rejection is unhandled | Add try/catch + an error state to view loaders; log the swallowed cases                                                                                                          | `ClientsView.vue:47-51`; `DashboardView.vue:21`; `stores/stats.ts:13-19`; `main.ts:19`                                             |
-| 19  | Testing          | Medium   | 3 Rust tests; no backend coverage of transactions, cascade deletes, overpayment, or `finance.ts` ↔ `db.rs` parity. Integration + E2E both exercise the TS mock only                                                    | Add `#[test]`s over a temp DB for `create_purchase`/`record_payment`/`delete_*`; add a parity test asserting `split_amounts`/`add_interval` agree across the two implementations | `commands.rs:950-1028`; `db.rs:200-257`; `tests/integration/*`                                                                     |
-| 20  | Hygiene          | Low      | Declared MSRV `rust-version = "1.77"` is wrong — locked deps require ≥ **1.88** (`darling`, `time`, `plist`). No `rust-toolchain.toml`, no `engines` in `package.json` (CI uses Node 22, this machine runs Node 24)    | Set `rust-version = "1.88"`, add `rust-toolchain.toml`, add `"engines": { "node": ">=22" }`                                                                                      | `Cargo.toml:7`; `package.json`                                                                                                     |
-| 21  | Frontend         | Low      | CSV export: fields are wrapped in `"` but embedded `"` is not doubled (breaks the file), and no formula-injection guard on user-entered names/phones                                                                   | Escape `"` → `""` on every field; prefix values starting with `= + - @` with `'`                                                                                                 | `ImpayesView.vue:85-118`                                                                                                           |
-| 22  | Rust             | Low      | `clear_logo` discards the `remove_file` error (`let _ = …`) — a failure to delete the old logo is invisible                                                                                                            | Log the failure; keep the setting update                                                                                                                                         | `commands.rs:940-948` (line 944)                                                                                                   |
-| 23  | Rust             | Low      | `delete_client`'s `force = false` guard (and its `CLIENT_HAS_PURCHASES` code) is unreachable — the UI always passes `true`                                                                                             | Either pass `false` first and let the backend gate the confirm, or delete the dead parameter                                                                                     | `commands.rs:246-261` vs `ClientsView.vue:78`                                                                                      |
-| 24  | Rust             | Low      | `SELECT *` + `row.get("column")` mapping in `fetch_client`/`map_purchase`/`map_payment` — silently breaks on schema drift                                                                                              | List columns explicitly in the projection                                                                                                                                        | `commands.rs:32`, `85-90`, `463-467`, `485-489`, `507-511`                                                                         |
-| 25  | Dependencies     | Low      | 17 RustSec warnings: 10 unmaintained GTK3 crates + `glib 0.18.5` unsoundness (RUSTSEC-2024-0429) + `proc-macro-error` + 6 `unic-*`. All transitive through Tauri; no fixed versions exist                              | Nothing actionable locally. Track Tauri's GTK4 work; keep `deny.toml`'s empty `ignore` list so they stay visible                                                                 | `Cargo.lock`; appendix §9.1                                                                                                        |
-| 26  | Frontend deps    | Low      | Majors behind: `pinia 2.3.1` → 4.0.2, `vue-router 4.6.4` → 5.2.0, `vue-i18n 10.0.8` → 11.4.8, `vite 7.3.6` → 8.1.5, `jsdom 25` → 29, `typescript 5.9.3` → 7.0.2                                                        | Schedule the Pinia/vue-router/vue-i18n majors as one deliberate upgrade PR with the E2E suite as the gate                                                                        | `package.json`; appendix §9.4                                                                                                      |
-| 27  | Licensing        | Low      | Neither `package.json` nor `Cargo.toml` declares a license; the repo has no LICENSE file                                                                                                                               | Add a `license` field (and file) — `deny.toml` already enforces an allow-list for dependency licenses                                                                            | `package.json:2-6`; `Cargo.toml:1-8`                                                                                               |
-| 28  | Hygiene          | Low      | `.gitignore` covers `node_modules/`, `dist/`, `src-tauri/target/`, `src-tauri/gen/`, `.env*` — but not `*.db`/`*.sqlite`                                                                                               | Add `*.db`, `*.sqlite*` as defence in depth (tests write temp DBs to the OS temp dir today, so nothing is leaking now)                                                           | `.gitignore`                                                                                                                       |
-| 29  | Tauri security   | Info     | CSP allows `style-src 'unsafe-inline'` (required by Vue's runtime style bindings). `script-src` is not stated, so it inherits `default-src 'self'` — no `unsafe-eval`/`unsafe-inline` for scripts                      | Acceptable. Consider stating `script-src 'self'` explicitly so a future `default-src` relaxation can't widen it silently                                                         | `tauri.conf.json:26`                                                                                                               |
-| 30  | Frontend         | Info     | One `v-html` (`AppIcon.vue:77`) renders a value from a module-local static `ICONS` map, with an ESLint-disable and a justification comment. `props.name` only selects a key                                            | No change needed — this is the correct pattern                                                                                                                                   | `AppIcon.vue:64-79`                                                                                                                |
+| #      | Area              | Severity              | Finding                                                                                                                                                                                                                                   | Recommendation                                                                                              | File / Location                                                  |
+| ------ | ----------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **H1** | Dependencies / CI | ~~High~~ **CLOSED**   | ~~`npm audit --audit-level=high` exits 1: `brace-expansion` 5.0.8 DoS~~ — fixed in `c780434` by moving the lock to 5.0.9. **`npm audit fix` does not do this**; it proposes nothing, because 5.0.8 already satisfies minimatch's `^5.0.5` | Done via `npm update brace-expansion`; one lock entry changed, no override needed                           | `.github/workflows/security.yml:52-53`                           |
+| **H2** | CI / Testing      | ~~High~~ **CLOSED**   | ~~No workflow runs `cargo test`. 126 Rust tests never gate a release~~ — fixed in `9f9ad6c`: a `rust-test` job runs `cargo test --locked` and `release` depends on it                                                                     | Add a `cargo test` job to `build.yml`; add it to `release.needs`                                            | `.github/workflows/build.yml:26-52,54-79,133`                    |
+| **H3** | Data integrity    | ~~High~~ **CLOSED**   | ~~`installments` array length is unbounded and never compared to `installment_count`~~ — fixed: `resolve_schedule` refuses with `INSTALLMENT_COUNT_MISMATCH:{sent}:{declared}`                                                            | Done                                                                                                        | `commands.rs:605-607`, `632-644`, `686-702`; `db.rs:283-287`     |
+| **M1** | Data integrity    | ~~Medium~~ **CLOSED** | ~~`total_price` and `InstallmentInput::amount` have no upper bound~~ — fixed: both bounded by `MONEY_RANGE` (`0..=1e9`) before the sum is taken, which makes the wrap unreachable                                                         | Done; `overflow-checks` deliberately left off                                                               | `commands.rs:602`, `634`, `350-351`, `1576`; `Cargo.toml:70-75`  |
+| **M2** | Tauri security    | ~~Medium~~ **CLOSED** | ~~`backup_database` unconditionally `remove_file`s `dest.with_extension("db.part")`~~ — fixed in `c080804`: staging moved inside app data under a per-run name, so nothing outside a directory the app owns is created or deleted         | Done; copy fallback for cross-filesystem destinations is documented as non-atomic                           | `commands.rs:2104-2121`, `2129`, `2133-2135`                     |
+| **M3** | Build config      | ~~Medium~~ **CLOSED** | ~~`tests/**` is in no TypeScript project~~ — fixed in `63fa249`: `tsconfig.test.json` + a `typecheck` script wired into `npm run build`                                                                                                   | Done; `tests/e2e/run.mjs` stays unchecked (plain JS) by explicit decision                                   | `tsconfig.json:25-27`; `tsconfig.node.json:11`                   |
+| **M4** | CI / Testing      | ~~Medium~~ **CLOSED** | ~~Integration and E2E are wired to npm scripts but to no workflow~~ — fixed in `18f2889`. The finding understated it: **build.yml fired only on version tags**, so no gate ran on a push at all                                           | Done; ci.yml on push/PR, build.yml calls it via `workflow_call`, E2E nightly                                | `.github/workflows/build.yml`; `package.json:17-18`              |
+| **M5** | Dependencies      | ~~Medium~~ **CLOSED** | ~~`rusqlite` 0.32.1 → `libsqlite3-sys` 0.30.1 bundles an older SQLite~~ — fixed in `7e592ac`: 0.39.0, SQLite **3.46.0 → 3.51.3**. Held below 0.40 because `libsqlite3-sys` 0.38 needs Rust 1.95 (`cfg_select!`)                           | Plan the bump; breaking API change, so schedule it rather than batching with a feature                      | `Cargo.toml:35`; `Cargo.lock`                                    |
+| **M6** | Input validation  | ~~Medium~~ **CLOSED** | ~~No length or format bound on any free-text field~~ — fixed in `ff969bf`: caps counted in `chars()`, and the three coded settings held to the frontend's own vocabularies                                                                | Done                                                                                                        | `commands.rs:380-385`, `402-409`, `1908-1924`; `models.rs:46-52` |
+| **L1** | Input validation  | ~~Low~~ **CLOSED**    | ~~`list_all_payments` binds `limit` straight into `LIMIT ?1`; SQLite reads a negative limit as unlimited~~ — fixed in `f5d3f6a`: clamped to `PAYMENT_LIMIT_RANGE` (`1..=5000`)                                                            | Done; the mock had the mirror-image bug (`.slice(0, -1)` drops a row) and was clamped to match              | `commands.rs:1414`, `1430`                                       |
+| **L2** | Licensing         | Low                   | A release binary embedding the development public key only warns; the matching secret is published in `docs/license-format.md`                                                                                                            | Make `verifying_key()` return `None` for the dev key when `!cfg!(debug_assertions)`                         | `license.rs:635-650`                                             |
+| **L3** | Tooling           | Low                   | All 14 `security/*` ESLint rules are `warn` and `npm run lint` has no `--max-warnings 0` — findings cannot fail CI or the pre-commit hook                                                                                                 | Promote the retained high-signal rules to `error`, or add `--max-warnings 0`                                | `eslint.config.js:33`; `package.json:20`                         |
+| **L4** | Licensing         | Low                   | Licence state is evaluated once at startup and cached for the process lifetime; expiry mid-session takes effect only on restart                                                                                                           | Re-evaluate on a timer or on window focus, if the business rule requires it                                 | `lib.rs:81`; `license.rs:320-352`                                |
+| **L5** | Rust robustness   | Low                   | `rebalance_amounts`/`apply_pool` validate `index` against `amounts.len()` then index `paid_amounts[index]`; a mismatched-length caller panics                                                                                             | Add `debug_assert_eq!(amounts.len(), paid_amounts.len())`                                                   | `db.rs:427`, `430`, `465-481`                                    |
+| **L6** | Input validation  | Low                   | `ImpayeFilter.date_from`/`date_to` never reach `parse_date`; a malformed date yields a silently empty list instead of `INVALID_DATE`                                                                                                      | Run both through `parse_date`                                                                               | `commands.rs:1505-1514`                                          |
+| **L7** | Logging           | Low                   | `db.rs:272` logs a rejected, frontend-supplied date string verbatim — log noise, bounded by `{:?}` escaping. Local disk only, never IPC                                                                                                   | Truncate, or log only that parsing failed                                                                   | `db.rs:272`                                                      |
+| **L8** | Architecture      | Low                   | `SettingsView.vue` imports `@tauri-apps/plugin-dialog` directly — the only Tauri import outside the gateway                                                                                                                               | Move the dialogs behind `src/api/`, or accept and document it; today it blocks a mechanical lint rule       | `SettingsView.vue:103`, `138`, `170`                             |
+| **L9** | Testing           | ~~Low~~ **CLOSED**    | ~~28/34 SFCs, 3/4 stores and 4/6 composables have no unit test; locale key parity untested~~ — fixed in `05f4d56` and `6875d83`: 8 new suites, 147 → 224 unit tests. Uncovered a real `useSort` bug on the way (`6c1df84`)                | Done for everything holding logic; the presentational `ui/` primitives are deliberately skipped             | `src/components/**`, `src/stores/**`, `src/composables/**`       |
+| **I1** | Tauri security    | Info                  | No updater is configured — no `plugin-updater`, no `updater` key. The HTTPS-endpoint and signature checks do not apply                                                                                                                    | None. Revisit when an updater is added                                                                      | `tauri.conf.json`; `Cargo.toml`                                  |
+| **I2** | Dependencies      | Info                  | 18 RustSec warnings (0 vulnerabilities): 10 GTK3 bindings, 5 `unic-*`, `proc-macro-error`, `glib` unsoundness, `event-listener` unsoundness                                                                                               | Nothing actionable — all transitive via `tauri → tao/gtk`, no fixed versions exist. Policy already recorded | `Cargo.lock`; `deny.toml:5-16`                                   |
+| **I3** | Performance       | Info                  | N+1 query pattern survives in `list_purchases` (3 queries per row) and the dashboard; commands are `async` but do blocking DB work                                                                                                        | Matters only at scale; `spawn_blocking` for `VACUUM INTO` and the listings if the DB grows                  | `commands.rs:564-574`, `1646+`                                   |
 
 ---
 
 ## 3. Reconnaissance detail
 
-### 3.1 Layout
+**Project layout.** `src-tauri/` (Rust core, 8 modules), `src/` (Vue renderer),
+`tests/` (integration + E2E, deliberately outside `src/`), `docs/`. Config:
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/deny.toml`,
+`package.json`, `vite.config.ts`, `vitest.integration.config.ts`,
+`eslint.config.js`, `tsconfig.json`,
+`.github/workflows/{build,codeql,security}.yml`, `.github/dependabot.yml`.
 
-```
-payment-schedule-desktop/
-├─ src/                       Vue 3 renderer (16 SFCs, 8 TS modules, 3 locale files)
-│  ├─ api/{index,mock}.ts     the only IPC boundary + its in-browser twin
-│  ├─ lib/{finance,alerts,assets}.ts
-│  ├─ stores/{settings,stats,ui}.ts        (Pinia, setup-style)
-│  ├─ composables/{useBack,useClickOutside,useContactActions,useFormat,useSort}.ts
-│  └─ locales/{ar,fr,en}.json              264 keys each, exactly in sync
-├─ src-tauri/
-│  ├─ src/{lib,commands,db,models,seed}.rs 1 895 LOC
-│  ├─ capabilities/default.json            one capability, window "main"
-│  ├─ tauri.conf.json, Cargo.toml, Cargo.lock (committed, deliberately)
-│  ├─ deny.toml, rustfmt.toml
-│  └─ gen/schemas/                         generated ACL manifests (gitignored)
-├─ tests/{integration,e2e}/
-├─ .github/workflows/{build,codeql,security}.yml + dependabot.yml
-├─ vite.config.ts, vitest.integration.config.ts, eslint.config.js, tsconfig*.json
-└─ architecture.md, features.md, README.md, CLAUDE.md, docs/e2e/qa-report.md
-```
+**Tauri version: 2** (`tauri 2.11.5`), confirmed three ways — the `$schema` URL
+at `tauri.conf.json:2`, the `capabilities` array under `app.security` (a v2-only
+construct; v1 used a flat `allowlist`), and the locked crate version. This
+matters for everything in §5: the permission model reviewed below is the v2
+capability system, not the v1 allowlist.
 
-### 3.2 Tauri version — v2, confirmed three ways
+**Plugins in use** (5, all registered in `lib.rs:55-65`, all exactly current
+against crates.io):
 
-`tauri = { version = "2", features = ["protocol-asset"] }` (`Cargo.toml:21`), resolving to **2.11.5** in `Cargo.lock`; config declares `"$schema": "https://schema.tauri.app/config/2"`; the permission model in use is v2's **capabilities** (`src-tauri/capabilities/default.json`), not a v1 allowlist. `@tauri-apps/api ^2.1.1` on the JS side. Nothing v1-shaped remains.
+| Plugin                         | Version | Why it is there                                                                                            |
+| ------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------- |
+| `tauri-plugin-single-instance` | 2.4.3   | Registered **first**, deliberately — two processes on one SQLite file is the classic corruption window     |
+| `tauri-plugin-log`             | 2.9.0   | Backend diagnostics to stdout + `LogDir`                                                                   |
+| `tauri-plugin-dialog`          | 2.7.2   | Native open/save pickers (logo, backup destination, licence import)                                        |
+| `tauri-plugin-os`              | 2.3.2   | OS locale detection on first run                                                                           |
+| `tauri-plugin-opener`          | 2.5.4   | Hands `tel:`/`sms:` to the OS — navigating the WebView there destroys the SPA. Scoped to those two schemes |
 
-### 3.3 Plugins in use
+**Notably absent, and deliberately so:** no `fs` plugin, no `shell` plugin, no
+`http` plugin, no `updater`, no `sql` plugin.
 
-| Plugin                      | Rust        | JS                      | Used for                                                        | Verdict                                     |
-| --------------------------- | ----------- | ----------------------- | --------------------------------------------------------------- | ------------------------------------------- |
-| `tauri-plugin-os` 2.3.2     | `lib.rs:15` | `stores/settings.ts:28` | `locale()` for first-run language detection                     | Justified, minimal (`os:allow-locale`)      |
-| `tauri-plugin-dialog` 2.7.2 | `lib.rs:16` | `SettingsView.vue:68`   | Native file picker for the shop logo                            | Justified                                   |
-| `tauri-plugin-fs` 2.5.1     | `lib.rs:17` | **no importers**        | — nothing                                                       | **Remove (finding 1)**                      |
-| `tauri-plugin-opener` 2.5.4 | `lib.rs:21` | `api/index.ts:33-35`    | Hands `tel:`/`sms:` to the OS instead of navigating the WebView | Justified; scoped to those two schemes only |
+**SQLite access.** Raw `rusqlite 0.39.0` with `features = ["bundled"]` — the
+SQLite C library is statically compiled in, so there is no system-SQLite
+dependency and no separately-patchable `libsqlite3` (which is also why M5
+matters). A single `Connection` behind `std::sync::Mutex` (`db.rs:14-16`), locked
+per command via `Db::lock()`. **The frontend has no SQL access of any kind** —
+no SQL plugin and no `fs` permission, so the "frontend never touches the DB"
+invariant is enforced by the capability set, not merely by convention.
 
-No community plugins. No `tauri-plugin-sql`, no `tauri-plugin-updater`, no `tauri-plugin-shell`, no `tauri-plugin-single-instance`, no `tauri-plugin-log`.
-
-### 3.4 How SQLite is accessed, and where the file lives
-
-Raw **`rusqlite`** with the `bundled` feature — SQLite is statically compiled in, so there is no dependency on a system libsqlite3. One `Connection` behind a `std::sync::Mutex`, managed as Tauri state:
-
-```rust
-// src-tauri/src/db.rs:11-14
-pub struct Db { pub conn: Mutex<Connection> }
-```
-
-```rust
-// src-tauri/src/lib.rs:22-30
-let data_dir = app.path().app_data_dir()?;   // correct: OS app-data dir, not resources
-std::fs::create_dir_all(&data_dir)?;
-let db_path = data_dir.join("payment_schedule.db");
-let database = db::Db::open(&db_path)…;
-app.manage(database);
-```
-
-The location is right — `app_data_dir()` (e.g. `~/.local/share/tn.paymentschedule/` on Linux, `%APPDATA%\tn.paymentschedule\` on Windows), never a bundled read-only resource. The logo is copied next to it as `logo.<ext>`. The problem is not _where_ the file is, it is _who else can reach it_ (finding 1). Demo seeding is gated to debug builds unless `PAYMENT_SCHEDULE_SEED=1|true` (`db.rs:52-67`), and that gate is unit-tested (`db.rs:204-218`) — good.
+**DB file at runtime:** `app.path().app_data_dir()` → `create_dir_all` →
+`payment_schedule.db` (`lib.rs:67-71`). Platform app-data, never bundled in
+resources, never user-selectable. Startup aborts if it cannot be opened — correct;
+the app cannot function without it.
 
 ---
 
@@ -150,435 +221,772 @@ The location is right — `app_data_dir()` (e.g. `~/.local/share/tn.paymentsched
 
 ### 4.1 Rust
 
-`cargo audit` (RustSec DB, 1 169 advisories, 490 crates scanned): **0 vulnerabilities**, 17 warnings — full output in §9.1.
+`cargo-outdated` is not installed on this machine and was not installed for this
+audit. Direct dependencies were compared against the crates.io API by hand
+instead; transitive crates are covered by `cargo audit` and `cargo deny`, both of
+which run in CI.
 
-- 10 × unmaintained **gtk-rs GTK3** bindings (`atk`, `atk-sys`, `gdk`, `gdk-sys`, `gdkwayland-sys`, `gdkx11`, `gdkx11-sys`, `gtk`, `gtk-sys`, `gtk3-macros`), RUSTSEC-2024-0411…0418.
-- 1 × **unsound**: `glib 0.18.5`, RUSTSEC-2024-0429 (`VariantStrIter` iterator impls).
-- 6 × unmaintained: `proc-macro-error 1.0.4` (RUSTSEC-2024-0370) and `unic-*` 0.9.0 (RUSTSEC-2025-0075/0080/0081/0098/0100).
+| Crate                          | Locked            | Latest stable | Assessment                                                                                                                                                                                |
+| ------------------------------ | ----------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tauri`                        | 2.11.5            | 2.11.5        | ✅ current                                                                                                                                                                                |
+| `tauri-build`                  | 2.6.3             | 2.6.3         | ✅ current                                                                                                                                                                                |
+| `tauri-plugin-dialog`          | 2.7.2             | 2.7.2         | ✅ current                                                                                                                                                                                |
+| `tauri-plugin-os`              | 2.3.2             | 2.3.2         | ✅ current                                                                                                                                                                                |
+| `tauri-plugin-opener`          | 2.5.4             | 2.5.4         | ✅ current                                                                                                                                                                                |
+| `tauri-plugin-single-instance` | 2.4.3             | 2.4.3         | ✅ current                                                                                                                                                                                |
+| `tauri-plugin-log`             | 2.9.0             | 2.9.0         | ✅ current                                                                                                                                                                                |
+| `chrono`                       | 0.4.45            | 0.4.45        | ✅ current                                                                                                                                                                                |
+| `serde` / `serde_json`         | 1.0.229 / 1.0.151 | same          | ✅ current                                                                                                                                                                                |
+| `log`                          | 0.4.33            | 0.4.33        | ✅ current                                                                                                                                                                                |
+| `machine-uid`                  | 0.6.0             | 0.6.0         | ✅ current                                                                                                                                                                                |
+| **`rusqlite`**                 | **0.39.0**        | 0.40.1        | ✅ **upgraded** (`7e592ac`). Held at 0.39: 0.40 needs `libsqlite3-sys` 0.38, whose build script uses `cfg_select!` (Rust **1.95**), and 0.40 only adds unused vtab APIs                   |
+| `ed25519-dalek`                | **3.0.0**         | 3.0.0         | ✅ **upgraded** (`2edaa7e`). Forced `sha2 0.11`; brings `curve25519-dalek` 5, `ed25519` 3, `signature` 3                                                                                  |
+| `base64`                       | **0.23.1**        | 0.23.1        | ✅ **upgraded** (`2edaa7e`). Three copies now in the lock (0.21.7, 0.22.1 via `plist`, ours) — build-time chain only                                                                      |
+| `sha2`                         | **0.11.0**        | 0.11.0        | ✅ **upgraded** (`2edaa7e`) — not optional: `ed25519-dalek` 3 requires `^0.11`. The duplicate is against `tauri-codegen` (not `wry`, as the old comment claimed), on the build-time chain |
 
-Every one is transitive through `tauri` → `tauri-runtime-wry` → `tao`/`gtk`, or through build-time proc macros. There is no version to bump to; they clear when Tauri's Linux backend leaves GTK3. Since `Cargo.lock` is committed and `deny.toml`'s `ignore = []` is empty, the weekly CI run keeps them visible — that is the right posture.
+**Pre-1.0 crates relied on heavily:** `rusqlite` (0.32) and `chrono` (0.4) are
+both pre-1.0 and load-bearing, as are `base64` 0.22 and `sha2` 0.10. All four are
+mature and widely used; the risk is churn at each minor, not abandonment.
 
-Direct dependencies vs crates.io latest (`cargo-outdated` was not installed; versions fetched from the crates.io API — see §9.3 for the method):
+**Unmaintained / yanked:** no yanked crates — `deny.toml` sets `yanked = "deny"`
+and CI enforces it. 18 unmaintained/unsound warnings, all transitive through
+`tauri → tauri-runtime-wry → tao/gtk`; they clear when Tauri's Linux backend
+leaves GTK3. `deny.toml:5-16` records this as a decision rather than an
+oversight, which is the right way to carry an accepted risk.
 
-| Crate                  | Locked            | Latest stable | Gap                                                                                                           |
-| ---------------------- | ----------------- | ------------- | ------------------------------------------------------------------------------------------------------------- |
-| `tauri`                | 2.11.5            | 2.11.5        | current                                                                                                       |
-| `tauri-build`          | 2.6.3             | 2.6.3         | current                                                                                                       |
-| `tauri-plugin-dialog`  | 2.7.2             | 2.7.2         | current                                                                                                       |
-| `tauri-plugin-fs`      | 2.5.1             | 2.5.1         | current (but should be removed — finding 1)                                                                   |
-| `tauri-plugin-os`      | 2.3.2             | 2.3.2         | current                                                                                                       |
-| `tauri-plugin-opener`  | 2.5.4             | 2.5.4         | current                                                                                                       |
-| `serde` / `serde_json` | 1.0.229 / 1.0.151 | same          | current                                                                                                       |
-| `chrono`               | 0.4.45            | 0.4.45        | current — **pre-1.0 and load-bearing** for all date math (finding 3 is about how it is called, not the crate) |
-| **`rusqlite`**         | 0.32.1            | **0.40.1**    | **8 minor versions behind** (finding 16)                                                                      |
-| **`libsqlite3-sys`**   | 0.30.1            | **0.38.1**    | follows `rusqlite`; determines the bundled SQLite version                                                     |
-
-Nothing is yanked. No git or non-crates.io sources (`deny.toml` flags them as warnings).
-
-**Edition / MSRV.** `edition = "2021"`, `rust-version = "1.77"`. That declared MSRV is not achievable: locked dependencies declare MSRVs up to **1.88.0** (`darling`, `darling_core`, `darling_macro`, `plist`, `time`, `time-core`, `time-macros`, `serde_with`) and 1.87 (`zbus`, `wasip2`). Installed toolchain here is **1.97.0**, and CI uses `dtolnay/rust-toolchain@stable`, so nothing is broken today — but the manifest advertises a floor that would fail. There is no `rust-toolchain.toml` pinning a version for contributors.
+**Edition / MSRV:** edition 2021, `rust-version = "1.88"`. The MSRV claim is
+**proven** by a dedicated `cargo +1.88 check --locked --all-targets` job
+(`build.yml:81-118`) — unusual and good; the previous audit found the declared
+floor was fiction.
 
 ### 4.2 Node
 
-Package manager: **npm** (`package-lock.json`, lockfileVersion 3; no yarn/pnpm lock). Local Node **24.16.0** / npm **11.13.0**; CI pins Node **22**; `package.json` declares no `engines` and no `packageManager`.
+**Package manager:** npm (only `package-lock.json` present; no yarn/pnpm lock).
 
-`npm audit`: **8 high**, 0 critical/moderate/low. Single root cause:
+**`npm audit`: 0 vulnerabilities.** _(Re-verified after `c780434`; the gate at
+`security.yml:52-53` exits 0.)_
 
-```
-brace-expansion <=5.0.7  (GHSA-mh99-v99m-4gvg, DoS via unbounded expansion → OOM)
-└─ minimatch 2.0.0–10.0.2
-   ├─ @vue/language-core → vue-tsc 1.7.0-alpha.0–3.0.0-beta.5
-   ├─ editorconfig → js-beautify → @vue/test-utils
-   └─ glob
-```
+It read **1 high** when this report was written — `brace-expansion` 5.0.8, DoS,
+GHSA-rgw5-rvv9-x895, reached via `eslint@10.8.0 → minimatch@10.2.5`. Dev-only
+(ESLint is not shipped), but `npm audit` does not distinguish.
 
-All four paths are **devDependencies** (typecheck + component-test tooling), so no vulnerable code is shipped in the bundle. But `npm audit --audit-level=high` is exactly what `.github/workflows/security.yml:55-56` runs, and it exits 1 today — the weekly Security-audit job is red, and any PR touching `package.json`/`package-lock.json` will be too. `npm audit fix --force` resolves it by installing `vue-tsc@3.3.8` (breaking).
+**The recommendation this section originally gave was wrong, and that is the
+part worth keeping.** It said _"`npm audit fix` resolves it without a major
+bump"_. `npm audit fix` resolves nothing here: it reports the advisory and then
+proposes no change, because the pinned 5.0.8 already satisfies the `^5.0.5` that
+minimatch declares, and npm will not bump a transitive dependency that sits
+inside its own range. The patched release, 5.0.9, satisfies that range too — so
+this was never a version conflict, only a lockfile that had to be moved
+deliberately with `npm update brace-expansion`. Expect the same shape from the
+next transitive advisory.
 
-Runtime dependencies are clean of advisories. Majors behind: `pinia` 2.3.1 → 4.0.2, `vue-router` 4.6.4 → 5.2.0, `vue-i18n` 10.0.8 → 11.4.8. Dev: `vite` 7 → 8, `jsdom` 25 → 29, `typescript` 5.9 → 7.0.2, `vue-tsc` 2.2 → 3.3. Patches available: `@tauri-apps/plugin-dialog` 2.7.1 → 2.7.2, `eslint` 10.7 → 10.8, `playwright` 1.61.1 → 1.62.0.
+Note also the improvement over the previous audit: its 8 advisories came through
+`vue-tsc 2.x` and `@vue/test-utils`, closed by the `vue-tsc@3` upgrade plus the
+`js-beautify` override still present in `package.json`.
 
-Nothing unmaintained on the JS side: every direct dependency is a first-party Vue/Tauri/Vite/ESLint package with releases inside the last few months.
+**One deprecation, which the outdated table below understates.** A clean
+`npm ci` warns that **`vue-i18n@10.0.8` is no longer supported upstream** —
+"v9 and v10 no longer supported, please migrate to v11". The registry carries it
+under a `legacy10` dist-tag with a `deprecated` field. So that row is not
+ordinary version drift: it is a shipped runtime dependency that will receive no
+further fixes, security or otherwise. It is the only deprecation warning in the
+whole install.
+
+**`npm outdated`:**
+
+| Package             | Current | Wanted | Latest | Note            |
+| ------------------- | ------- | ------ | ------ | --------------- |
+| `pinia`             | 2.3.1   | 2.3.1  | 4.0.2  | 2 majors behind |
+| `vue-i18n`          | 10.0.8  | 10.0.8 | 11.4.8 | 1 major behind  |
+| `vue-router`        | 4.6.4   | 4.6.4  | 5.2.0  | 1 major behind  |
+| `vite`              | 7.3.6   | 7.3.6  | 8.2.0  | 1 major behind  |
+| `typescript`        | 5.9.3   | 5.9.3  | 7.0.2  | 2 majors behind |
+| `jsdom`             | 30.0.0  | 30.0.1 | 30.0.1 | patch           |
+| `lint-staged`       | 17.2.0  | 17.3.0 | 17.3.0 | minor           |
+| `playwright`        | 1.62.0  | 1.62.1 | 1.62.1 | patch           |
+| `typescript-eslint` | 8.65.0  | 8.66.0 | 8.66.0 | minor           |
+| `vue-tsc`           | 3.3.8   | 3.3.9  | 3.3.9  | patch           |
+| `vue`               | 3.5.40  | 3.5.41 | 3.5.41 | patch           |
+
+None of the outdated majors carries a known _advisory_, so most of this is
+maintenance debt rather than a security finding — with the exception of
+`vue-i18n`, which is deprecated upstream as noted above and is the one row here
+that should be scheduled rather than deferred.
+
+Dependabot runs weekly for npm, cargo and actions, with dev-dependency
+minors/patches grouped to cut PR noise.
+
+### 4.3 Licences
+
+Consistent and deliberate. `LICENSE` at the root is proprietary ("All rights
+reserved"); `package.json` declares `"UNLICENSED"` + `"private": true`;
+`Cargo.toml` uses `license-file = "../LICENSE"` with `publish = false`.
+`deny.toml` exempts the private crate (`[licenses.private] ignore = true`) while
+holding third-party crates to an explicit allow-list (MIT, Apache-2.0, BSD-2/3,
+ISC, Zlib, MPL-2.0, CC0, Unicode, OpenSSL, and `blessing` for bundled SQLite).
+`cargo deny check` runs in CI, so an incompatible transitive licence fails the
+build. **No conflicts found.**
+
+### 4.4 Runtime versions
+
+_(Rewritten after verification; the original claim below was wrong on both
+halves.)_ It read: _"`engines.node` is `">=22"`; installed v24.16.0 ✅. CI pins
+Node 22 — the declared floor, which is the right choice for a floor test."_
+
+**`">=22"` was not true.** Checking all **164** packages in the tree that declare
+an `engines.node` range, by semver against specific versions:
+
+| Node        | packages unsatisfied |                                                   |
+| ----------- | -------------------- | ------------------------------------------------- |
+| 22.0.0      | 27                   | the declared floor                                |
+| 22.13.0     | 6                    |                                                   |
+| **22.22.2** | **0**                | first 22.x that works                             |
+| 23.x        | 24                   | non-LTS line, excluded by the tree                |
+| 24.0.0      | 3                    |                                                   |
+| **24.15.0** | **0**                | first 24.x that works                             |
+| 24.16.0     | 0                    | the installed version                             |
+| 25.0.0      | 3                    | `abbrev`, `jsdom`, `nopt` want `^24.15 \|\| >=26` |
+
+`jsdom` — the test environment itself — is among the six needing 22.22.x.
+
+**And CI was not testing the floor.** `node-version: 22` in `setup-node` resolves
+to the _latest_ 22.x, which is new enough to satisfy everything, so the lane was
+green while the claim it was meant to back went unexercised.
+
+Both fixed in `b119453`: `engines.node` is now `"^22.22.2 || ^24.15.0"` — the two
+LTS lines the tree actually supports — and the `frontend` CI job runs a
+`[22, 24]` matrix, so the version the app is developed on is exercised too.
+
+**Node 24 verdict: fully supported from 24.15.0.** Beyond the semver sweep it is
+empirically proven — every `npm test`, `lint`, `typecheck`, `build` and
+`test:integration` run recorded in this report executed on v24.16.0.
 
 ---
 
 ## 5. Tauri-specific security review
 
-### 5.1 Capabilities (`src-tauri/capabilities/default.json`)
+### 5.1 Capabilities (v2)
 
-One capability, `main-capability`, bound to `windows: ["main"]` — correct v2 shape.
-
-| Permission                                                                                                                          | Needed?                                                                                                                                                                                                  |
-| ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core:default`, `core:window:default`, `core:window:allow-set-title`, `core:app:default`, `core:path:default`, `core:event:default` | Reasonable for a single-window SPA                                                                                                                                                                       |
-| `dialog:default`, `dialog:allow-open`                                                                                               | Yes — logo picker (`SettingsView.vue:68`). No save/message dialogs are used, so `dialog:default` is slightly wide but harmless                                                                           |
-| `os:default`, `os:allow-locale`                                                                                                     | Yes — locale detection                                                                                                                                                                                   |
-| **`fs:default`**                                                                                                                    | **No.** Expands to `create-app-specific-dirs` + `read-app-specific-dirs-recursive` + `deny-default` (per the generated manifest) — i.e. recursive read of AppConfig/AppData/AppLocalData/AppCache/AppLog |
-| **`fs:allow-read-file` @ `$APPDATA/**`, `$APPLOCALDATA/**`**                                                                        | **No** — nothing in `src/` reads files                                                                                                                                                                   |
-| **`fs:allow-write-file` @ `$APPDATA/**`, `$APPLOCALDATA/**`**                                                                       | **No, and worst of the three** — this grants the WebView write access to `payment_schedule.db` itself                                                                                                    |
-| `opener:allow-open-url` @ `tel:*`, `sms:*`                                                                                          | Yes, and exemplary: URL-scoped allow-list, with `useContactActions.ts` validating the number before it is ever handed over                                                                               |
-
-No wildcard `fs:allow-*` without a scope, no `shell` permissions at all, no `http` permissions. The single real problem is the unused `fs` grant, and it happens to cover the database.
-
-`assetProtocol` (`tauri.conf.json:28-31`) is enabled with scope `$APPDATA/**`, `$APPLOCALDATA/**` so that `convertFileSrc` can render the logo (`src/lib/assets.ts`). The same over-broad scope applies: the renderer can `fetch()` the raw bytes of `payment_schedule.db` through `asset:`. Narrow it to `$APPDATA/logo.*`.
-
-### 5.2 Content-Security-Policy
+`src-tauri/capabilities/default.json` — one capability, scoped to
+`"windows": ["main"]`:
 
 ```
-default-src 'self'; img-src 'self' asset: http://asset.localhost data:;
+core:default, core:window:default, core:window:allow-set-title,
+core:app:default, core:path:default, core:event:default,
+dialog:default, dialog:allow-open, dialog:allow-save,
+os:default, os:allow-locale,
+{ "identifier": "opener:allow-open-url",
+  "allow": [{ "url": "tel:*" }, { "url": "sms:*" }] }
+```
+
+**Nothing here is broader than the app needs.** Specifically checked and absent:
+no `fs:*` of any kind, no `shell:*`, no `http:*`, no wildcard scopes. The
+`opener` grant is the tightest form available — a URL allow-list of exactly two
+schemes — and neither `opener:allow-open-path` nor
+`opener:allow-reveal-item-in-dir` is granted. `dialog:allow-open`/`allow-save`
+return paths to the renderer, which then hands them to a Rust command that
+re-validates them: the right shape.
+
+A marked improvement on the last audit, which found `fs:default` +
+`fs:allow-write-file` over `$APPDATA/**` — i.e. the WebView could read and write
+the database file directly.
+
+### 5.2 CSP
+
+`tauri.conf.json:26`:
+
+```
+default-src 'self'; script-src 'self'; object-src 'none';
+img-src 'self' asset: http://asset.localhost data:;
 style-src 'self' 'unsafe-inline'; font-src 'self' data:
 ```
 
-Defined (not `null`), which is the important part. `script-src` is absent and therefore inherits `default-src 'self'` — **no `unsafe-eval`, no `unsafe-inline` for scripts**. `style-src 'unsafe-inline'` is genuinely required by Vue's runtime style bindings and scoped-style injection; the exposure is limited given scripts cannot be injected. `img-src` includes `asset:`/`http://asset.localhost` (needed for the logo) and `data:`. `connect-src` is not stated → inherits `'self'`, so no outbound calls. No `frame-src`, and the app has no iframes. Recommend stating `script-src 'self'` and `object-src 'none'` explicitly so future edits to `default-src` cannot silently widen script execution.
+Defined and restrictive. `script-src 'self'` is stated explicitly rather than
+inherited — **no `unsafe-eval`, no `unsafe-inline` for scripts**, which is what
+matters. `object-src 'none'` blocks plugin embedding. `style-src 'unsafe-inline'`
+is required by Vue's runtime style bindings and is the standard accepted
+trade-off; combined with zero `v-html` of user data (§8.2) it is not exploitable
+here. `img-src` includes `asset:` because the shop logo is served over the asset
+protocol.
+
+**Asset protocol:** `enable: true`, `scope: ["$APPDATA/logo.*"]` — a single glob
+for a single file family, not the whole app-data directory.
+`remove_existing_logos` (`commands.rs:2042-2051`) exists specifically so a
+png→jpg switch does not leave an orphan readable inside that scope.
 
 ### 5.3 devTools in production
 
-Not force-enabled: `Cargo.toml:21` enables only `features = ["protocol-asset"]` — the `devtools` feature is absent, so Tauri wires devtools in debug builds only. There is no `withGlobalTauri` in the config either, so `window.__TAURI__` is not injected globally. Nothing to fix.
+Not force-enabled. There is no `"devtools": true` in `tauri.conf.json` and no
+`open_devtools()` call anywhere in `src-tauri/src/`. Tauri's default already
+gates devtools to debug builds and to the `devtools` Cargo feature, which is not
+enabled. ✅
 
-### 5.4 `#[tauri::command]` boundary — treating each as untrusted input
+### 5.4 `#[tauri::command]` as an untrusted boundary
 
-20 commands (`lib.rs:31-57`). Validation actually present:
+27 commands, every one treated as an untrusted-input boundary in this review.
+Summary of the posture:
 
-| Command             | Validates                                                                                            | Missing                                                                                                                                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_purchase`   | `installment_count >= 1`; `purchase_date` via `parse_date`; manual amounts must sum to `total_price` | upper bound on `installment_count` (#4); `total_price > 0` (#13); `interval_kind` ∈ {weekly, monthly, custom} and `interval_days` range (#3); `installments[].due_date` never parsed (#10)            |
-| `record_payment`    | `amount > 0`; `payment_date` via `parse_date`; installment must exist                                | overpayment cap (#12); no check that `payment_date` is ≥ purchase date / ≤ today                                                                                                                      |
-| `update_settings`   | `alert_soon_days` clamped to 1..=90 — good, and mirrored in the UI                                   | `language`/`currency_code`/`date_format` accepted as free-form strings and echoed back to the renderer (low risk: they only select formatting, and unknown locales fall back via `isSupportedLocale`) |
-| `get_dashboard`     | —                                                                                                    | `upcoming_days` unbounded → panic (#2)                                                                                                                                                                |
-| `set_logo`          | —                                                                                                    | everything (#6)                                                                                                                                                                                       |
-| `list_all_payments` | —                                                                                                    | `limit` unbounded; negative becomes SQLite's "no limit". Harmless but sloppy                                                                                                                          |
-| id-taking commands  | Type-safe `i64`; SQL is parameterized; FKs enforced (`PRAGMA foreign_keys = ON`, `db.rs:23`)         | fine                                                                                                                                                                                                  |
+- **Every command taking a path** (`set_logo`, `backup_database`,
+  `import_license`) validates before use, and every write destination is
+  `app_data_dir().join(<fixed or allow-listed name>)`. **`PathBuf::join` with a
+  caller-controlled component never occurs** — there is no path-traversal
+  surface.
+- **`set_logo`** (`commands.rs:1977-2039`): extension allow-list, `is_file()`,
+  5 MiB cap, **magic-byte sniff**. Reduced to "any real image ≤ 5 MiB", and the
+  in-code comment shows the residual was understood rather than missed.
+- **`import_license`** (`commands.rs:2195`): 64 KiB cap checked against
+  `metadata` _before_ the read, `is_file()`, and a full Ed25519 signature check
+  _before_ the file is copied anywhere.
+- **`backup_database`**: `.db` extension required, and an existing destination
+  must itself start with `SQLite format 3\0`. Good — except for the temp path,
+  which is **M2**.
+- The gaps are numeric and string bounds, not path handling: **H3**, **M1**,
+  **M6**, **L1**, **L6**.
 
-Text fields (`first_name`, `product_label`, `note`, …) are `.trim()`ed and bound as parameters — no length limits, but with parameterized SQL and no `v-html` sink, the impact is cosmetic.
+Read commands (`get_client_detail`, `get_purchase_detail`, `get_settings`,
+`get_license_status`) are intentionally reachable unlicensed; `list_clients` and
+`list_purchases` _degrade_ to the active scope rather than refusing. 21 of 27
+commands sit behind `require_license` (`commands.rs:62-67`), enforced in Rust —
+`commands.rs:42-44` explains why a UI-only gate would be decoration.
 
-### 5.5 Shell / command injection
+### 5.5 Command injection
 
-**Not applicable, and confirmed absent.** No `tauri-plugin-shell`, no `shell:*` permission, no `Command::new`, no `std::process::Command` anywhere in `src-tauri/src/` (the only `std::process` uses are `std::process::id()` for unique temp-DB filenames in tests, `db.rs:236` and `commands.rs:964`). External URIs go through the opener plugin with a scheme allow-list and a validated payload. There is no string-built command line anywhere in this codebase.
+**Not applicable — no surface exists.** No `std::process::Command`, no `shell`
+plugin, no `Command::new` anywhere in `src-tauri/src/`. The only OS handoff is
+`tauri-plugin-opener`, scoped to `tel:`/`sms:`, and the URI it receives is built
+by `contactUri()` (`src/composables/useContactActions.ts:41`), which allow-lists
+characters, rejects other schemes, and bounds the digit count — with a unit test
+asserting `file:///etc/passwd` is rejected.
 
 ### 5.6 Updater
 
-**Not configured — stated explicitly since the audit asked.** No `tauri-plugin-updater` in `Cargo.toml` or `package.json`, no `plugins.updater` block, no `pubkey`, no `createUpdaterArtifacts` in `tauri.conf.json`. Distribution is manual: `.github/workflows/build.yml` bundles deb/rpm/AppImage/msi/nsis and attaches them to a **draft** GitHub Release. Consequences: nothing to misconfigure (no unpinned endpoint, no disabled signature check), but also **no way to ship a security fix to installed copies** — users must download a new installer. Bundles are also unsigned (no `signingIdentity`/`certificateThumbprint`), so Windows SmartScreen will warn. If auto-update is ever added, the endpoint must be HTTPS and `pubkey` signature verification must stay on (it is mandatory in Tauri v2's updater, which is a good default).
+**Not configured — this check does not apply.** No `tauri-plugin-updater` in
+`Cargo.toml`, no `updater` key in `tauri.conf.json`, no update endpoint, no
+`pubkey`. Distribution is via GitHub Releases built by `build.yml`.
+
+Worth noting for when an updater _is_ added: `build.yml:157-181` already shows
+the right instinct by refusing to build a release that carries the published
+development licence key.
 
 ---
 
 ## 6. Rust backend review
 
-### 6.1 `unwrap` / `expect` / `panic!`
+### 6.1 Panics on input-handling paths
 
-No `panic!`, no `unreachable!`, no `todo!`. Two categories of `unwrap`:
+**One `expect()` in the entire non-test backend**, at `lib.rs:127`
+(`.expect("error while running paymentSchedule")`) — startup, before IPC exists,
+which is the correct place to abort. **Zero** `unwrap()`, `panic!`,
+`unreachable!`, `todo!`, `unimplemented!` elsewhere in non-test code.
 
-1. **`db.conn.lock().unwrap()`** — 21 sites (20 in `commands.rs`, 1 at `db.rs:41`). This only fails on mutex poisoning, i.e. after another thread panicked while holding the lock. In release that is moot (`panic = "abort"`, `Cargo.toml:38` — the process is already gone). In a debug build, however, one panicking command poisons the mutex and **every subsequent command panics**, so `tauri dev` degrades into a dead app that still renders. Recommend `unwrap_or_else(|e| e.into_inner())`.
-2. **`lib.rs:59` `.expect("error while running paymentSchedule")`** — startup-only, on `Builder::run`. Acceptable; nothing useful to recover to. Note the `setup` closure (`lib.rs:22-30`) correctly propagates with `?` and wraps the DB-open failure in a message.
+Mutex locks use `unwrap_or_else(|e| e.into_inner())` (`db.rs:53`,
+`license.rs:338-349`) rather than `.unwrap()`, so one panicking command cannot
+brick every later one — old finding #14, properly closed.
 
-The real crash risk is not `unwrap` — it is the **implicit panics inside `chrono`** reached from unvalidated IPC arguments (findings 2 and 3), verified against `chrono-0.4.45` source:
+**Slice indexing** — every site was checked for a bound proof. All live sites are
+safe: `rows[pos]` follows `.position()`, `rows[kept..]` follows
+`kept = rows.len().min(amounts.len())`, `&bytes[8..12]` is guarded by a
+`len() >= 12` check on the same line. The only unproven indexing is in
+`rebalance_amounts`/`apply_pool` (**L5**), which has no callers today.
 
-- `TimeDelta::days` → `expect(TimeDelta::try_days(days), "TimeDelta::days out of bounds")` (`time_delta.rs:137-139`)
-- `impl Add<TimeDelta> for NaiveDate` → `.checked_add_signed(rhs).expect("`NaiveDate + TimeDelta` overflowed")` (`naive/date/mod.rs:1981-1989`)
+**Integer overflow** is the real residue — see **M1**. Note the contrast:
+`add_interval` (`db.rs:339-358`) is _fully_ overflow-hardened with
+`checked_mul` / `try_days` / `checked_add_signed` / `checked_add_months`, all
+saturating, precisely because a naive version was a remote kill switch under
+`panic = "abort"`. The same discipline has not reached the money sums.
 
-`db.rs:143-152` uses the panicking `+` for `weekly`/`custom` but the _checked_ API for monthly (`checked_add_months(...).unwrap_or(date)`), so the safe pattern already exists in the file — it is simply not applied to the other two branches. Also note `Months::new(k as u32)` at `db.rs:149`: an `i64 → u32` cast that would wrap for a negative `k`. `k` is a loop index today, so it is latent, not live.
+`overflow-checks` is not set in `[profile.release]`, so release **wraps** where
+debug **panics** — the two profiles disagree about what a bug even is.
 
-### 6.2 Error handling and information leakage
+### 6.2 Error handling and leakage to the frontend
 
-Every fallible call is `.map_err(|e| e.to_string())` and every command returns `Result<T, String>` (`DbResult<T>`, `db.rs:16`). Consequences:
+**Clean by construction.** `AppError` (`error.rs:74-84`) has exactly one
+serialization path (`error.rs:138-142`), which goes through `code()`
+(`error.rs:120-127`), and the `Internal` variant collapses to the literal
+`"INTERNAL"`. Every `From` impl — `rusqlite::Error`, `std::io::Error`,
+`tauri::Error` — funnels through `AppError::internal`, which logs the detail and
+drops it from the wire.
 
-- The **entire `rusqlite` error text** crosses the IPC boundary — constraint names, column names, SQL fragments, SQLite result codes. The frontend then shows it verbatim (finding 5). Example: a `UNIQUE`/FK violation on `create_purchase` reaches the shopkeeper as `FOREIGN KEY constraint failed`.
-- **Filesystem paths leak** from `set_logo`/`Db::open`: `lib.rs:27` formats `Failed to open database: {e}`, and `commands.rs:923` returns the raw `app_data_dir()` error.
-- The codebase already has the right pattern in two places — `CLIENT_HAS_PURCHASES:{count}` (`commands.rs:256`), `SUM_MISMATCH:{sum}:{total}` (`commands.rs:342`), `INVALID_AMOUNT`, `INVALID_INSTALLMENT_COUNT`, `INSTALLMENT_NOT_FOUND`. Extending that discipline to the generic `map_err` sites (a small `enum AppError` + `impl Serialize`) fixes finding 5 at the source.
+**No SQL text, constraint name, column name, schema detail or filesystem path can
+cross IPC.** The only interpolated values are `Conflict` details, all numeric or
+from a closed vocabulary (`PREVIOUS_UNPAID:{idx}`, `SUM_MISMATCH:{sum}:{total}`,
+`OVERPAYMENT:{remaining}`, …).
 
-There is a second, quieter failure mode: `parse_date(...).unwrap_or("pending")` at `commands.rs:65-67` and `672-674`, and `.unwrap_or(0)` for `days_late` at `commands.rs:591-593`, `815-817`. A corrupt `due_date` never raises anything — the row simply reports "pending" and 0 days late forever. Combined with finding 10 (dates written unvalidated), a bad write is invisible in every screen.
+`LicenseStatus` deliberately does not derive `Serialize`, and
+`Malformed { reason }` is dropped in `to_info` (`license.rs:276-286`), so a parse
+error cannot describe the file back to the renderer.
+
+Residual (**L7**): `AppError::internal` writes detail to the log, and `db.rs:272`
+logs a rejected frontend-supplied date string verbatim. Local disk, not IPC, and
+bounded by `{:?}` escaping.
 
 ### 6.3 `unsafe`
 
-**None.** Zero `unsafe` blocks in `src-tauri/src/`. Nothing to justify.
+**None.** `grep -rn "unsafe" src-tauri/src/ src-tauri/build.rs` returns nothing.
+The only `unsafe` string in the repo is `'unsafe-inline'` in the CSP's
+`style-src`.
 
-### 6.4 Async runtime / blocking
+### 6.4 Async runtime
 
-There is **no async in the backend at all** — no `tokio` usage of its own, no `async fn`, no `spawn_blocking`. All 20 commands are synchronous, so Tauri executes them inline in the IPC handler (`tauri::ipc::protocol::message_handler`, installed as wry's `ipc_handler` in `manager/webview.rs:530`), which runs on the main event-loop thread; only `async` commands get moved onto the async runtime. Every SQLite query therefore blocks the UI thread.
+All 27 commands are `async fn`, deliberately — `commands.rs:3-6` records that a
+synchronous command would block the IPC/main event-loop thread. Old finding #7 is
+half-closed:
 
-That is tolerable at demo scale (6 clients / 8 purchases) but the query patterns amplify it badly:
+- ✅ **No `MutexGuard` spans an await.** `grep "\.await"` across `src-tauri/src/`
+  returns **zero matches** — no command awaits anything, so the guard never
+  crosses a suspension point and every future stays `Send`. The invariant claimed
+  in the module doc actually holds.
+- ⚠️ **All DB work is blocking `rusqlite` on the async executor.** No
+  `spawn_blocking`, no `tokio::` anywhere. For a single-user desktop app behind
+  one `Mutex<Connection>` this is defensible, but `backup_database`'s
+  `VACUUM INTO` and the N+1 listings can hold a Tokio worker for a long time
+  (**I3**).
 
-- `list_purchases` (`commands.rs:268-295`): 1 query for ids, then per purchase `build_purchase_summary` → `build_purchase_detail` → 3 queries (purchase, client, installments). **3N + 1 queries**, and the `search` filter is applied _in Rust after building every summary_ (`commands.rs:285-291`) — so a search over 500 purchases still builds 500 full details.
-- `get_client_detail` (`commands.rs:187-193`): 3N + 2.
-- `get_dashboard` (`commands.rs:701-841`): 7 scalar aggregates + 5 recent summaries (15 queries) + 1 featured detail (3) + `build_impayes` — ~30 queries plus a `HashMap` group-by, on every dashboard load _and_ on every `stats.refresh()` after any mutation.
+### 6.5 Module structure and separation of concerns
 
-Fix direction: make the read commands `async` (which alone moves them off the main thread), and collapse the loops into single `GROUP BY` queries — the schema already has the indices for it (`db.rs:120-123`).
+Clean, and the layering is enforced rather than merely described:
 
-### 6.5 Module structure
+- `lib.rs` — wiring only (plugins, managed state, command registry)
+- `commands.rs` — the IPC surface. Each command validates, locks, and delegates
+  to a `*_impl` free function taking `&Connection` / `&mut Connection`
+- `db.rs` — connection, migrations, bounds constants, pure date/money helpers
+- `models.rs` — serde DTOs, no logic
+- `error.rs` — the single error choke point
+- `license.rs` — self-contained
+- `seed.rs` — dev-only, gated on `debug_assertions` or an env var
 
-Clean and appropriately small for the size: `lib.rs` (wiring) → `commands.rs` (IPC surface) → `db.rs` (connection, schema, pure helpers) → `models.rs` (serde DTOs) → `seed.rs` (demo data). Dependency direction is one-way; `models.rs` has no logic; the pure math (`split_amounts`, `installment_status`, `purchase_status`, `add_interval`, `seeding_decision`) lives in `db.rs` and is genuinely unit-testable.
+The `*_impl` split is the best structural decision in the backend: it is why the
+test count went from 3 to 126 without restructuring anything.
 
-The one structural remark: at 1 028 lines, `commands.rs` mixes three concerns — the IPC layer, row mapping, and business logic (`build_purchase_detail`, `build_purchase_summary`, `build_impayes`). Splitting into `commands/` (thin, validating) + a `queries`/`domain` module would make the validation gaps in §5.4 obvious by inspection and give the business logic a place to be tested without a `State<Db>`. Not urgent at this size.
+### 6.6 TODO/FIXME/HACK
+
+**Zero** across `src-tauri/`. Combined with the density of _why_-comments, this
+codebase resolves issues rather than parking them.
 
 ---
 
 ## 7. SQLite / data-layer review
 
-### 7.1 SQL injection — clean, with one construct that deserves a note
+### 7.1 Parameterized statements
 
-Every value reaching SQLite is a bound parameter (`?1`, `?2`, …) via `params![…]` or a slice. There is **no `format!()`-built value anywhere in a query**. The one place SQL text is assembled dynamically is `build_impayes` (`commands.rs:546-580`):
+**No SQL injection exists.** Every value-carrying position is a bound `?n`.
 
-```rust
-let mut sql = String::from("SELECT … WHERE i.due_date < ?1 AND i.amount > i.paid_amount");
-if let Some(from) = filter.date_from.clone() {
-    next += 1;
-    sql.push_str(&format!(" AND i.due_date >= ?{next}"));   // placeholder index only
-    params_vec.push(Box::new(from));                        // value stays bound
-}
-```
+Five sites build SQL with `format!`. All interpolate compile-time-fixed text, and
+are flagged here for completeness as requested:
 
-The interpolated content is a monotonic placeholder _number_, never user data — this is safe, and the parameter/placeholder lockstep is documented in-code and covered by a regression test (`commands.rs:969-1009`, written after a real bug where a fixed set of four parameters broke the no-filter path). Worth keeping an eye on only because the pattern invites a future edit that interpolates a column or value; a comment already warns about the binding count specifically.
+| Site                    | What is interpolated                                                      | Verdict                                   |
+| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------- |
+| `db.rs:138`             | `PRAGMA user_version = {version}` — `version` is a `const` slice index    | Safe. PRAGMA cannot take a placeholder    |
+| `db.rs:230`             | `ALTER TABLE {table} ADD COLUMN {column} {ddl}` — `&'static str` literals | Safe. Identifiers cannot be bound         |
+| `commands.rs:301-315`   | A scope predicate: one of three `&'static str` from a closed serde enum   | Safe. `today_str` is bound as `?1`        |
+| `commands.rs:536-538`   | Same, for `PurchaseScope`                                                 | Safe                                      |
+| `commands.rs:1507-1517` | Only the _placeholder number_ `?{next}`; values go into `params_vec`      | Safe — the correct dynamic-filter pattern |
+
+Both enums (`ClientScope`, `PurchaseScope`, `models.rs:37-43`, `107-113`) are
+closed — no `#[serde(other)]`, no untagged variant — so no renderer value can
+select an unintended predicate.
+
+Two details done right: the `list_purchases` `search` string is **never** put
+into SQL at all (it filters in Rust at `commands.rs:566-572`, so there is no
+`LIKE` surface), and `VACUUM INTO ?1` binds the destination filename rather than
+interpolating it.
 
 ### 7.2 Migrations
 
-`migrate()` (`db.rs:70-127`) runs one `execute_batch` of `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every startup. Idempotent, and fine for greenfield installs — but there is **no version tracking of any kind**: no `PRAGMA user_version`, no `schema_migrations` table, no `ALTER TABLE` path. Adding a column later will silently do nothing on an existing database, and the app will then fail at query time against the old shape. Because this data is a shop's receivables ledger (not reproducible, not backed up anywhere), that is the highest-consequence structural gap after finding 1. Minimum viable fix: read `PRAGMA user_version`, apply an ordered `&[fn(&Connection) -> DbResult<()>]` from that index, write the new version back — all inside one transaction.
+**Properly versioned.** `MIGRATIONS: &[fn(&Connection) -> DbResult<()>]`
+(`db.rs:96-100`), append-only, index == version, tracked via
+`PRAGMA user_version`. `migrate()` (`db.rs:113-150`):
 
-### 7.3 File location
+- clamps a negative version
+- **refuses to run against a schema newer than the binary knows** (`:117-128`) —
+  a downgraded binary cannot corrupt a newer database
+- runs each step in its own `BEGIN`/`COMMIT` **together with the version bump**,
+  with `ROLLBACK` on failure, so no half-applied schema can be recorded complete
+- `add_column_if_missing` (`db.rs:223-233`) makes `ALTER` steps replay-safe
 
-Correct: `app.path().app_data_dir()` + `create_dir_all` + `join("payment_schedule.db")` (`lib.rs:23-25`). Not inside bundled resources, not next to the executable, no hardcoded path. The logo lands in the same directory as `logo.<ext>`. The problem is scope exposure (finding 1), not placement.
+Three migrations exist (`m0001_initial_schema`, `m0002_client_archive`,
+`m0003_purchase_archive`). Migration behaviour is itself test-covered.
 
-### 7.4 Connection handling & concurrency
+### 7.3 DB file location
 
-One `Connection` in a `Mutex`, locked per command (`db.rs:11-14`). Within a single process that fully serializes access, so intra-process `SQLITE_BUSY` is impossible — at the cost of no read concurrency at all (finding 7). What is missing:
+`app_data_dir()/payment_schedule.db` (`lib.rs:67-71`) — OS app-data via Tauri's
+path API, exactly as it should be. Not in app resources, not writable from the
+renderer (no `fs` permission; the asset-protocol scope is `logo.*` only).
 
-- **No WAL** — default rollback-journal mode. WAL would allow concurrent readers, reduce fsync cost, and is the standard choice for a desktop app.
-- **No `busy_timeout`** — so any external contention fails _immediately_ with `SQLITE_BUSY` rather than retrying.
-- **No single-instance guard** — nothing stops a user launching paymentSchedule twice (double-click on the AppImage, desktop entry + tray). Two processes, two `Mutex`es, one file: interleaved writes to the same tables, `SQLITE_BUSY` surfaced as a raw SQL toast (finding 5), and with rollback-journal mode a crash mid-write is the classic corruption window. `tauri-plugin-single-instance` is the direct fix.
-- `PRAGMA foreign_keys = ON` **is** set (`db.rs:23`), which matters because the delete paths rely on `ON DELETE CASCADE`. It is per-connection and there is only one connection, so this is correct.
+### 7.4 Connection handling and locking
 
-Transactions: `create_purchase` (`commands.rs:311-374`) and `record_payment` (`commands.rs:401-436`) both use `conn.transaction()`, and the early `SUM_MISMATCH` return correctly drops the transaction (rusqlite rolls back on drop) — so no partial purchase can be written. `update_settings` is the one multi-write command with **no** transaction (finding 11).
+A single `Connection` behind `std::sync::Mutex`, locked per command. Coherent
+with the rest of the design:
+
+- **WAL mode** ✅ (`db.rs:29-34`)
+- **`busy_timeout = 5000`** ✅
+- **`synchronous = NORMAL`** ✅
+- **`foreign_keys = ON`** ✅ — the one most commonly missed, and this schema
+  relies on `ON DELETE CASCADE` in three places
+- All four are asserted by a test (`db.rs:852-869`), so they cannot silently
+  regress
+- `tauri-plugin-single-instance`, registered first, prevents two processes on one
+  file
+
+`SQLITE_BUSY` is therefore addressed on all three fronts — WAL for reader/writer
+concurrency, `busy_timeout` for contention, single-instance for the process case.
+No connection pool, which is correct for a single-user desktop app.
 
 ### 7.5 Sensitive data at rest
 
-The DB holds **client PII** — first/last name, phone, postal address, email (`db.rs:73-81`) — plus each person's debt position and payment history. No credentials, API keys, or tokens are stored anywhere (verified by grep across `src/`, `src-tauri/src/`, and the config files); there is no auth in the app at all. Data is plaintext SQLite with **no encryption at rest** and **no application-level lock**.
+**Everything is plaintext, unencrypted, in `$APPDATA/payment_schedule.db`:**
+client names, phone numbers, addresses, emails, and the complete financial
+ledger — purchase totals, installments, payments, free-text notes.
 
-Is encryption warranted? For a single shopkeeper's own machine, full-disk encryption is the proportionate control and app-level encryption (SQLCipher / `rusqlite` `bundled-sqlcipher`) mainly adds key-management burden. Two things do change the calculus and are worth deciding deliberately: (a) if the machine is shared with staff, any local user or process can read the ledger — no OS permission stops that today; (b) finding 1 means the _renderer_ can read and write it too. Fix finding 1 first; then treat encryption as a business decision, and note that under Tunisian law (loi 2004-63) this database is personal data with a retention/consent posture worth documenting. What _is_ unambiguously missing is a **backup/export path** — cascade deletes are irreversible and there is no snapshot mechanism (finding 9).
+No SQLCipher, no OS-keychain use, no file-permission hardening beyond whatever
+`create_dir_all` yields. `backup_database` writes the same unencrypted content
+wherever the user points it.
 
----
+**Is encryption at rest warranted?** A judgement call, and the current choice is
+defensible for a single-operator shop app on a machine the owner controls — but
+it is the largest data-at-rest exposure in the project: a stolen laptop is the
+whole customer book, including debt positions. Worth an explicit recorded
+decision rather than a default. The `.gitignore` comment (`.gitignore:37-40`)
+shows the PII sensitivity is already understood; the same reasoning applied to the
+file itself leads to SQLCipher, or at minimum restrictive file permissions.
 
-## 8. Frontend, build config, and hygiene
+**No tokens, API keys or passwords are stored anywhere** — there are none in the
+system. `license.json` holds only vendor-attested public data and a signature.
 
-### 8.1 Vue
+### 7.6 Licence validation (fail-closed check)
 
-**Vue 3.5.13**, and the pattern discipline is genuinely consistent: all 16 SFCs use `<script setup lang="ts">`, there is **no `export default {}`** anywhere, no Options API, no mixins, no `defineComponent`. Composition API throughout, with logic factored into `composables/` (`useBack`, `useClickOutside`, `useContactActions`, `useFormat`, `useSort`) and pure modules (`lib/finance.ts`, `lib/alerts.ts`) that are unit-tested independently of components. `tsconfig.json` runs `strict` + `noUnusedLocals` + `noUnusedParameters` + `noFallthroughCasesInSwitch`, and `vue-tsc --noEmit` is clean.
+Reviewed because it is the only cryptography in the tree and the app's access
+control. It is fail-closed at every branch:
 
-**`v-html`**: exactly one occurrence (`AppIcon.vue:77`), rendering `body` = a lookup into a module-local static `ICONS` record; `props.name` can only select a key, and a miss yields `""`. It carries a scoped `eslint-disable vue/no-v-html` with a written justification. No XSS surface. No `innerHTML`, no `outerHTML`, no `eval`, no `new Function` anywhere in `src/`.
+- The public key is embedded with `env!` and **no fallback** — a release build
+  without `PAYMENT_SCHEDULE_LICENSE_PUBKEY` does not compile
+  (`license.rs:133-138`). `build.rs` injects the dev key for debug only.
+- `verifying_key()` returns `None` on a bad constant, and `validate_bytes` then
+  returns `InvalidSignature` — _"without a trust anchor no licence can be proven
+  good"_ — rather than panicking (deliberate, since `panic = "abort"` would turn
+  a misconfigured key into a startup crash).
+- **Check order is signature-before-parse** (`license.rs:474-526`): envelope
+  shape → version → **signature** → payload decode → dates → machine binding →
+  expiry. Nothing attacker-supplied is parsed before the signature verifies.
+- Uses `verify_strict`, rejecting small-order keys and non-canonical scalars.
+- Domain-separated by a signing prefix, over the base64 text as it appears in the
+  file — eliminating JSON-canonicalization ambiguity.
+- `is_valid()` is `matches!(Valid(_))`; every other variant, including
+  `ClockTampered`, is unlicensed.
+- Clock-rollback guard via a high-water mark kept deliberately **out** of
+  `Settings`/`SettingsPatch`, so the renderer — the thing it defends against —
+  cannot write it. Verified: no such field exists in `models.rs`.
+- Machine binding is hashed and salted, never the raw OS UUID.
 
-**State management**: Pinia only, three setup-style stores with clear ownership — `settings` (persisted via IPC, OS-locale detection), `stats` (sidebar badges), `ui` (toasts, sidebar, header-title override). No Vuex, no ad-hoc global reactive singletons, no cross-store reaching. Consistent.
-
-**IPC access**: a real, single, typed gateway — `src/api/index.ts` exports one `api` object whose every method is `isTauri() ? invoke(...) : mockDb....`. **No component or store calls `invoke()` directly.** The three direct `@tauri-apps/*` imports outside the gateway are all non-command plugin APIs and each is defensible: `convertFileSrc` (`lib/assets.ts:1`), the dialog picker (`SettingsView.vue:68`), and `os.locale()` (`stores/settings.ts:28`). `mock.ts` (691 lines) mirrors the command surface method-for-method, including `openExternal`, so the api/mock parity invariant currently holds.
-
-**Secrets / debug flags**: none. No `VITE_`-prefixed variable is read anywhere in `src/` (the only mentions of `VITE_` in the repo are `vite.config.ts:31`'s `envPrefix` declaration itself). No `.env` file exists. No API keys, tokens, or passwords. One `console.error` (`useContactActions.ts:73`), deliberate and documented, with the user-facing toast kept clean of plugin internals — the correct split.
-
-**i18n / RTL**: `locales/{fr,en,ar}.json` all have **exactly 264 keys with zero divergence** (verified by flattening and diffing all three), and `applyLocale` sets both `lang` and `dir="rtl"` on `<html>` (`i18n/index.ts:33-38`). The locale invariant from `CLAUDE.md` is being respected. The gap is that user-facing _error_ text bypasses i18n entirely via `String(e)` (finding 5).
-
-**Money math**: `lib/finance.ts` mirrors `db.rs` — `splitAmounts` uses `Math.trunc` integer division with the remainder on the last installment, matching Rust's `/`; `installmentStatus`/`purchaseStatus` match the Rust predicates branch for branch; monthly `addInterval` clamps to end-of-month, matching `checked_add_months`. **No floats in money math** on either side. One divergence worth knowing: Rust's monthly branch is overflow-guarded (`unwrap_or(date)`) while the TS side has no guard, and Rust's `weekly`/`custom` branches panic where TS silently produces an out-of-range date.
-
-### 8.2 Vite / build
-
-`vite.config.ts` is small and Tauri-idiomatic. Reviewed against the audit's checklist:
-
-- **Plugin set**: only `@vitejs/plugin-vue` 6.0.8 (current). No dev-only plugin left in the production path; no `mode`-conditional plugins at all.
-- **Build target**: `chrome105` on Windows / `safari13` elsewhere (`vite.config.ts:38`) — correct WebView2/WKWebView targeting.
-- **Source maps**: `sourcemap: !!process.env.TAURI_ENV_DEBUG` (`vite.config.ts:40`) — off for release builds, and `minify` is `esbuild` unless debug. **Verified against the artifact**: the local `dist/` (456 KB) contains **zero `.map` files**. Correct.
-- **Env handling**: `envPrefix: ["VITE_", "TAURI_ENV_"]`. `.gitignore` covers `.env`, `.env.local`, `.env.*.local`; no `.env` file exists in the repo or working tree; nothing tracked by git matches `.env`, `dist/`, `node_modules/`, or `*.db`. No secret is at risk of being bundled — the exposure surface exists in configuration only, with no values behind it.
-- **Dev server**: `port: 5173`, `strictPort`, `host: TAURI_DEV_HOST || false` (so no LAN binding unless explicitly opted in), HMR only when that variable is set, and `src-tauri/**` excluded from the watcher. **No `server.proxy`, no dev middleware, nothing that could leak into a production build** — and `server.*` is ignored by `vite build` regardless.
-
-### 8.3 Linting, formatting, hooks, CI
-
-- **ESLint 10** flat config (`eslint.config.js`), thoughtfully assembled: `js.configs.recommended` + `eslint-plugin-vue` flat/recommended + `vueTsConfigs.recommended` + **`eslint-plugin-security`** + **`eslint-plugin-no-unsanitized`**, with `skipFormatting` last to stay out of Prettier's lane. `security/detect-object-injection` is disabled globally with a written rationale (false-positive rate on `obj[variable]`, already type-checked) while the high-signal rules (`detect-eval-with-expression`, `detect-child-process`, `detect-non-literal-fs-filename`, `detect-unsafe-regex`) stay on — a defensible call, not a blanket opt-out. Test files and the E2E Node script get narrow, justified overrides. **`npx eslint .` is clean.**
-- **Prettier 3.9.6** with `.prettierrc.json` + `.prettierignore`; `format:check` is a CI gate.
-- **husky + lint-staged**: `.husky/pre-commit` runs `eslint --fix` + `prettier --write` on staged files.
-- **Clippy**: `cargo clippy --all-targets -- -D warnings` **passes clean**, and is gated in CI (`build.yml:81-83`) alongside `cargo fmt --check`. There is no `[lints]` table or `#![deny]` attributes — the strictness lives in the CI invocation, which is sufficient but means a local `cargo clippy` without `-D warnings` is more permissive than CI.
-- **CI quality is above average for a project this size**: three workflows; every third-party action **pinned to a full commit SHA** with a version comment; least-privilege `permissions:` per workflow; `concurrency` cancellation on the release job; CodeQL `security-and-quality` on push/PR/weekly; `cargo audit` + `cargo deny check` + `npm audit` on manifest changes and weekly; Dependabot across npm, cargo, **and** github-actions so the SHA pins do not rot. `deny.toml` sets `yanked = "deny"`, an explicit license allow-list (including `blessing` for bundled SQLite), and warns on multiple-versions/wildcards/unknown sources.
-  Two gaps: **(a)** the `npm-audit` job fails today (finding 15); **(b)** `codeql.yml` analyzes `javascript-typescript` only — the Rust backend, where every finding in §6 lives, gets no CodeQL coverage. Adding `language: rust` (or `actions`) to the matrix would close that.
-
-### 8.4 `.gitignore`
-
-Covers `node_modules/`, `dist/`, `dist-ssr/`, `src-tauri/target/`, `src-tauri/gen/`, `.env*`, editor/OS noise, `*.log`, and `launch.json`, with an explicit comment explaining that `Cargo.lock` is committed on purpose (reproducible builds + exact dependency set for `cargo audit`/`cargo deny`) — the right call for a binary. `git ls-files` confirms nothing matching `dist/`, `node_modules`, `.env`, or `*.db` is tracked. Missing: `*.db` / `*.sqlite*` patterns (finding 28).
-
-### 8.5 Tests and coverage gaps
-
-| Suite       | Location                         | Count                     | Runs via                                                                           |
-| ----------- | -------------------------------- | ------------------------- | ---------------------------------------------------------------------------------- |
-| Unit (TS)   | `src/**/*.test.ts`               | 5 files / **56 tests**    | `npm test` (Vitest, jsdom)                                                         |
-| Integration | `tests/integration/*.ts`         | 3 files / ~19 tests       | `npm run test:integration` (separate config, opt-in by design)                     |
-| E2E         | `tests/e2e/run.mjs`              | 6 scenarios + screenshots | `npm run test:e2e` (Playwright library, self-hosted harness, spawns Vite on :5199) |
-| Unit (Rust) | `src-tauri/src/{db,commands}.rs` | **3 `#[test]`**           | `cargo test`                                                                       |
-
-What is well covered: the pure TS math (`finance.test.ts`, 16 tests), alert classification, `useBack`'s history heuristic, `useContactActions`' phone validation, the overdue dataset invariants, and full UI flows against the mock.
-
-The gap is the backend, and it is structural rather than incidental: **the integration and E2E suites both drive `src/api/mock.ts`, not Rust.** They validate the mock's fidelity to itself. So the code that actually owns the money — transactions, cascade deletes, overpayment accumulation, `paid_date` transitions, the parameter/placeholder lockstep beyond the one regression test, and the `finance.ts` ↔ `db.rs` parity invariant that `CLAUDE.md` treats as a blocker — has essentially no automated coverage. The two Rust tests that do exist are well-chosen (the seeding gate, and the `build_impayes` binding regression with a genuinely informative comment); there just need to be ~15 more in that style, over a temp DB, and one cross-language parity test.
-
-### 8.6 TODO / FIXME / HACK
-
-**None.** A grep for `TODO|FIXME|HACK|XXX` across `src/`, `src-tauri/src/`, `tests/`, and the root configs returns only a false positive inside a `package-lock.json` integrity hash. Unusually clean — and notable because the comments that _are_ present are high-value: several explain a past bug and why the current shape prevents it (`useContactActions.ts:1-15` on WebView `tel:` navigation, `commands.rs:969-974` on the parameter-count bug, `router/index.ts:26-28` warning that the `"not-found"` route name is matched by string elsewhere). That is the good kind of comment density: _why_, not _what_.
-
-### 8.7 Licensing
-
-Neither manifest declares a license: `package.json` has `"private": true` and no `license` field; `Cargo.toml` has no `license`/`license-file`; there is no root `LICENSE` file. So the work is "all rights reserved" by default — fine if intentional, but it should be explicit, and `Cargo.toml` is also missing `repository`/`homepage`. Dependency licenses are handled better than most: `deny.toml` enforces an explicit allow-list (MIT, Apache-2.0 ± LLVM-exception, BSD-2/3, ISC, Zlib, MPL-2.0, CC0-1.0, Unicode-DFS-2016/3.0, OpenSSL, and `blessing` for bundled SQLite) with `confidence-threshold = 0.8`, and `cargo deny check` runs in CI. Nothing copyleft-viral (no GPL/AGPL) can enter the Rust tree without failing that gate. The npm side has no equivalent license gate; the direct set is MIT/Apache-2.0 throughout.
+Two residuals: **L2** (dev key only warns in a release binary) and **L4**
+(evaluated once at startup).
 
 ---
 
-## 9. Appendix — raw dependency audit output
+## 8. Vue / frontend review
 
-### 9.1 `cargo audit` (run from `src-tauri/`)
+### 8.1 Version and API consistency
 
-`cargo-audit` was not installed on this machine; it was installed for this audit (`cargo install cargo-audit --locked`) so the check could actually run rather than be described.
+Vue **3.5**, Composition API, `<script setup lang="ts">` in **34 of 34** SFCs.
+Zero Options API, zero plain-JS components, zero multi-block files. There is no
+mix to flag — this is as consistent as it gets.
+
+### 8.2 XSS
+
+**One `v-html` in the whole frontend**, at `src/components/ui/AppIcon.vue:82`.
+Traced fully: the bound value is `ICONS[props.name] ?? ""`, where `ICONS` is a
+module-level literal of 40 inline SVG strings. `props.name` is used **only as a
+key lookup** and is never interpolated into the output; an attacker-controlled
+`name` can at worst miss and render `""`. Every call site passes a string
+literal. The ESLint suppression is scoped to that one line and re-enabled
+immediately after — correct practice, not a blanket disable.
+
+**Zero** occurrences of `innerHTML`, `outerHTML`, `document.write`, `eval`,
+`new Function`, `insertAdjacentHTML`, or `createContextualFragment` anywhere in
+`src/`, `tests/`, or `index.html`.
+
+Adjacent surfaces checked and clean: no `:href` bindings, no `window.open`, no
+`location.href` assignment; the only anchor construction is the CSV download,
+whose `href` is a `URL.createObjectURL` blob that is revoked after use; CSV
+output is hardened against formula injection; locale files contain no HTML, and
+vue-i18n runs `legacy: false` with no `v-html` of translations, so the missing
+`escapeParameter` option is unreachable.
+
+### 8.3 State management
+
+Consistent. Four Pinia stores, all setup-syntax, holding only genuinely global
+state (licence verdict, settings, sidebar counters, toasts). Per-page data is
+local `ref` inside each view, fetched through the gateway. Six shared composables
+carry cross-cutting logic. No event bus, no provide/inject state, no
+prop-drilling workarounds.
+
+`src/stores/license.ts:3-6` explicitly states the store is presentation-only and
+that enforcement lives in Rust — "a `v-if` is not a control". Verified true.
+
+### 8.4 `invoke()` routing
+
+**All 29 `invoke()` call sites are inside `src/api/index.ts`.** No component,
+view, store or composable calls `invoke` directly; the import itself is wrapped
+in a private helper. Every method is an `isTauri() ? invoke(...) : mockDb.*(...)`
+ternary, which is what structurally guarantees the browser/test path matches the
+desktop surface — the property the whole integration suite depends on.
+
+Four `@tauri-apps` imports exist outside the gateway; three are the
+`plugin-dialog` calls in `SettingsView.vue` (**L8**) and one is `convertFileSrc`
+in `src/lib/assets.ts`, a pure path→URL transform with no IPC round-trip. None is
+an `invoke`.
+
+### 8.5 Secrets and debug artefacts
+
+**None.** A case-insensitive grep for
+`api[_-]?key|secret|password|token|credential|private[_-]?key|bearer|authorization`
+across `src/` returns 4 hits, all false positives ("design **tokens**", and a
+security test asserting `file:///etc/passwd` is rejected). No `debugger`. No
+feature or debug flags, no `NODE_ENV` branching in `src/`.
+
+`console.*`: 6 occurrences in `src/`, **all `console.error` inside a `catch`**,
+each with an explanatory comment. Zero `console.log`/`warn`/`info`/`debug`. The
+only `console.log` in the repo is the E2E test reporter, explicitly allow-listed
+in the ESLint config.
+
+### 8.6 TypeScript rigour
+
+`strict: true`, plus `noUnusedLocals`, `noUnusedParameters`,
+`noFallthroughCasesInSwitch`. **Zero** `@ts-ignore`, `@ts-expect-error`,
+`@ts-nocheck`, or `any` in `src/` and `tests/` — a raw `\bany\b` grep returns
+only the English word in prose comments. Exactly one `eslint-disable` in the
+whole frontend (the `AppIcon` one above).
+
+The gap is coverage, not strictness: `tests/**` is in no TS project (**M3**).
+
+---
+
+## 9. Vite / build config review
+
+`vite.config.ts` (47 lines), one plugin (`@vitejs/plugin-vue` 6.0.8, current).
+
+| Setting               | Value                                   | Assessment                                                       |
+| --------------------- | --------------------------------------- | ---------------------------------------------------------------- |
+| `build.target`        | `chrome105` on Windows, else `safari13` | Correct — matches the WebView per platform                       |
+| `build.minify`        | `"esbuild"` unless `TAURI_ENV_DEBUG`    | ✅                                                               |
+| **`build.sourcemap`** | **`!!process.env.TAURI_ENV_DEBUG`**     | ✅ **Off in production.** Tauri sets that var only for dev/debug |
+| `server.host`         | `process.env.TAURI_DEV_HOST \|\| false` | ✅ Loopback-only unless the mobile-dev var is explicitly set     |
+| `server.port`         | 5173, `strictPort: true`                | Required by Tauri's `devUrl`                                     |
+| `envPrefix`           | `["VITE_", "TAURI_ENV_"]`               | See below                                                        |
+| Proxy / middleware    | **none**                                | ✅ Nothing dev-only can leak into a production build             |
+
+**Environment variables — nothing is exposed.** There is **no `import.meta.env`
+usage anywhere in `src/`**, and **no `VITE_`-prefixed variable is defined or read
+anywhere in the project**. The `envPrefix` entry is Vite scaffolding, not an
+active channel. `TAURI_ENV_*` is also bundled, but those are platform/arch/debug
+flags injected by the Tauri CLI — no secret has any path into the client bundle.
+
+**No `.env` files exist** anywhere in the repo (verified by `find`, excluding
+`node_modules`), so there is nothing to leak. `.gitignore` covers `.env`,
+`.env.local`, `.env.*.local` regardless.
+
+`vitest.integration.config.ts` is a separate runner for `tests/integration/**`,
+kept out of the default `vitest run` deliberately so the fast unit pass stays
+fast — the rationale is documented in the file header.
+
+---
+
+## 10. Project hygiene
+
+**Linting/formatting.** ESLint 10 flat config with `js.recommended`,
+`eslint-plugin-vue` **flat/recommended** (note: `vue/no-v-html` lives in this
+tier, so downgrading to `flat/essential` would silently open a hole),
+`vueTsConfigs.recommended`, `eslint-plugin-security`, and
+`eslint-plugin-no-unsanitized`. Both security plugins were checked in
+`node_modules`; neither declares a `files` key, so both genuinely apply to every
+linted file including `.vue`. `security/detect-object-injection` is disabled
+globally with a three-line justification — the correct call, since it is the
+plugin's highest-false-positive rule and TypeScript already covers it. Prettier
+interop comes last, correctly. Husky + lint-staged enforce on commit.
+
+`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are both
+clean and both gated in CI. The one gap is **L3** — security rules are `warn`,
+and nothing fails on them.
+
+**`.gitignore`** is thorough: `node_modules/`, `dist/`, `dist-ssr/`,
+`src-tauri/target/`, `src-tauri/gen/`, `.env*`, editor/OS junk, `*.log`, and
+`*.db` / `*.db-wal` / `*.db-shm` / `*.db-journal` / `*.db.part` / `*.sqlite` /
+`*.sqlite3` — the last group with an explicit PII rationale. `Cargo.lock` is
+intentionally committed (correct for a binary) with a comment explaining why.
+
+**Tests.**
+
+| Suite       | Files | Cases | Runs in CI?                 |
+| ----------- | ----- | ----- | --------------------------- |
+| Rust unit   | —     | 145   | ✅ since `9f9ad6c`          |
+| Vitest unit | 18    | 224   | ✅ `npm test`               |
+| Integration | 8     | 223   | ✅ since `18f2889`          |
+| E2E         | 1     | 50    | ✅ nightly, since `18f2889` |
+
+The integration figure is the **runtime** case count, not a count of `it(`
+blocks: `error-contract.integration.test.ts` drives three `it.each` tables — the
+error-code inventory crossed with all three locales — so its 8 blocks expand to
+119 cases. An earlier revision of this report said 99, having counted the blocks.
+
+Coverage is deep on business logic — `finance.ts` (25 tests plus a 5-test
+cross-language parity suite checking a shared fixture against the Rust
+implementation), CSV (19, including formula-injection cases), the installment
+rule matrix (30), archive guards (31), the error-code contract (11) — and thin on
+presentation (**L9**).
+
+**TODO/FIXME/HACK/XXX: zero** across `src/`, `tests/`, and `src-tauri/`.
+
+**CI/CD.** Three workflows. All third-party actions SHA-pinned with a
+human-readable version comment, and Dependabot configured to bump the pins so
+pinning does not mean rot. `permissions:` is scoped per workflow. `build.yml`
+gates a release on lint + format + typecheck + JS unit tests + rustfmt + clippy,
+proves the MSRV in a dedicated job, and refuses to build a release carrying the
+published development licence key. CodeQL runs `security-and-quality` on the
+TS/JS side weekly. This is well above average — the gaps (H2, M4) are of
+omission, not misconfiguration.
+
+---
+
+## 11. Appendix — raw dependency audit output
+
+### `cargo audit` (from `src-tauri/`)
 
 ```
     Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
-      Loaded 1169 security advisories (from /home/malek/.cargo/advisory-db)
+      Loaded 1189 security advisories (from ~/.cargo/advisory-db)
     Updating crates.io index
-    Scanning Cargo.lock for vulnerabilities (490 crate dependencies)
+    Scanning Cargo.lock for vulnerabilities (513 crate dependencies)
 
-Crate:   atk             0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0413
-Crate:   atk-sys         0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0416
-Crate:   gdk             0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0412
-Crate:   gdk-sys         0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0418
-Crate:   gdkwayland-sys  0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0411
-Crate:   gdkx11          0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0417
-Crate:   gdkx11-sys      0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0414
-Crate:   gtk             0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  RUSTSEC-2024-0415
-Crate:   gtk-sys         0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  (gtk-rs GTK3 set)
-Crate:   gtk3-macros     0.18.2  unmaintained  gtk-rs GTK3 bindings - no longer maintained  (gtk-rs GTK3 set)
-Crate:   proc-macro-error 1.0.4  unmaintained  proc-macro-error is unmaintained             RUSTSEC-2024-0370
-Crate:   unic-char-property 0.9.0 unmaintained `unic-char-property` is unmaintained         RUSTSEC-2025-0081
-Crate:   unic-char-range 0.9.0   unmaintained  `unic-char-range` is unmaintained            RUSTSEC-2025-0075
-Crate:   unic-common     0.9.0   unmaintained  `unic-common` is unmaintained                RUSTSEC-2025-0080
-Crate:   unic-ucd-ident  0.9.0   unmaintained  `unic-ucd-ident` is unmaintained             RUSTSEC-2025-0100
-Crate:   unic-ucd-version 0.9.0  unmaintained  `unic-ucd-version` is unmaintained           RUSTSEC-2025-0098
-Crate:   glib            0.18.5  unsound       Unsoundness in Iterator/DoubleEndedIterator
-                                               impls for glib::VariantStrIter               RUSTSEC-2024-0429
-
-warning: 17 allowed warnings found
+warning: 18 allowed warnings found
 ```
 
-Exit status 0 — **no vulnerabilities**; all 17 entries are `unmaintained`/`unsound` warnings, which `cargo audit` does not fail on by default.
+**0 vulnerabilities.** The 18 warnings:
 
-### 9.2 `cargo outdated`
+| Crate                | Version | Kind         | Advisory          |
+| -------------------- | ------- | ------------ | ----------------- |
+| `atk`                | 0.18.2  | unmaintained | RUSTSEC-2024-0413 |
+| `atk-sys`            | 0.18.2  | unmaintained | RUSTSEC-2024-0416 |
+| `gdk`                | 0.18.2  | unmaintained | RUSTSEC-2024-0412 |
+| `gdk-sys`            | 0.18.2  | unmaintained | RUSTSEC-2024-0418 |
+| `gdkwayland-sys`     | 0.18.2  | unmaintained | RUSTSEC-2024-0411 |
+| `gdkx11`             | 0.18.2  | unmaintained | RUSTSEC-2024-0417 |
+| `gdkx11-sys`         | 0.18.2  | unmaintained | RUSTSEC-2024-0414 |
+| `gtk`                | 0.18.2  | unmaintained | RUSTSEC-2024-0415 |
+| `gtk-sys`            | 0.18.2  | unmaintained | RUSTSEC-2024-0420 |
+| `gtk3-macros`        | 0.18.2  | unmaintained | RUSTSEC-2024-0419 |
+| `proc-macro-error`   | 1.0.4   | unmaintained | RUSTSEC-2024-0370 |
+| `unic-char-property` | 0.9.0   | unmaintained | RUSTSEC-2025-0081 |
+| `unic-char-range`    | 0.9.0   | unmaintained | RUSTSEC-2025-0075 |
+| `unic-common`        | 0.9.0   | unmaintained | RUSTSEC-2025-0080 |
+| `unic-ucd-ident`     | 0.9.0   | unmaintained | RUSTSEC-2025-0100 |
+| `unic-ucd-version`   | 0.9.0   | unmaintained | RUSTSEC-2025-0098 |
+| `event-listener`     | 5.4.1   | **unsound**  | RUSTSEC-2026-0221 |
+| `glib`               | 0.18.5  | **unsound**  | RUSTSEC-2024-0429 |
 
-**Not run — `cargo-outdated` is not installed on this machine.** Rather than install a second tool, direct dependencies were diffed against the crates.io API (`GET /api/v1/crates/<name>` → `crate.max_stable_version`), which is the alternative the audit brief allows. Results:
+All transitive through `tauri → tauri-runtime-wry → tao/gtk`. No fixed versions
+exist; they clear when Tauri's Linux backend leaves GTK3.
 
-```
-crate                  locked    latest stable   published
-tauri                  2.11.5    2.11.5          2026-07-01   current
-tauri-build            2.6.3     2.6.3           2026-06-30   current
-tauri-plugin-dialog    2.7.2     2.7.2           2026-07-18   current
-tauri-plugin-fs        2.5.1     2.5.1           2026-05-02   current  (remove — unused)
-tauri-plugin-os        2.3.2     2.3.2           2025-10-27   current
-tauri-plugin-opener    2.5.4     2.5.4           2026-05-02   current
-serde                  1.0.229   1.0.229         2026-07-18   current
-serde_json             1.0.151   1.0.151         2026-07-20   current
-chrono                 0.4.45    0.4.45          2026-06-04   current (pre-1.0)
-rusqlite               0.32.1    0.40.1          2026-06-06   8 minor versions behind
-libsqlite3-sys         0.30.1    0.38.1          2026-06-06   8 minor versions behind
-wry                    0.55.1    0.55.1          2026-05-04   current (transitive)
-tao                    0.35.3    0.35.3          2026-05-23   current (transitive)
-```
+### `cargo outdated`
 
-Toolchain: `rustc 1.97.0` / `cargo 1.97.0`. Highest MSRV among locked dependencies: **1.88.0** (`darling`, `plist`, `time`) vs `rust-version = "1.77"` declared in `Cargo.toml:7`.
+**Not run — the tool is not installed, and installing it was declined for this
+pass.** §4.1 contains a manual comparison of all 16 direct dependencies against
+the crates.io API instead. Transitive coverage comes from `cargo audit` (above)
+and `cargo deny check`, both of which run in CI.
 
-### 9.3 `npm audit`
+### `npm audit`
 
 ```
 # npm audit report
 
-brace-expansion  <=5.0.7
+brace-expansion  4.0.0 - 5.0.8
 Severity: high
-brace-expansion: DoS via unbounded expansion length causing an out-of-memory
-process crash - https://github.com/advisories/GHSA-mh99-v99m-4gvg
-fix available via `npm audit fix --force`
-Will install vue-tsc@3.3.8, which is a breaking change
+brace-expansion: DoS via unbounded intermediate arrays, bypassing the
+CVE-2026-14257 mitigation - https://github.com/advisories/GHSA-rgw5-rvv9-x895
+fix available via `npm audit fix`
 node_modules/brace-expansion
-  minimatch  2.0.0 - 10.0.2
-  Depends on vulnerable versions of brace-expansion
-  node_modules/minimatch
-    @vue/language-core  <=3.0.0-beta.5
-    Depends on vulnerable versions of minimatch
-    node_modules/@vue/language-core
-      vue-tsc  1.7.0-alpha.0 - 3.0.0-beta.5
-      Depends on vulnerable versions of @vue/language-core
-      node_modules/vue-tsc
-    editorconfig  1.0.0 - 3.0.1
-    Depends on vulnerable versions of minimatch
-    node_modules/editorconfig
-      js-beautify  1.8.9 - 1.15.4
-      Depends on vulnerable versions of editorconfig
-      Depends on vulnerable versions of glob
-      node_modules/js-beautify
-        @vue/test-utils  >=2.4.1
-        Depends on vulnerable versions of js-beautify
-        node_modules/@vue/test-utils
-    glob  4.3.0 - 10.5.0
-    Depends on vulnerable versions of minimatch
-    node_modules/glob
 
-8 high severity vulnerabilities
-
-To address all issues (including breaking changes), run:
-  npm audit fix --force
+1 high severity vulnerability
 ```
 
-`npm audit --audit-level=high` → **exit code 1** (the CI gate in `security.yml:55-56`). All affected packages are devDependencies.
-
-### 9.4 `npm outdated`
+Dependency path:
 
 ```
-Package                    Current  Wanted  Latest  Depended by
-@tauri-apps/plugin-dialog    2.7.1   2.7.2   2.7.2   payment-schedule-desktop
-eslint                      10.7.0  10.8.0  10.8.0   payment-schedule-desktop
-jsdom                       25.0.1  25.0.1  29.1.1   payment-schedule-desktop
-pinia                        2.3.1   2.3.1   4.0.2   payment-schedule-desktop
-playwright                  1.61.1  1.62.0  1.62.0   payment-schedule-desktop
-typescript                   5.9.3   5.9.3   7.0.2   payment-schedule-desktop
-vite                         7.3.6   7.3.6   8.1.5   payment-schedule-desktop
-vue-i18n                    10.0.8  10.0.8  11.4.8   payment-schedule-desktop
-vue-router                   4.6.4   4.6.4   5.2.0   payment-schedule-desktop
-vue-tsc                     2.2.12  2.2.12   3.3.8   payment-schedule-desktop
+payment-schedule@0.1.0
+└─┬ eslint@10.8.0
+  └─┬ minimatch@10.2.5
+    └── brace-expansion@5.0.8
 ```
 
-Environment: Node **24.16.0**, npm **11.13.0** locally; CI pins Node 22; `package.json` declares no `engines`.
+`npm audit --audit-level=high` → **exit code 1** (this is the CI gate).
+
+### `npm outdated`
+
+```
+Package            Current  Wanted  Latest
+jsdom               30.0.0  30.0.1  30.0.1
+lint-staged         17.2.0  17.3.0  17.3.0
+pinia                2.3.1   2.3.1   4.0.2
+playwright          1.62.0  1.62.1  1.62.1
+typescript           5.9.3   5.9.3   7.0.2
+typescript-eslint   8.65.0  8.66.0  8.66.0
+vite                 7.3.6   7.3.6   8.2.0
+vue-i18n            10.0.8  10.0.8  11.4.8
+vue-router           4.6.4   4.6.4   5.2.0
+vue-tsc              3.3.8   3.3.9   3.3.9
+```
+
+### Environment
+
+```
+node    v24.16.0   (engines: >=22 ✅)
+npm     11.13.0
+rustc   MSRV declared 1.88, proven by a dedicated CI job
+```
 
 ---
 
-## 10. Suggested next steps
+## 12. Suggested next steps
 
-### Tier 1 — quick wins (each under an hour, no design decisions)
+**Quick wins — minutes each, no design decisions**
 
-1. **Drop the `fs` plugin and its permissions** (finding 1). Remove `tauri_plugin_fs::init()` (`lib.rs:17`), `tauri-plugin-fs` from `Cargo.toml`, `@tauri-apps/plugin-fs` from `package.json`, and the `fs:default` / `fs:allow-read-file` / `fs:allow-write-file` entries from `capabilities/default.json`. Nothing imports it, so this should be inert — verify the logo still renders (it goes through `asset:`, not `fs`).
-2. **Narrow `assetProtocol.scope`** to `["$APPDATA/logo.*"]` (`tauri.conf.json:30`) so the database is no longer fetchable from the renderer.
-3. **Clamp the numeric IPC inputs** (findings 2, 3, 4, 13): `upcoming_days` → 1..=365; `interval_days` → 1..=365; `installment_count` → 1..=120; `total_price` → `> 0`; validate `interval_kind` against the three known values. Five small guards in `commands.rs`, plus swapping `db.rs:146`'s `+` for the checked variant already used by the monthly branch.
-4. **Parse every incoming date** — run `installments[].due_date` through `parse_date` before insert (finding 10).
-5. **Harden the connection at open** (finding 8): add `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;` to the `execute_batch` at `db.rs:23`.
-6. **Wrap `update_settings` in a transaction** (finding 11).
-7. **Fix the mutex poisoning footgun** — `lock().unwrap_or_else(|e| e.into_inner())` at the 21 sites (finding 14).
-8. **CSV escaping + formula-injection guard** in `exportCsv` (finding 21).
-9. **Declare `rust-version = "1.88"`, add `engines.node`, add a `license` field** (findings 20, 27).
+1. ~~**`npm audit fix`** (H1).~~ **Done — `c780434`**, though not by `npm audit
+fix`: that proposes nothing here. `npm update brace-expansion` is what moved
+   the lock to the patched 5.0.9.
+2. ~~**Add a `cargo test` job to `build.yml`** and put it in `release.needs` (H2).~~ **Done — `9f9ad6c`.**
+   The tests already exist and pass; this is pure wiring, and it is the biggest
+   gap between "we have tests" and "the tests protect us".
+3. ~~**Clamp `limit` in `list_all_payments`** to `1..=5000` (L1).~~ **Done — `f5d3f6a`.**
+4. **Run `ImpayeFilter` dates through `parse_date`** (L6).
+5. **Add `debug_assert_eq!` on the slice lengths** in `rebalance_amounts` (L5).
+6. ~~**Add a locale key-parity test** (fr/en/ar) (part of L9).~~ **Done —
+   `05f4d56`**, covering placeholder parity too.
 
-### Tier 2 — this week
+**Small, contained fixes — an hour or two each**
 
-10. **Introduce a typed error enum and stop leaking SQL to users** (finding 5). Define `enum AppError { NotFound, Conflict(String), Validation(&'static str), Internal }` in the backend, `impl Serialize` with a stable `code`, map codes to i18n keys on the frontend, and keep the detail in `console.error` only. This is the change `CLAUDE.md` treats as a blocker, and it also gives findings 12/13's new validations somewhere to report to.
-11. **Add `tauri-plugin-single-instance`** (finding 8) so two processes can never share the file.
-12. **Add schema versioning** (finding 9): `PRAGMA user_version` + an ordered migration list applied in one transaction. Do this _before_ the next schema change, not with it.
-13. **Backend test suite** (finding 19): ~15 `#[test]`s over a temp DB covering `create_purchase` (equal split, manual split, sum mismatch rolls back, invalid dates rejected), `record_payment` (partial → `paid_date` stays null, full → set, overpayment rejected), `delete_client`/`delete_purchase` cascades, and a parity test asserting `split_amounts`/`add_interval`/`installment_status` agree with `finance.ts` on a shared fixture table.
-14. **Fix the failing CI security gate** (finding 15): upgrade `vue-tsc` to 3.x and `@vue/test-utils`, then confirm `npm audit --audit-level=high` exits 0 and `vue-tsc --noEmit` is still clean.
-15. **Decide the overpayment rule** (finding 12) — reject, or allow with an explicit confirmation and a credit concept. Right now it silently over-credits and marks the installment paid.
-16. **Add error states to the view loaders and a logger to the backend** (findings 17, 18): `tauri-plugin-log` or `tracing` with `warn`/`error` on command failures (no names/phones in the messages), and try/catch + a retry affordance in `ClientsView.load()` / `DashboardView.load()`.
+7. ~~**Assert `list.len() == installment_count` in `resolve_schedule`** (H3).~~ **Done.**
+8. ~~**Stage the backup temp file in app-data** (M2).~~ **Done — `c080804`.**
+9. ~~**Bound `total_price` and per-line `amount`** (M1).~~ **Done** — via `MONEY_RANGE`.
+   `overflow-checks` deliberately left off: with `panic = "abort"` it trades a
+   correctness bug for an availability one, and the bounds make the wrap
+   unreachable anyway.
+10. ~~**Add length caps and allow-lists to the free-text inputs** (M6).~~ **Done — `ff969bf`.**
+11. ~~**Put `tests/**` in a typechecked TS project** (M3) and add
+    `test:integration` to CI (M4).~~ **Done — `63fa249`, `18f2889`.**
 
-### Tier 3 — larger, deliberate work
+**Larger — schedule deliberately**
 
-17. **Move reads off the main thread and kill the N+1s** (finding 7). Convert the read commands to `async` and rewrite `list_purchases` / `get_client_detail` / `get_dashboard` as set-based `GROUP BY` queries against the existing indices. Benchmark with a few thousand seeded purchases first so the win is measured, not assumed.
-18. **`rusqlite` 0.32 → 0.40** (finding 16), which also refreshes the bundled SQLite. Mostly mechanical, but it touches every query site — do it on its own branch with Tier-2's backend tests already in place.
-19. **Add a backup/export path** (finding 9): a "backup database now" command (file copy to a user-chosen location via the dialog plugin, which is already a dependency), ideally invoked automatically before cascade deletes. Pair it with a decision on encryption at rest and on PII retention (§7.5).
-20. **Frontend majors as one PR** (finding 26): Pinia 4, vue-router 5, vue-i18n 11, Vite 8, and the TS/jsdom bumps, gated on the E2E suite.
-21. **Extend CodeQL to Rust** (§8.3) so the backend gets static analysis, and consider splitting `commands.rs` into a thin validating IPC layer over a testable domain module (§6.5) — which would make the input-validation gaps visible by inspection instead of by audit.
-
-### Explicitly checked and found not applicable
-
-- **Updater**: not configured at all (§5.6) — no endpoint, no pubkey, nothing to misconfigure; the trade-off is that shipped copies cannot be patched.
-- **Shell / command injection**: no shell plugin, no `Command::new`, no string-built command lines (§5.5).
-- **SQL injection**: no user data is ever interpolated into SQL; the one dynamic query builds placeholder _indices_ only (§7.1).
-- **`unsafe` Rust**: none (§6.3).
-- **Secrets in the frontend bundle**: none; no `.env` exists and no `VITE_` variable is read anywhere (§8.1).
-- **Production source maps**: disabled unless `TAURI_ENV_DEBUG`, and confirmed absent from the built `dist/` (§8.2).
-- **devTools in release**: not enabled — the `devtools` Cargo feature is not set (§5.3).
-- **Vue 2 / Options API / mixed patterns**: none — Vue 3.5, `<script setup>` in all 16 SFCs (§8.1).
-- **`v-html` with untrusted data**: the single usage is a static icon map, documented and safe (§8.1).
-- **Tauri v1 allowlist**: not present; this is a v2 capability-based app (§3.2).
+12. ~~**Bump `rusqlite` 0.32 → 0.40** (M5).~~ **Done — `7e592ac`, to 0.39.** (M5). Breaking API change plus a new bundled
+    SQLite; give it its own PR with the full test suite behind it. The only
+    dependency gap with a security dimension, and it has now survived two audits.
+13. **Decide explicitly about encryption at rest** (§7.5). Not necessarily
+    SQLCipher — restrictive file permissions plus a recorded decision may be the
+    right answer for this threat model. What matters is that it stops being a
+    default and becomes a choice.
+14. **Frontend majors**: `pinia` 2→4, `vue-router` 4→5, `vue-i18n` 10→11,
+    `vite` 7→8. No advisories; sequence them one at a time behind the E2E suite.
+15. **Address the N+1 query pattern** (I3) if the data set ever outgrows a single
+    shop's book — and wrap `VACUUM INTO` in `spawn_blocking` regardless, since it
+    is the one operation that can hold a worker for seconds.
+16. ~~**Close the presentation-layer test gap** (L9).~~ **Done — `05f4d56`,
+    `6875d83`.** The `ui/` primitives that are pure presentation were left
+    untested on purpose: a test there asserts that a prop renders.

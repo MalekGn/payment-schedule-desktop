@@ -23,6 +23,8 @@ const CODE_PARAMS: Record<string, readonly string[]> = {
   ARCHIVE_HAS_OUTSTANDING: ["remaining"],
   PURCHASE_HAS_PAYMENTS: ["count"],
   SUM_MISMATCH: ["sum", "total"],
+  INSTALLMENT_COUNT_MISMATCH: ["sent", "declared"],
+  TEXT_TOO_LONG: ["max"],
   OVERPAYMENT: ["remaining"],
   PREVIOUS_UNPAID: ["index"],
   BELOW_PAID: ["paidAmount"],

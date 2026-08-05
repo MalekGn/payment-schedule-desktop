@@ -8,7 +8,6 @@ import {
   dayDiff,
   installmentStatus,
   purchaseStatus,
-  rebalanceAmounts,
   splitAmounts,
   todayIso,
 } from "@/lib/finance";
@@ -49,7 +48,46 @@ const INTERVAL_KINDS = ["weekly", "monthly", "custom"];
 const INSTALLMENT_COUNT_MAX = 120;
 const INTERVAL_DAYS_MIN = 1;
 const INTERVAL_DAYS_MAX = 365;
+// Mirrors `MONEY_RANGE` in db.rs. The cap is not about plausible shop prices: it
+// keeps any sum of at most INSTALLMENT_COUNT_MAX terms far below the i64 range
+// the Rust side computes it in, so a wrapping sum can never satisfy the
+// SUM_MISMATCH equality that is supposed to prove the schedule adds up.
+const MONEY_MIN = 0;
+const MONEY_MAX = 1_000_000_000;
+// Mirrors SHORT_TEXT_MAX / LONG_TEXT_MAX and the three vocabularies in db.rs.
+// Counted in code points, matching the Rust side's `chars()` — a byte cap would
+// give French and Arabic users a different limit from an ASCII one.
+const SHORT_TEXT_MAX = 120;
+const LONG_TEXT_MAX = 500;
+const PAYMENT_LIMIT_MIN = 1;
+const PAYMENT_LIMIT_MAX = 5000;
+const LANGUAGES = ["fr", "en", "ar"];
+const CURRENCY_CODES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
+const DATE_FORMAT_VALUES = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Throw `TEXT_TOO_LONG:{max}` when `value` exceeds `max` code points. */
+function assertBounded(value: string, max: number): void {
+  if ([...value].length > max) throw new Error(`TEXT_TOO_LONG:${max}`);
+}
+
+/** Throw `TEXT_REQUIRED` when a field that must carry something is empty. */
+function assertRequired(value: string): void {
+  if (value === "") throw new Error("TEXT_REQUIRED");
+}
+
+/** Mirrors `validate_client_input` in commands.rs, guard for guard. */
+function validateClientInput(input: ClientInput): void {
+  const first = input.firstName.trim();
+  const last = input.lastName.trim();
+  assertRequired(first);
+  assertRequired(last);
+  assertBounded(first, SHORT_TEXT_MAX);
+  assertBounded(last, SHORT_TEXT_MAX);
+  assertBounded(input.phone.trim(), SHORT_TEXT_MAX);
+  assertBounded(input.address.trim(), LONG_TEXT_MAX);
+  if (input.email != null) assertBounded(input.email.trim(), SHORT_TEXT_MAX);
+}
 
 /** Throw `INVALID_DATE` unless `value` is a real `YYYY-MM-DD` calendar date. */
 function assertIsoDate(value: string): void {
@@ -59,7 +97,10 @@ function assertIsoDate(value: string): void {
 }
 
 function validatePurchaseInput(input: PurchaseInput): void {
-  if (input.totalPrice <= 0) throw new Error("INVALID_TOTAL_PRICE");
+  if (input.totalPrice <= 0 || input.totalPrice > MONEY_MAX) {
+    throw new Error("INVALID_TOTAL_PRICE");
+  }
+  assertBounded(input.productLabel.trim(), SHORT_TEXT_MAX);
   if (input.installmentCount < 1 || input.installmentCount > INSTALLMENT_COUNT_MAX) {
     throw new Error("INVALID_INSTALLMENT_COUNT");
   }
@@ -445,6 +486,7 @@ class MockDb {
   }
 
   createClient(input: ClientInput): Client {
+    validateClientInput(input);
     const id = this.nextId("client");
     const row: ClientRow = {
       id,
@@ -461,6 +503,7 @@ class MockDb {
   }
 
   updateClient(id: number, input: ClientInput): Client {
+    validateClientInput(input);
     const row = this.clients.find((c) => c.id === id);
     if (!row) throw new Error("CLIENT_NOT_FOUND");
     Object.assign(row, {
@@ -532,24 +575,39 @@ class MockDb {
    * for the Rust side's transaction.
    */
   private resolveSchedule(input: PurchaseInput): { amounts: number[]; dueDates: string[] } {
+    let amounts: number[];
+    let dueDates: string[];
     if (input.installments && input.installments.length > 0) {
+      // The list, not `installmentCount`, is what sizes the schedule — so the
+      // 1..=120 bound only binds if the two agree. See `resolve_schedule`.
+      if (input.installments.length !== input.installmentCount) {
+        throw new Error(
+          `INSTALLMENT_COUNT_MISMATCH:${input.installments.length}:${input.installmentCount}`,
+        );
+      }
+      // Before the sum, because the sum is the thing being protected.
+      if (input.installments.some((i) => i.amount < MONEY_MIN || i.amount > MONEY_MAX)) {
+        throw new Error("INVALID_AMOUNT");
+      }
       const sum = input.installments.reduce((s, i) => s + i.amount, 0);
       if (sum !== input.totalPrice) throw new Error(`SUM_MISMATCH:${sum}:${input.totalPrice}`);
-      return {
-        amounts: input.installments.map((i) => i.amount),
-        dueDates: input.installments.map((i) => {
-          assertIsoDate(i.dueDate);
-          return i.dueDate;
-        }),
-      };
-    }
-    const amounts = splitAmounts(input.totalPrice, input.installmentCount);
-    return {
-      amounts,
-      dueDates: amounts.map((_, i) =>
+      amounts = input.installments.map((i) => i.amount);
+      dueDates = input.installments.map((i) => {
+        assertIsoDate(i.dueDate);
+        return i.dueDate;
+      });
+    } else {
+      amounts = splitAmounts(input.totalPrice, input.installmentCount);
+      dueDates = amounts.map((_, i) =>
         addInterval(input.purchaseDate, input.intervalKind, input.intervalDays, i),
-      ),
-    };
+      );
+    }
+    // Position order and chronological order have to stay the same thing; only
+    // a hand-edited schedule can break it.
+    if (dueDates.some((due, i) => i > 0 && dueDates[i - 1] > due)) {
+      throw new Error("DUE_DATE_OUT_OF_ORDER");
+    }
+    return { amounts, dueDates };
   }
 
   createPurchase(input: PurchaseInput): PurchaseDetail {
@@ -627,6 +685,68 @@ class MockDb {
     );
   }
 
+  /** The installment rows of `purchaseId`, in position order. */
+  private rowsOf(purchaseId: number): InstallmentRow[] {
+    return this.installments
+      .filter((i) => i.purchaseId === purchaseId)
+      .sort((a, b) => a.index - b.index);
+  }
+
+  /**
+   * Mirrors the guard half of `apply_schedule_in_place` in commands.rs: whether
+   * a resolved schedule may replace the stored rows, position by position.
+   *
+   * A settled row is history and the incoming schedule has to agree with it; no
+   * row may fall below what it has collected; and a row may only be dropped
+   * while it has no ledger history, because the payment rows hang off it.
+   */
+  private assertScheduleApplies(purchaseId: number, amounts: number[], dueDates: string[]): void {
+    const rows = this.rowsOf(purchaseId);
+    for (let i = 0; i < Math.min(rows.length, amounts.length); i++) {
+      const row = rows[i];
+      if (row.paidAmount >= row.amount) {
+        if (amounts[i] !== row.amount) throw new Error("AMOUNT_LOCKED");
+        if (dueDates[i] !== row.dueDate) throw new Error("DUE_DATE_LOCKED");
+      }
+      if (amounts[i] < row.paidAmount) throw new Error(`BELOW_PAID:${row.paidAmount}`);
+    }
+    // Counted from the ledger, not from `paidAmount`: a row corrected back down
+    // to zero still holds the entries that took the money and gave it back.
+    const droppedWithHistory = rows
+      .slice(amounts.length)
+      .filter((r) => this.payments.some((p) => p.installmentId === r.id)).length;
+    if (droppedWithHistory > 0) throw new Error(`PURCHASE_HAS_PAYMENTS:${droppedWithHistory}`);
+  }
+
+  /**
+   * Mirrors the write half of `apply_schedule_in_place`: update the surviving
+   * rows in place, drop the surplus, append what is new. Updating rather than
+   * regenerating is what keeps the payment ledger attached.
+   */
+  private applyScheduleInPlace(purchaseId: number, amounts: number[], dueDates: string[]): void {
+    const rows = this.rowsOf(purchaseId);
+    rows.slice(0, amounts.length).forEach((row, i) => {
+      const amountMoved = row.amount !== amounts[i];
+      row.amount = amounts[i];
+      row.dueDate = dueDates[i];
+      // `paidDate` is derived from the amount as much as from the ledger.
+      if (amountMoved) this.syncPaidDate(row);
+    });
+    const dropped = new Set(rows.slice(amounts.length).map((r) => r.id));
+    if (dropped.size > 0) this.installments = this.installments.filter((i) => !dropped.has(i.id));
+    for (let i = rows.length; i < amounts.length; i++) {
+      this.installments.push({
+        id: this.nextId("installment"),
+        purchaseId,
+        index: i + 1,
+        amount: amounts[i],
+        dueDate: dueDates[i],
+        paidAmount: 0,
+        paidDate: null,
+      });
+    }
+  }
+
   updatePurchase(id: number, input: PurchaseInput): PurchaseDetail {
     validatePurchaseInput(input);
     const row = this.purchases.find((p) => p.id === id);
@@ -638,10 +758,9 @@ class MockDb {
     const { amounts, dueDates } = this.resolveSchedule(input);
 
     const reschedule = this.scheduleChanged(row, input, amounts, dueDates);
-    if (reschedule) {
-      const paid = this.purchasePaymentCount(id);
-      if (paid > 0) throw new Error(`PURCHASE_HAS_PAYMENTS:${paid}`);
-    }
+    // Judge the whole schedule before touching the purchase row, so a refusal
+    // leaves the label and the totals alone too.
+    if (reschedule) this.assertScheduleApplies(id, amounts, dueDates);
 
     row.productLabel = input.productLabel.trim();
     row.totalPrice = input.totalPrice;
@@ -650,21 +769,7 @@ class MockDb {
     row.intervalDays = input.intervalDays;
     row.purchaseDate = input.purchaseDate;
 
-    if (reschedule) {
-      // Safe only because the guard above proved there are no payments.
-      this.installments = this.installments.filter((i) => i.purchaseId !== id);
-      amounts.forEach((amount, i) => {
-        this.installments.push({
-          id: this.nextId("installment"),
-          purchaseId: id,
-          index: i + 1,
-          amount,
-          dueDate: dueDates[i],
-          paidAmount: 0,
-          paidDate: null,
-        });
-      });
-    }
+    if (reschedule) this.applyScheduleInPlace(id, amounts, dueDates);
     return this.buildPurchaseDetail(id);
   }
 
@@ -694,53 +799,39 @@ class MockDb {
   }
 
   /**
-   * Edit one installment in place — the only write path that still works after
-   * a payment has been recorded. Mirrors `update_installment_impl` in
+   * Record money against one installment — the only write path that still works
+   * after a payment has been recorded. Mirrors `update_installment_impl` in
    * `src-tauri/src/commands.rs` guard for guard and code for code; the
    * integration suite asserts against these strings.
    *
-   * The fields split in two: the *schedule* (amount, due date) unlocks while
-   * the installment is unsettled and ignores its neighbours; the *money* (paid
-   * amount, payment date, note) is gated on the previous installment and
-   * ignores this one's own status. A moved paid amount writes a correction row
-   * into the ledger, so `SUM(payments) === SUM(paidAmount)` survives the edit.
+   * It deals only in money. The schedule (amount, due date) belongs to
+   * `updatePurchase` and is refused here with `SCHEDULE_VIA_PURCHASE`. The paid
+   * amount is gated on the previous installment being settled, and a payment
+   * date may only date the ledger entry this edit creates — an entry already on
+   * record keeps its date (`PAYMENT_DATE_LOCKED`). A moved paid amount writes a
+   * correction row, so `SUM(payments) === SUM(paidAmount)` survives the edit.
    */
   updateInstallment(id: number, edit: InstallmentEdit): PurchaseDetail {
-    if (edit.dueDate !== undefined) assertIsoDate(edit.dueDate);
+    // Refused on presence, not on "differs from stored": a caller sending a
+    // schedule field still believes this command owns one.
+    if (edit.amount !== undefined || edit.dueDate !== undefined) {
+      throw new Error("SCHEDULE_VIA_PURCHASE");
+    }
     if (edit.paymentDate !== undefined) {
       assertIsoDate(edit.paymentDate);
       if (dayDiff(edit.paymentDate, todayIso()) > 0) throw new Error("FUTURE_PAID_DATE");
     }
-    if ((edit.amount !== undefined && edit.amount < 0) || (edit.paidAmount ?? 0) < 0) {
-      throw new Error("INVALID_AMOUNT");
-    }
+    if ((edit.paidAmount ?? 0) < 0) throw new Error("INVALID_AMOUNT");
 
     const target = this.installments.find((i) => i.id === id);
     if (!target) throw new Error("INSTALLMENT_NOT_FOUND");
     const owner = this.purchases.find((p) => p.id === target.purchaseId);
     if (owner?.archivedAt != null) throw new Error("PURCHASE_ARCHIVED");
 
-    const rows = this.installments
-      .filter((i) => i.purchaseId === target.purchaseId)
-      .sort((a, b) => a.index - b.index);
+    const rows = this.rowsOf(target.purchaseId);
     const pos = rows.findIndex((i) => i.id === id);
-    const settled = target.paidAmount >= target.amount;
 
-    // -- the schedule half: gated on this installment being unsettled --------
-    const amountChanged = edit.amount !== undefined && edit.amount !== target.amount;
-    const dueChanged = edit.dueDate !== undefined && edit.dueDate !== target.dueDate;
-    if (settled) {
-      if (amountChanged) throw new Error("AMOUNT_LOCKED");
-      if (dueChanged) throw new Error("DUE_DATE_LOCKED");
-    }
-    if (dueChanged) {
-      const due = edit.dueDate!;
-      const below = pos > 0 && due < rows[pos - 1].dueDate;
-      const above = pos + 1 < rows.length && due > rows[pos + 1].dueDate;
-      if (below || above) throw new Error("DUE_DATE_OUT_OF_ORDER");
-    }
-
-    // -- the money half: gated on the previous installment being settled -----
+    // -- the money: gated on the previous installment being settled ----------
     const paidChanged = edit.paidAmount !== undefined && edit.paidAmount !== target.paidAmount;
     if (paidChanged || edit.paymentDate !== undefined || edit.note !== undefined) {
       const prev = pos > 0 ? rows[pos - 1] : null;
@@ -749,42 +840,22 @@ class MockDb {
 
     // -- resolve everything before mutating anything --------------------------
     const finalPaid = edit.paidAmount ?? target.paidAmount;
-    const finalAmount = edit.amount ?? target.amount;
-    if (finalPaid > finalAmount) {
-      throw new Error(
-        paidChanged ? `PAID_ABOVE_AMOUNT:${finalAmount}` : `BELOW_PAID:${target.paidAmount}`,
-      );
-    }
-
-    let nextAmounts: number[] | null = null;
-    if (amountChanged) {
-      const paidAmounts = rows.map((i) => i.paidAmount);
-      // The edited row's own floor is what this edit lands on, not what is
-      // stored, so lowering the amount and the collected figure together is not
-      // refused for a conflict the request itself resolves.
-      paidAmounts[pos] = finalPaid;
-      nextAmounts = rebalanceAmounts(
-        rows.map((i) => i.amount),
-        paidAmounts,
-        pos,
-        finalAmount,
-      );
-      if (nextAmounts === null) throw new Error("NO_REBALANCE_ROOM");
-    }
+    if (finalPaid > target.amount) throw new Error(`PAID_ABOVE_AMOUNT:${target.amount}`);
 
     const latest = this.latestPayment(id);
-    if ((edit.paymentDate !== undefined || edit.note !== undefined) && !paidChanged && !latest) {
+    // A payment date dates the correction entry below, and nothing else: an
+    // entry already on record keeps the date it was collected on, and with no
+    // entry either way there is nothing for the date to land on.
+    if (edit.paymentDate !== undefined && !paidChanged) {
+      throw new Error(latest ? "PAYMENT_DATE_LOCKED" : "NO_PAYMENT_TO_DATE");
+    }
+    // A note carries no such history and may still amend the latest entry — but
+    // it still needs one to amend.
+    if (edit.note !== undefined && !paidChanged && !latest) {
       throw new Error("NO_PAYMENT_TO_DATE");
     }
 
     // -- writes ---------------------------------------------------------------
-    if (edit.dueDate !== undefined) target.dueDate = edit.dueDate;
-    if (nextAmounts) {
-      rows.forEach((row, i) => {
-        row.amount = nextAmounts![i];
-      });
-    }
-
     const note = edit.note?.trim() || null;
     if (paidChanged) {
       this.payments.push({
@@ -796,15 +867,13 @@ class MockDb {
         createdAt: todayIso(),
       });
       target.paidAmount = finalPaid;
-    } else if (latest) {
-      // Nothing to correct, so a date or a note amends the entry already there.
-      if (edit.paymentDate !== undefined) latest.paymentDate = edit.paymentDate;
-      if (note !== null) latest.note = note;
+    } else if (latest && note !== null) {
+      // Nothing to correct, so a note amends the entry already there.
+      latest.note = note;
     }
 
-    // `paidDate` is derived, so re-run it for every row whose numbers moved.
+    // `paidDate` is derived from the collected figure, so re-run it here.
     this.syncPaidDate(target);
-    if (nextAmounts) rows.forEach((row) => this.syncPaidDate(row));
 
     return this.buildPurchaseDetail(target.purchaseId);
   }
@@ -881,10 +950,15 @@ class MockDb {
   }
 
   listAllPayments(limit = 500): Payment[] {
+    // Mirrors `PAYMENT_LIMIT_RANGE` in db.rs. Worth mirroring even though the
+    // failure modes differ: a negative LIMIT means *no* limit in SQLite, while
+    // `.slice(0, -1)` here would quietly drop the last row instead. Left alone,
+    // the mock would disagree with the backend in both directions at once.
+    const clamped = Math.min(PAYMENT_LIMIT_MAX, Math.max(PAYMENT_LIMIT_MIN, Math.trunc(limit)));
     return this.payments
       .slice()
       .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate) || b.id - a.id)
-      .slice(0, limit)
+      .slice(0, clamped)
       .map((p) => this.mapPayment(p));
   }
 
@@ -1015,14 +1089,34 @@ class MockDb {
   }
 
   updateSettings(patch: SettingsPatch): Settings {
-    if (patch.language !== undefined) {
-      this.settings.language = patch.language;
+    // Resolve and validate everything before writing anything, as the Rust side
+    // does before opening its transaction — a rejected patch must not leave
+    // half the settings applied.
+    const language = patch.language?.trim();
+    if (language !== undefined && !LANGUAGES.includes(language)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const currencyCode = patch.currencyCode?.trim();
+    if (currencyCode !== undefined && !CURRENCY_CODES.includes(currencyCode)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const dateFormat = patch.dateFormat?.trim();
+    if (dateFormat !== undefined && !DATE_FORMAT_VALUES.includes(dateFormat)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    const shopName = patch.shopName?.trim();
+    if (shopName !== undefined) assertBounded(shopName, SHORT_TEXT_MAX);
+    const shopInfo = patch.shopInfo?.trim();
+    if (shopInfo !== undefined) assertBounded(shopInfo, LONG_TEXT_MAX);
+
+    if (language !== undefined) {
+      this.settings.language = language;
       this.settings.language_is_default = "0";
     }
-    if (patch.currencyCode !== undefined) this.settings.currency_code = patch.currencyCode;
-    if (patch.dateFormat !== undefined) this.settings.date_format = patch.dateFormat;
-    if (patch.shopName !== undefined) this.settings.shop_name = patch.shopName;
-    if (patch.shopInfo !== undefined) this.settings.shop_info = patch.shopInfo;
+    if (currencyCode !== undefined) this.settings.currency_code = currencyCode;
+    if (dateFormat !== undefined) this.settings.date_format = dateFormat;
+    if (shopName !== undefined) this.settings.shop_name = shopName;
+    if (shopInfo !== undefined) this.settings.shop_info = shopInfo;
     if (patch.alertSoonDays !== undefined) {
       // Mirror the backend's defensive clamp (1..90).
       this.settings.alert_soon_days = String(

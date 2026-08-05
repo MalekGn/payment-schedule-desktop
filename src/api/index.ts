@@ -94,10 +94,18 @@ export const api = {
       ? invoke("create_purchase", { input })
       : Promise.resolve(mockDb.createPurchase(input)),
   /**
-   * Edit a purchase. The product label is always accepted; changing anything
-   * the schedule derives from (total, count, interval, purchase date) rebuilds
-   * the installments and so rejects with `PURCHASE_HAS_PAYMENTS:{n}` once any
-   * payment exists. `clientId` is ignored — a purchase cannot change hands.
+   * Edit a purchase, and the **only** way to change an installment's `amount`
+   * or `dueDate`. The product label is always accepted; the schedule is applied
+   * onto the stored rows position by position, so a purchase carrying payments
+   * can still have its unpaid installments moved.
+   *
+   * A settled installment is history and refuses the edit (`AMOUNT_LOCKED`,
+   * `DUE_DATE_LOCKED`), no row may fall below what it has collected
+   * (`BELOW_PAID:{paidAmount}`), and shortening the schedule past a row that
+   * carries cash rejects with `PURCHASE_HAS_PAYMENTS:{n}`. Also rejects
+   * `SUM_MISMATCH:{sum}:{total}` and `DUE_DATE_OUT_OF_ORDER` (due dates must
+   * run in position order). `clientId` is ignored — a purchase cannot change
+   * hands.
    */
   updatePurchase: (id: number, input: PurchaseInput): Promise<PurchaseDetail> =>
     isTauri()
@@ -121,24 +129,22 @@ export const api = {
 
   // -- installments --
   /**
-   * Edit one installment in place. Unlike `updatePurchase`, this keeps working
-   * after payments have been recorded — it never regenerates the rows, so it
-   * never touches the payment ledger hanging off them.
+   * Record money against one installment. Omitted fields are left alone.
    *
-   * Omitted fields are left alone. The two halves follow opposite rules: the
-   * schedule (`amount`, `dueDate`) is editable until the installment settles
-   * (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`), while the money (`paidAmount`,
-   * `paymentDate`, `note`) is editable only once the previous installment is
-   * fully paid (`PREVIOUS_UNPAID:{index}`).
+   * This deals only in money — `paidAmount`, `paymentDate`, `note`. The
+   * schedule belongs to `updatePurchase`, so sending `amount` or `dueDate` here
+   * rejects with `SCHEDULE_VIA_PURCHASE` whatever their values.
    *
-   * Two totals are held: the purchase total never changes — a new `amount` is
-   * absorbed by the other unsettled installments or refused with
-   * `NO_REBALANCE_ROOM` — and the payment ledger stays in step with
-   * `paidAmount`, because a moved paid figure writes a correction entry.
+   * `paidAmount` is the new cumulative total collected, editable only once the
+   * previous installment is fully paid (`PREVIOUS_UNPAID:{index}`) and capped at
+   * the installment's amount (`PAID_ABOVE_AMOUNT:{amount}`). Moving it writes a
+   * correction entry into the payment ledger, which is what keeps
+   * `SUM(payments)` in step with it.
    *
-   * Also rejects `BELOW_PAID:{paidAmount}`, `PAID_ABOVE_AMOUNT:{amount}`,
-   * `DUE_DATE_OUT_OF_ORDER` (a due date must stay between its neighbours'),
-   * `NO_PAYMENT_TO_DATE` and `FUTURE_PAID_DATE`.
+   * `paymentDate` dates that new entry and nothing else: once an entry is on
+   * record its date is history (`PAYMENT_DATE_LOCKED`), and a date or note with
+   * no entry to carry it rejects with `NO_PAYMENT_TO_DATE` rather than being
+   * dropped. A future date rejects with `FUTURE_PAID_DATE`.
    */
   updateInstallment: (id: number, edit: InstallmentEdit): Promise<PurchaseDetail> =>
     isTauri()

@@ -32,7 +32,13 @@ tauri-plugin-dialog = "2"
 tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+# Held at 0.39, not 0.40: `rusqlite 0.40` requires `libsqlite3-sys 0.38`, whose
+# build script uses `cfg_select!` — stabilized only in Rust 1.95, which would
+# drag the MSRV below up seven minors. It declares no `rust-version`, so nothing
+# warns; the `msrv` CI job is what catches it. All 0.40 adds over 0.39 is virtual
+# -table API changes, and this crate has no virtual tables, so the ceiling costs
+# nothing. Revisit when 1.95 is an acceptable floor.
+rusqlite = { version = "0.39", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-opener = "2.5.4"
 # Two SQLite connections to one file is the classic corruption window. The DB
@@ -51,11 +57,15 @@ tauri-plugin-log = "2"
 # 🟡 in features.md) does not have, and `ring`'s mixed ISC-and-others expression
 # would trip the `deny.toml` allow-list. `ed25519-dalek`, `curve25519-dalek` and
 # `subtle` are BSD-3-Clause, already allowed there.
-ed25519-dalek = "2"
-base64 = "0.22"
-# Pinned to 0.10, not the newer 0.11: 0.10.9 is already compiled transitively
-# via `wry`, and matching it keeps `cargo deny`'s duplicate-version check quiet.
-sha2 = "0.10"
+ed25519-dalek = "3"
+base64 = "0.23"
+# 0.11 is not a free choice: `ed25519-dalek 3` requires `sha2 ^0.11`, so the two
+# move together. That reintroduces a duplicate — `tauri-codegen` still pulls
+# 0.10 — but only on the proc-macro chain, which runs at build time and never
+# reaches the shipped binary. `[bans] multiple-versions = "warn"` in deny.toml
+# covers it. (The previous note here blamed `wry` for the 0.10 copy; it was
+# `tauri-codegen` all along.) The same applies to base64: `plist` holds 0.22.
+sha2 = "0.11"
 # Reads the per-OS machine identifier (/etc/machine-id, MachineGuid,
 # IOPlatformUUID). MIT. Its only dependencies are platform-gated — nothing at
 # all on Linux, where it is a plain file read.

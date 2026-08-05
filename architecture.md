@@ -267,48 +267,80 @@ Consequences, both intended:
   already archived (`PURCHASE_NOT_ARCHIVED`), so the destructive cascade is only
   reachable from the archive tab, and only deliberately.
 
-Editing follows the same logic. `update_purchase` always accepts the product
-label; changing the total, count, interval or the **purchase date** regenerates
-the installment rows — and those rows own the payments through an
-`ON DELETE CASCADE` — so it is refused once a payment exists.
-`schedule_changed` compares the _resolved_ schedule against what is stored
-rather than trusting the presence of `input.installments`, because the editor
-always sends the rows it is displaying. `client_id` is ignored: a purchase
-cannot change hands.
+### The two editors: one owns the schedule, the other owns the money
 
-### Editing one installment: the path that survives a payment
+Editing is split by _which fields_ it may touch, not by how much has been paid.
 
-`update_purchase` going hard-locked at the first payment leaves a real gap —
-pushing one due date back a week, or re-cutting the tranches a client
-renegotiated, only ever happens _after_ payments have started.
-`update_installment` fills it by updating rows in place. It regenerates nothing,
-so it never destroys the payments hanging off those rows, and it is the **only**
-installment editor: it absorbed the payment modal, so both what is owed and what
-has been collected move through it.
+**`update_purchase` is the only writer of `amount` and `due_date`.** It always
+accepts the product label; everything the schedule derives from — total, count,
+interval, and the **purchase date** that anchors it — is resolved into a full
+schedule and handed to `apply_schedule_in_place`. `schedule_changed` compares
+the _resolved_ schedule against what is stored rather than trusting the presence
+of `input.installments`, because the editor always sends the rows it is
+displaying, so a label-only edit must not read as a reschedule. `client_id` is
+ignored: a purchase cannot change hands.
 
-Its fields split into two halves under opposite rules, and neither half's rule
-looks at the other's:
+`apply_schedule_in_place` updates the rows position by position instead of
+regenerating them, which is what lets a purchase carrying payments still be
+rescheduled — the `payment` ledger hangs off `installment` by an
+`ON DELETE CASCADE`, so keeping the rows keeps the history. Three rules decide
+whether a schedule is acceptable, all checked before anything is written:
 
-- **The schedule** — `amount` and `due_date` — is editable until the installment
-  settles, after which it is history (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`).
-  Nothing about the neighbouring installments gates it.
-- **The money** — `paid_amount`, `payment_date`, `note` — is editable only once
-  installment `N-1` is fully paid (`PREVIOUS_UNPAID:{index}`). Cash is collected
-  in order, so it cannot be recorded out of order. Nothing about _this_
-  installment's own status gates it.
+- A **settled** row (`paid_amount >= amount`) is history: the incoming schedule
+  has to agree with it (`AMOUNT_LOCKED`, `DUE_DATE_LOCKED`). This is what makes
+  a paid installment's amount and due date immutable from anywhere, since no
+  other command writes them.
+- No row may fall below what it has collected (`BELOW_PAID:{paid}`), because
+  `amount - paid_amount` feeds every outstanding aggregate and must not go
+  negative.
+- A row may only be **dropped** — by shortening the schedule — while no cash has
+  landed on it (`PURCHASE_HAS_PAYMENTS:{n}`).
 
-Two invariants survive it, and each is the reason for one of the guards.
+Note what this leaves open on purpose: a _partially_ paid installment is still
+reschedulable, bounded below by its `paid_amount`. Only settling it freezes it.
 
-**`SUM(amount) == purchase.total_price`.** The total is never written; a changed
-amount is absorbed by the other unsettled installments (`rebalance_amounts` in
-`db.rs`, mirrored by `rebalanceAmounts` in `finance.ts` and covered by the shared
-parity fixture). The delta lands on the installments _after_ the edited one and
-falls back to the earlier unsettled ones only when there is nothing later; a
-fully-paid installment is never an absorber, since its amount is settled history.
-When no absorber set can take the change the edit is refused with
-`NO_REBALANCE_ROOM` rather than the total quietly moving. The deliberate
-consequence: once every _other_ installment is settled, this one's amount is
-locked.
+Because the anchor fields regenerate every row's due date, settled rows
+included, changing the count, cadence or purchase date on a purchase with a
+settled installment is refused in practice — the UI disables those fields rather
+than letting the user discover it. The total price stays open: the difference is
+absorbed by the installments still owed.
+
+`resolve_schedule` additionally requires the due dates to run in position order
+(`DUE_DATE_OUT_OF_ORDER`). `idx` is what orders installments, but the sequential
+money rule below is naturally stated in terms of due dates; the check makes
+position order and chronological order provably the same thing, so "the previous
+installment" means one thing however the dates are edited. It is shared by
+create and update, so the two cannot drift.
+
+### Editing one installment: money only
+
+`update_installment` updates one row in place and deals **only** in money —
+`paid_amount`, `payment_date`, `note`. An `amount` or `due_date` sent here is
+refused with `SCHEDULE_VIA_PURCHASE` whatever its value, and whatever the
+installment's state. Refusing on _presence_ rather than on "differs from what is
+stored" is deliberate: a caller sending the field still believes this command
+owns one, and a no-op today is a real edit after the next keystroke.
+
+That refusal is what makes "the schedule is edited in one place" a property of
+the backend rather than a habit of the UI. It also means a schedule change is
+always judged against the _whole_ schedule — the sum, the ordering and every
+settled row at once — instead of one row at a time.
+
+Two rules govern what is left:
+
+- **`paid_amount`** is editable only once installment `N-1` is fully paid
+  (`PREVIOUS_UNPAID:{index}`). Cash is collected in order, so it cannot be
+  recorded out of order. Nothing about _this_ installment's own status gates it:
+  a settled row's collected figure stays correctable, which is the half of the
+  immutability rule that stays open on purpose.
+- **A recorded payment date is history** (`PAYMENT_DATE_LOCKED`). A date may only
+  be supplied to date the ledger entry this edit is about to create, so an entry
+  already on record can never be re-dated. Setting one the first time is exactly
+  what recording a payment is, so that path is untouched. A note carries no such
+  history and may still amend the latest entry — but with no entry at all,
+  either is refused with `NO_PAYMENT_TO_DATE` rather than silently dropped.
+
+One invariant survives it, and it is the reason for the correction entry.
 
 **`SUM(payment.amount) == SUM(installment.paid_amount)`.** `paid_amount` is a
 denormalised cache of the ledger — `record_payment` only ever increments it, in
@@ -321,33 +353,35 @@ purchase and client total. Instead the editor writes a **correction entry**: one
 when the figure comes down. `paid_date` then stays derived (`sync_paid_date`,
 `MAX(payment_date)`), re-run for the edited row and for every absorber a
 rebalance pushed across its settled threshold. A date or a note with no
-correction to carry it amends the row's latest entry instead, and is refused with
-`NO_PAYMENT_TO_DATE` when there is no entry at all — never silently dropped.
+correction to carry it is refused with `NO_PAYMENT_TO_DATE` — never silently
+dropped.
 
 The visible cost is that a downward correction shows as a **negative line in the
 Paiements log** and inside its amount-range filter. That is the honest reading:
 the money came back.
 
 `paid_amount` is additionally capped at the installment's amount
-(`PAID_ABOVE_AMOUNT:{amount}` / `BELOW_PAID:{paid}` — the same constraint from
-either side, reported against whichever field the user moved). Both are checked
-against the values the edit _lands_ on, not the stored ones, so lowering the
-amount and the collected figure together is not refused for a conflict the
-request itself resolves. It is the same invariant `record_payment`'s
+(`PAID_ABOVE_AMOUNT:{amount}`). It is the same invariant `record_payment`'s
 `OVERPAYMENT` guard protects: `SUM(i.amount - i.paid_amount)` feeds the
 outstanding and overdue aggregates, and one negative row cancels out another
-client's real debt.
+client's real debt. The mirror-image constraint from the schedule side is
+`BELOW_PAID:{paid}`, raised by `apply_schedule_in_place`.
 
-Finally, a due date is clamped to `[prev.due_date, next.due_date]`
-(`DUE_DATE_OUT_OF_ORDER`; the outer installments are unbounded on their missing
-side). `idx` is what orders installments, but the sequential money rule is
-naturally stated in terms of due dates — the clamp makes position order and
-chronological order provably the same thing, so "the previous installment" means
-one thing however the dates are edited.
+`sync_paid_date` is reached from both editors and re-derives `paid_date` as
+`MAX(payment_date)` whenever a row crosses its settled threshold — from either
+direction, since `update_installment` moves the collected figure under a fixed
+amount and `apply_schedule_in_place` moves the amount under a fixed figure.
 
 Nothing writes `status`: it is derived on read, so zeroing an untouched
 installment reads as "paid" and lowering a settled one's collected figure puts it
 back in debt with no extra bookkeeping.
+
+One asymmetry worth knowing: `rebalance_amounts` in `db.rs` no longer has a Rust
+caller, because a schedule now arrives whole and its sum is checked outright
+rather than a single-row delta being absorbed. It stays as the parity anchor for
+`rebalanceAmounts` in `finance.ts`, which the purchase editor still runs to
+redistribute its rows as they are typed — the shared fixture is what proves the
+two agree, and deleting the Rust half would leave it checking nothing.
 
 - **Queries name their columns.** No `SELECT *`: the payment queries join four
   tables and `map_payment` resolves columns by name, so a star would let a new

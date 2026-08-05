@@ -1,0 +1,186 @@
+name: CI
+
+# The everyday gate. This exists because `build.yml` fires only on a version
+# tag, so until now nothing at all ran on a push or a pull request — lint,
+# typecheck, unit tests, clippy and the Rust suite only ever executed while a
+# release was already being cut, which is far too late to learn about a
+# regression.
+#
+# `workflow_call` is what lets `build.yml` reuse these jobs verbatim instead of
+# keeping a second copy that drifts.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to a full commit SHA (with the human-readable
+# version in a trailing comment) so a moved tag can't silently swap the code we
+# run. Dependabot keeps the pins current.
+jobs:
+  # Run on both Node lines `engines.node` supports. Previously this was a single
+  # `node-version: 22`, which meant the version the app is developed on was never
+  # exercised — and, because setup-node resolves a bare major to the *latest*
+  # 22.x, it did not test the declared floor either. Six packages in the tree
+  # (jsdom among them) need 22.22.x or newer, so a green run on 22-latest proved
+  # nothing about the range being claimed.
+  frontend:
+    name: Lint, typecheck & JS tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-22.04
+    strategy:
+      # One lane failing is a real result about that lane; don't hide the other.
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Node
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier format check
+        run: npm run format:check
+
+      # Covers both TS projects — src/ and the integration suite. The tests were
+      # checked by no compiler until `tsconfig.test.json` was added.
+      - name: Typecheck & build frontend
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      # jsdom, no browser, no extra setup — about two seconds for 200-odd cases
+      # that drive the whole api gateway. It was wired to an npm script and to
+      # no workflow.
+      - name: Integration tests
+        run: npm run test:integration
+
+  rust-lint:
+    name: Rust format & clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - name: Set up Rust (with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: src-tauri -> target
+
+      - name: rustfmt (check)
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: clippy (warnings as errors)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+  # Separate from `rust-lint` so a formatting failure and a behavioural failure
+  # are distinguishable at a glance in the checks list.
+  #
+  # This gate is load-bearing in a way the lint one is not: several of the rules
+  # the backend enforces — the money invariants, the migration ladder, the
+  # licence signature check — are runtime behaviour that compiles perfectly well
+  # when broken. `cargo build` proves nothing about them. Dependency bumps are
+  # the sharpest case: `rusqlite 0.35` made `execute` reject a statement tail at
+  # *runtime*, so a lock-file update could have broken every write path with the
+  # build still green.
+  rust-test:
+    name: Rust tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: src-tauri -> target
+          key: test
+
+      # `--locked` so the run proves the committed Cargo.lock, not whatever
+      # cargo would resolve today — the point is to test what actually ships.
+      - name: cargo test
+        run: cargo test --locked
+        working-directory: src-tauri
+
+  # Proves the MSRV declared in Cargo.toml is real. Without this the claim is
+  # never exercised — it had drifted to 1.77 against a dependency set that
+  # actually needed 1.88, so the manifest advertised a floor that could not
+  # build. It also catches the reverse: `libsqlite3-sys` 0.38 needs Rust 1.95
+  # and declares no `rust-version`, so this job is the only thing that noticed.
+  # `rust-toolchain.toml` pins the channel for humans, so override it explicitly.
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - name: Set up Rust 1.88
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88"
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: src-tauri -> target
+          key: msrv
+
+      - name: cargo check on the declared MSRV
+        run: cargo +1.88 check --locked --all-targets
+        working-directory: src-tauri

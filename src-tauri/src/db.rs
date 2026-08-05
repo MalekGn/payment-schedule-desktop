@@ -289,6 +289,63 @@ pub const INSTALLMENT_COUNT_RANGE: std::ops::RangeInclusive<i64> = 1..=120;
 /// Inclusive bounds on the dashboard's "due soon" horizon, in days.
 pub const UPCOMING_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=365;
 
+/// Inclusive bounds on how many rows the payment ledger will return at once.
+///
+/// The lower bound is the load-bearing half: **SQLite treats a negative `LIMIT`
+/// as no limit at all**, so binding a caller's value straight in made
+/// `listAllPayments(-1)` return every payment ever recorded — a four-table join
+/// serialized whole across IPC. The upper bound is ordinary good manners; the UI
+/// asks for 500.
+pub const PAYMENT_LIMIT_RANGE: std::ops::RangeInclusive<i64> = 1..=5000;
+
+/// Inclusive bounds on any money figure arriving from the renderer: a purchase
+/// total, or one installment's share of it. Whole currency units, so a billion
+/// is far past anything a shop writes and still leaves enormous headroom.
+///
+/// The headroom is the point. `SUM(amount)` is computed as `i64` in
+/// `resolve_schedule`, and the release profile does not enable
+/// `overflow-checks`, so a wrapping sum could otherwise satisfy the
+/// `SUM_MISMATCH` equality it is meant to prove — `[i64::MAX, i64::MAX, 1002]`
+/// wraps to exactly 1000. Capping each term at 1e9 against a schedule of at most
+/// [`INSTALLMENT_COUNT_RANGE`] entries bounds any sum at 1.2e11, nine orders of
+/// magnitude below `i64::MAX`, so no validated input can reach the wrap at all.
+/// That is why this is a bound and not an `overflow-checks` flag: the flag would
+/// turn the wrap into an abort under `panic = "abort"`, where this makes it
+/// unreachable.
+pub const MONEY_RANGE: std::ops::RangeInclusive<i64> = 0..=1_000_000_000;
+
+/// Inclusive caps on free-text fields arriving from the renderer, **counted in
+/// `chars()` and not bytes** — `Médina`, `Réfrigérateur` and the Arabic locale
+/// would make a byte cap behave differently depending on the alphabet.
+///
+/// Nothing here is validated by SQLite: `TEXT` columns are unbounded and a
+/// `VARCHAR(n)` would be ignored. Without a cap the renderer can persist a
+/// multi-megabyte name, which is then read back into every list view, every
+/// export and every dashboard card. The real data these bound is tiny — the
+/// longest address in use is 29 characters and the longest product label 26 —
+/// so these are generous by two orders of magnitude and exist only to stop the
+/// pathological case.
+pub const SHORT_TEXT_MAX: usize = 120;
+/// As [`SHORT_TEXT_MAX`], for the two fields that are genuinely prose: a postal
+/// address and the shop's free-form contact block.
+pub const LONG_TEXT_MAX: usize = 500;
+
+/// The languages the app ships translations for. Mirrors `SUPPORTED_LOCALES` in
+/// `src/i18n/index.ts`; a value outside it leaves the UI falling back to French
+/// forever with no way to tell why.
+pub const LANGUAGES: [&str; 3] = ["fr", "en", "ar"];
+
+/// The currencies the settings page offers. Mirrors `CURRENCIES` in
+/// `src/stores/settings.ts`. An allow-list rather than an `[A-Z]{3}` shape
+/// check, because `FCFA` is four characters.
+pub const CURRENCY_CODES: [&str; 6] = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
+
+/// The date patterns the settings page offers. Mirrors `DATE_FORMATS` in
+/// `src/stores/settings.ts`. `formatDatePattern` substitutes into these for
+/// every date the app renders, so an unrecognised pattern is repeated into
+/// every row of every table.
+pub const DATE_FORMATS: [&str; 4] = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
+
 // Error codes. Kept as constants so the Rust guard and the doc table in
 // `error.rs` cannot drift apart, and so a typo is a compile error.
 pub const INVALID_DATE: &str = "INVALID_DATE";
@@ -298,6 +355,10 @@ pub const INVALID_INTERVAL_KIND: &str = "INVALID_INTERVAL_KIND";
 pub const INVALID_INTERVAL_DAYS: &str = "INVALID_INTERVAL_DAYS";
 pub const INVALID_AMOUNT: &str = "INVALID_AMOUNT";
 pub const SUM_MISMATCH: &str = "SUM_MISMATCH";
+pub const INSTALLMENT_COUNT_MISMATCH: &str = "INSTALLMENT_COUNT_MISMATCH";
+pub const TEXT_TOO_LONG: &str = "TEXT_TOO_LONG";
+pub const TEXT_REQUIRED: &str = "TEXT_REQUIRED";
+pub const INVALID_SETTING_VALUE: &str = "INVALID_SETTING_VALUE";
 pub const OVERPAYMENT: &str = "OVERPAYMENT";
 pub const CLIENT_HAS_PURCHASES: &str = "CLIENT_HAS_PURCHASES";
 pub const ARCHIVE_HAS_OUTSTANDING: &str = "ARCHIVE_HAS_OUTSTANDING";
@@ -311,11 +372,16 @@ pub const INSTALLMENT_NOT_FOUND: &str = "INSTALLMENT_NOT_FOUND";
 pub const AMOUNT_LOCKED: &str = "AMOUNT_LOCKED";
 pub const DUE_DATE_LOCKED: &str = "DUE_DATE_LOCKED";
 pub const DUE_DATE_OUT_OF_ORDER: &str = "DUE_DATE_OUT_OF_ORDER";
+pub const SCHEDULE_VIA_PURCHASE: &str = "SCHEDULE_VIA_PURCHASE";
 pub const PAID_ABOVE_AMOUNT: &str = "PAID_ABOVE_AMOUNT";
 pub const NO_PAYMENT_TO_DATE: &str = "NO_PAYMENT_TO_DATE";
+pub const PAYMENT_DATE_LOCKED: &str = "PAYMENT_DATE_LOCKED";
 pub const FUTURE_PAID_DATE: &str = "FUTURE_PAID_DATE";
 pub const PREVIOUS_UNPAID: &str = "PREVIOUS_UNPAID";
 pub const BELOW_PAID: &str = "BELOW_PAID";
+/// Raised by the purchase editor in the frontend, not by any Rust guard — see
+/// [`rebalance_amounts`]. Kept here so the code inventory stays complete.
+#[allow(dead_code)]
 pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
@@ -406,6 +472,7 @@ pub fn split_amounts(total: i64, n: i64) -> Vec<i64> {
 /// negative, or an even split lands under someone's `paid_amount` — which would
 /// break the `paid_amount <= amount` invariant the outstanding aggregates rely
 /// on.
+#[allow(dead_code)] // Parity anchor; see `rebalance_amounts`.
 fn apply_pool(
     amounts: &[i64],
     paid_amounts: &[i64],
@@ -441,6 +508,15 @@ fn apply_pool(
 /// Returns `None` when neither absorber set can take the change; the caller
 /// turns that into `NO_REBALANCE_ROOM`. Mirrors `rebalanceAmounts` in
 /// `src/lib/finance.ts`, and is covered by the shared parity fixture.
+///
+/// No Rust command calls it any more: a schedule edit now arrives from
+/// `update_purchase` as a whole schedule whose sum is checked outright, so
+/// there is no single-row delta left to absorb. It stays because it is one half
+/// of a cross-language pair — `finance.ts` still runs this exact algorithm to
+/// redistribute the purchase editor's rows as they are typed, and
+/// `tests/fixtures/finance-parity.json` is what proves the two agree. Deleting
+/// it would leave that fixture checking the TS side against nothing.
+#[allow(dead_code)]
 pub fn rebalance_amounts(
     amounts: &[i64],
     paid_amounts: &[i64],

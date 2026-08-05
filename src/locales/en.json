@@ -165,21 +165,20 @@
       "submit": "Save purchase",
       "editTitle": "Edit purchase",
       "saveEdit": "Save changes",
-      "lockedByPayments": "{count} payment(s) already recorded: the amount, the schedule and the date can no longer change. Only the product label can be edited."
+      "settledRowsLocked": "{count} installment(s) settled: their amount and due date no longer move, nor does the purchase date, the count or the interval. The rest of the schedule stays editable.",
+      "rowLocked": "Settled installment"
     },
     "installmentEdit": {
       "title": "Update payment — Installment {index}/{count}",
       "saved": "Installment updated.",
-      "scheduleSection": "What is owed",
       "moneySection": "What was collected",
       "negativeAmount": "The amount cannot be negative.",
       "paidAmountHint": "The total collected on this installment so far. The difference is recorded as a payment.",
-      "settledNote": "This installment is settled, so what it owes and when can no longer change.",
       "lockedByPrevious": "Installment {index} has to be settled before a payment can be recorded here.",
-      "rebalanceTitle": "The other installments become",
-      "rebalanceNote": "The purchase total stays the same.",
       "confirmTitle": "Modify a paid installment",
-      "confirmText": "Installment {index} is already paid. You are about to change what was collected on it. Continue?"
+      "confirmText": "Installment {index} is already paid. You are about to change what was collected on it. Continue?",
+      "scheduleElsewhere": "This installment's amount and due date are changed from “Edit purchase”.",
+      "paymentDateRecorded": "Already recorded. It only changes if you enter a new collected amount."
     },
     "interval": {
       "weekly": "Weekly",
@@ -428,12 +427,16 @@
     "purchaseNotArchived": "Archive this purchase before deleting it permanently.",
     "installmentNotFound": "This installment no longer exists.",
     "invalidDate": "Please enter a valid date.",
-    "invalidTotalPrice": "The total price must be greater than zero.",
+    "invalidTotalPrice": "The total price must be greater than zero and within the permitted limit.",
     "invalidInstallmentCount": "The number of installments must be between 1 and 120.",
     "invalidIntervalKind": "Unknown payment interval.",
     "invalidIntervalDays": "The custom interval must be between 1 and 365 days.",
-    "invalidAmount": "The amount must be greater than zero.",
+    "invalidAmount": "The amount is outside the permitted range.",
     "sumMismatch": "The installments add up to {sum}, but the total is {total}.",
+    "installmentCountMismatch": "The schedule carries {sent} installment(s), but {declared} were declared.",
+    "textTooLong": "This field cannot exceed {max} characters.",
+    "textRequired": "This field is required.",
+    "invalidSettingValue": "That value is not one of the available options.",
     "overpayment": "That is more than this installment still owes ({remaining}).",
     "invalidLogoType": "Choose a PNG, JPG, WEBP or GIF image.",
     "logoTooLarge": "The image is too large (5 MB maximum).",
@@ -448,7 +451,9 @@
     "paidAboveAmount": "More than this installment is worth ({amount}).",
     "noPaymentToDate": "There is no payment on this installment yet, so there is no payment date to change.",
     "licenseRequired": "This feature requires an active licence.",
-    "invalidLicense": "Licence file refused ({status}). Your current licence is unchanged."
+    "invalidLicense": "Licence file refused ({status}). Your current licence is unchanged.",
+    "scheduleViaPurchase": "An installment's amount and due date are changed from the purchase, not here.",
+    "paymentDateLocked": "This payment's date is already on record and can no longer be changed."
   },
   "filters": {
     "date": "Filter by date",
