@@ -48,7 +48,7 @@ jobs:
             bundles: msi,nsis
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -66,7 +66,7 @@ jobs:
             rpm
 
       - name: Set up Node
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -75,7 +75,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: src-tauri -> target
 
@@ -117,7 +117,7 @@ jobs:
       # Both matrix runners target the same tagName, so they attach to one shared Release.
       # --bundles overrides tauri.conf.json targets so each OS emits only its own installers.
       - name: Build & publish to GitHub Release
-        uses: tauri-apps/tauri-action@42e9df6c59070d114bf90dcd3943a1b8f138b113 # v0.5.20
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PAYMENT_SCHEDULE_LICENSE_PUBKEY: ${{ vars.PAYMENT_SCHEDULE_LICENSE_PUBKEY }}
