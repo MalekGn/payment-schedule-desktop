@@ -5,10 +5,14 @@
 **Scope:** architecture, security, dependencies, data layer, frontend, build config, hygiene
 **Nature:** read-only review. **No code was changed.** The only file written is this report.
 
-> **Update:** every **High and Medium** finding below is closed, plus **L1**
-> — H1, H2, H3, M1–M6 and L1, across commits `ce038d1` … `c780434`. Closed rows
-> are struck through and annotated inline; L2–L9 and the Info rows stand as
-> audited.
+> **Update:** every **High and Medium** finding below is closed, plus **L1** and
+> **L9** — H1, H2, H3, M1–M6, L1 and L9, across commits `ce038d1` … `6875d83`.
+> Closed rows are struck through and annotated inline; L2–L8 and the Info rows
+> stand as audited.
+>
+> L9 was worth doing for more than the coverage number: writing the comparator
+> test it asked for uncovered a live sorting bug (`6c1df84`), which is the
+> argument for the finding rather than a footnote to it.
 >
 > One correction worth carrying forward: H1's recommendation here (_"run
 > `npm audit fix`"_) was **wrong**. npm reports the advisory but proposes no
@@ -33,7 +37,7 @@
 | Frontend | **Vue 3.5** + TypeScript, `<script setup>` in **34/34** SFCs, Pinia 2 (4 stores), vue-router 4, vue-i18n 10                           |
 | Build    | Vite 7.3.6, `vue-tsc --noEmit` typecheck, ESLint 10 flat config, Prettier 3, husky + lint-staged                                      |
 | CI       | 3 GitHub Actions workflows (release bundles, CodeQL, security audit), Dependabot on npm/cargo/actions, all actions SHA-pinned         |
-| Tests    | Vitest unit (10 files / 147 cases), Vitest integration (8 files / **213** cases), Playwright E2E (50 scenarios), **133 Rust tests**   |
+| Tests    | Vitest unit (18 files / 224 cases), Vitest integration (8 files / **213** cases), Playwright E2E (50 scenarios), **133 Rust tests**   |
 
 **Local gate status at audit time** (every one actually run, results real):
 
@@ -41,7 +45,7 @@
 | ------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `npm run lint`                              | ✅ clean                                                                                |
 | `npm run build` (`vue-tsc --noEmit` + vite) | ✅ clean                                                                                |
-| `npm test`                                  | ✅ 10 files, 147 cases passed                                                           |
+| `npm test`                                  | ✅ **18 files, 224 cases** passed (was 10/147)                                          |
 | `cargo fmt --check`                         | ✅ clean                                                                                |
 | `cargo clippy --all-targets -- -D warnings` | ✅ clean                                                                                |
 | `cargo test`                                | ✅ 126 passed — CI job added since (H2 closed)                                          |
@@ -162,7 +166,7 @@ Ordered most-important first.
 | **L6** | Input validation  | Low                   | `ImpayeFilter.date_from`/`date_to` never reach `parse_date`; a malformed date yields a silently empty list instead of `INVALID_DATE`                                                                                                      | Run both through `parse_date`                                                                               | `commands.rs:1505-1514`                                          |
 | **L7** | Logging           | Low                   | `db.rs:272` logs a rejected, frontend-supplied date string verbatim — log noise, bounded by `{:?}` escaping. Local disk only, never IPC                                                                                                   | Truncate, or log only that parsing failed                                                                   | `db.rs:272`                                                      |
 | **L8** | Architecture      | Low                   | `SettingsView.vue` imports `@tauri-apps/plugin-dialog` directly — the only Tauri import outside the gateway                                                                                                                               | Move the dialogs behind `src/api/`, or accept and document it; today it blocks a mechanical lint rule       | `SettingsView.vue:103`, `138`, `170`                             |
-| **L9** | Testing           | Low                   | 28/34 SFCs, 3/4 stores and 4/6 composables have no unit test — including `AppIcon.vue`, the one file with `v-html`. Locale key parity untested                                                                                            | Add a locale-parity test (cheap, high value) and component tests for the two modals                         | `src/components/**`, `src/stores/**`, `src/composables/**`       |
+| **L9** | Testing           | ~~Low~~ **CLOSED**    | ~~28/34 SFCs, 3/4 stores and 4/6 composables have no unit test; locale key parity untested~~ — fixed in `05f4d56` and `6875d83`: 8 new suites, 147 → 224 unit tests. Uncovered a real `useSort` bug on the way (`6c1df84`)                | Done for everything holding logic; the presentational `ui/` primitives are deliberately skipped             | `src/components/**`, `src/stores/**`, `src/composables/**`       |
 | **I1** | Tauri security    | Info                  | No updater is configured — no `plugin-updater`, no `updater` key. The HTTPS-endpoint and signature checks do not apply                                                                                                                    | None. Revisit when an updater is added                                                                      | `tauri.conf.json`; `Cargo.toml`                                  |
 | **I2** | Dependencies      | Info                  | 18 RustSec warnings (0 vulnerabilities): 10 GTK3 bindings, 5 `unic-*`, `proc-macro-error`, `glib` unsoundness, `event-listener` unsoundness                                                                                               | Nothing actionable — all transitive via `tauri → tao/gtk`, no fixed versions exist. Policy already recorded | `Cargo.lock`; `deny.toml:5-16`                                   |
 | **I3** | Performance       | Info                  | N+1 query pattern survives in `list_purchases` (3 queries per row) and the dashboard; commands are `async` but do blocking DB work                                                                                                        | Matters only at scale; `spawn_blocking` for `VACUUM INTO` and the listings if the DB grows                  | `commands.rs:564-574`, `1646+`                                   |
@@ -772,7 +776,7 @@ intentionally committed (correct for a binary) with a comment explaining why.
 | Suite       | Files | Cases | Runs in CI?                 |
 | ----------- | ----- | ----- | --------------------------- |
 | Rust unit   | —     | 145   | ✅ since `9f9ad6c`          |
-| Vitest unit | 10    | 147   | ✅ `npm test`               |
+| Vitest unit | 18    | 224   | ✅ `npm test`               |
 | Integration | 8     | 223   | ✅ since `18f2889`          |
 | E2E         | 1     | 50    | ✅ nightly, since `18f2889` |
 
@@ -911,8 +915,8 @@ fix`: that proposes nothing here. `npm update brace-expansion` is what moved
 3. ~~**Clamp `limit` in `list_all_payments`** to `1..=5000` (L1).~~ **Done — `f5d3f6a`.**
 4. **Run `ImpayeFilter` dates through `parse_date`** (L6).
 5. **Add `debug_assert_eq!` on the slice lengths** in `rebalance_amounts` (L5).
-6. **Add a locale key-parity test** (fr/en/ar) — cheap, and it pins a project
-   invariant currently asserted nowhere (part of L9).
+6. ~~**Add a locale key-parity test** (fr/en/ar) (part of L9).~~ **Done —
+   `05f4d56`**, covering placeholder parity too.
 
 **Small, contained fixes — an hour or two each**
 
@@ -940,6 +944,6 @@ fix`: that proposes nothing here. `npm update brace-expansion` is what moved
 15. **Address the N+1 query pattern** (I3) if the data set ever outgrows a single
     shop's book — and wrap `VACUUM INTO` in `spawn_blocking` regardless, since it
     is the one operation that can hold a worker for seconds.
-16. **Close the presentation-layer test gap** (L9), starting with
-    `NewPurchaseModal.vue` — it carries the most logic of any component and has
-    no unit test.
+16. ~~**Close the presentation-layer test gap** (L9).~~ **Done — `05f4d56`,
+    `6875d83`.** The `ui/` primitives that are pure presentation were left
+    untested on purpose: a test there asserts that a prop renders.
