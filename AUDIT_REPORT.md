@@ -45,7 +45,7 @@
 | ------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `npm run lint`                              | ✅ clean                                                                                |
 | `npm run build` (`vue-tsc --noEmit` + vite) | ✅ clean                                                                                |
-| `npm test`                                  | ✅ **18 files, 224 cases** passed (was 10/147)                                          |
+| `npm test`                                  | ✅ **18 files, 224 cases** passed on Node 24.16.0 (was 10/147)                          |
 | `cargo fmt --check`                         | ✅ clean                                                                                |
 | `cargo clippy --all-targets -- -D warnings` | ✅ clean                                                                                |
 | `cargo test`                                | ✅ 126 passed — CI job added since (H2 closed)                                          |
@@ -263,23 +263,34 @@ floor was fiction.
 
 **Package manager:** npm (only `package-lock.json` present; no yarn/pnpm lock).
 
-**`npm audit`: 1 high, 0 critical, 0 moderate, 0 low.**
+**`npm audit`: 0 vulnerabilities.** _(Re-verified after `c780434`; the gate at
+`security.yml:52-53` exits 0.)_
 
-```
-brace-expansion  4.0.0 - 5.0.8
-Severity: high
-brace-expansion: DoS via unbounded intermediate arrays,
-bypassing the CVE-2026-14257 mitigation — GHSA-rgw5-rvv9-x895
-```
+It read **1 high** when this report was written — `brace-expansion` 5.0.8, DoS,
+GHSA-rgw5-rvv9-x895, reached via `eslint@10.8.0 → minimatch@10.2.5`. Dev-only
+(ESLint is not shipped), but `npm audit` does not distinguish.
 
-Reached via `eslint@10.8.0 → minimatch@10.2.5 → brace-expansion@5.0.8`. It is
-dev-only (ESLint is not shipped), but `npm audit` does not distinguish, and the
-gate at `security.yml:52-53` is `npm audit --audit-level=high` — **verified exit
-1**. `npm audit fix` resolves it without a major bump.
+**The recommendation this section originally gave was wrong, and that is the
+part worth keeping.** It said _"`npm audit fix` resolves it without a major
+bump"_. `npm audit fix` resolves nothing here: it reports the advisory and then
+proposes no change, because the pinned 5.0.8 already satisfies the `^5.0.5` that
+minimatch declares, and npm will not bump a transitive dependency that sits
+inside its own range. The patched release, 5.0.9, satisfies that range too — so
+this was never a version conflict, only a lockfile that had to be moved
+deliberately with `npm update brace-expansion`. Expect the same shape from the
+next transitive advisory.
 
-Note the improvement since the last audit: the previous 8 advisories came through
-`vue-tsc 2.x` and `@vue/test-utils`, and were closed by the `vue-tsc@3` upgrade
-plus the `js-beautify` override still present at `package.json:27-29`.
+Note also the improvement over the previous audit: its 8 advisories came through
+`vue-tsc 2.x` and `@vue/test-utils`, closed by the `vue-tsc@3` upgrade plus the
+`js-beautify` override still present in `package.json`.
+
+**One deprecation, which the outdated table below understates.** A clean
+`npm ci` warns that **`vue-i18n@10.0.8` is no longer supported upstream** —
+"v9 and v10 no longer supported, please migrate to v11". The registry carries it
+under a `legacy10` dist-tag with a `deprecated` field. So that row is not
+ordinary version drift: it is a shipped runtime dependency that will receive no
+further fixes, security or otherwise. It is the only deprecation warning in the
+whole install.
 
 **`npm outdated`:**
 
@@ -295,11 +306,15 @@ plus the `js-beautify` override still present at `package.json:27-29`.
 | `playwright`        | 1.62.0  | 1.62.1 | 1.62.1 | patch           |
 | `typescript-eslint` | 8.65.0  | 8.66.0 | 8.66.0 | minor           |
 | `vue-tsc`           | 3.3.8   | 3.3.9  | 3.3.9  | patch           |
+| `vue`               | 3.5.40  | 3.5.41 | 3.5.41 | patch           |
 
-`vue` itself (3.5.x) is current. None of the outdated majors carries a known
-advisory — this is maintenance debt, not a security finding. Dependabot runs
-weekly for npm, cargo and actions, with dev-dependency minors/patches grouped to
-cut PR noise.
+None of the outdated majors carries a known _advisory_, so most of this is
+maintenance debt rather than a security finding — with the exception of
+`vue-i18n`, which is deprecated upstream as noted above and is the one row here
+that should be scheduled rather than deferred.
+
+Dependabot runs weekly for npm, cargo and actions, with dev-dependency
+minors/patches grouped to cut PR noise.
 
 ### 4.3 Licences
 
@@ -314,9 +329,37 @@ build. **No conflicts found.**
 
 ### 4.4 Runtime versions
 
-`engines.node` is `">=22"`; installed **v24.16.0** ✅. CI pins Node 22
-(`build.yml:33`, `security.yml:42`) — the declared floor, which is the right
-choice for a floor test, though it does mean Node 24 is never exercised in CI.
+_(Rewritten after verification; the original claim below was wrong on both
+halves.)_ It read: _"`engines.node` is `">=22"`; installed v24.16.0 ✅. CI pins
+Node 22 — the declared floor, which is the right choice for a floor test."_
+
+**`">=22"` was not true.** Checking all **164** packages in the tree that declare
+an `engines.node` range, by semver against specific versions:
+
+| Node        | packages unsatisfied |                                                   |
+| ----------- | -------------------- | ------------------------------------------------- |
+| 22.0.0      | 27                   | the declared floor                                |
+| 22.13.0     | 6                    |                                                   |
+| **22.22.2** | **0**                | first 22.x that works                             |
+| 23.x        | 24                   | non-LTS line, excluded by the tree                |
+| 24.0.0      | 3                    |                                                   |
+| **24.15.0** | **0**                | first 24.x that works                             |
+| 24.16.0     | 0                    | the installed version                             |
+| 25.0.0      | 3                    | `abbrev`, `jsdom`, `nopt` want `^24.15 \|\| >=26` |
+
+`jsdom` — the test environment itself — is among the six needing 22.22.x.
+
+**And CI was not testing the floor.** `node-version: 22` in `setup-node` resolves
+to the _latest_ 22.x, which is new enough to satisfy everything, so the lane was
+green while the claim it was meant to back went unexercised.
+
+Both fixed in `b119453`: `engines.node` is now `"^22.22.2 || ^24.15.0"` — the two
+LTS lines the tree actually supports — and the `frontend` CI job runs a
+`[22, 24]` matrix, so the version the app is developed on is exercised too.
+
+**Node 24 verdict: fully supported from 24.15.0.** Beyond the semver sweep it is
+empirically proven — every `npm test`, `lint`, `typecheck`, `build` and
+`test:integration` run recorded in this report executed on v24.16.0.
 
 ---
 
