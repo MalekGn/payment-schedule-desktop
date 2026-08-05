@@ -230,11 +230,20 @@ publishes them to a **GitHub Release** for that tag:
 | `ubuntu-22.04`   | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
 | `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11)      |
 
-To cut a release:
+The **app version** is set in one place: `version` in `src-tauri/Cargo.toml`.
+`src-tauri/tauri.conf.json` deliberately omits its `version` key so Tauri
+inherits that value — it drives the installer filenames, the Windows MSI product
+version, and the deb/rpm package version. (`package.json` carries its own
+`version` for npm metadata; it has no effect on the built app, but keep it in
+step.)
+
+To cut a release, bump the version and **commit it before tagging** — the
+workflow takes the release name from the tag and the installer names from the
+build, so tagging first ships a release whose title and assets disagree:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 Both runners attach their installers to one shared Release, published as a
