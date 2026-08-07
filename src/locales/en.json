@@ -373,9 +373,18 @@
     "backup": "Backup",
     "backupHint": "Save a copy of your database. Deleting a client also deletes their purchases and payments, and that cannot be undone.",
     "backupAction": "Backup database",
+    "backupAuto": "Back up automatically",
+    "backupFrequency": "Frequency",
+    "backupFrequency_daily": "Every day",
+    "backupFrequency_weekly": "Every week",
+    "backupFrequency_monthly": "Every month",
+    "backupTime": "Time",
+    "backupTimeHint": "The copy is made at this time while the application is open. If it was closed, it is made the next time you open it.",
     "backupDone": "Backup saved.",
     "backupLast": "Last backup: {date}",
-    "backupNever": "This database has never been backed up."
+    "backupNever": "This database has never been backed up.",
+    "backupAutoLast": "Automatic copy on this computer: {date}. It does not replace a backup kept elsewhere.",
+    "backupAutoNone": "No automatic copy yet. One is made when the application starts."
   },
   "license": {
     "title": "Licence",

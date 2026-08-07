@@ -359,6 +359,18 @@ pub struct Settings {
     /// never taken one. Read-only: it is written by `backup_database`, never by
     /// the renderer, which is why it has no counterpart in [`SettingsPatch`].
     pub last_backup_at: Option<String>,
+    /// ISO date of the last automatic snapshot taken at launch. Read-only, same
+    /// reason. Reported separately from [`Settings::last_backup_at`] and never
+    /// merged with it: the automatic copies live beside the database on the same
+    /// disk, so they do not stand in for one the user carried off the machine.
+    pub last_auto_backup_at: Option<String>,
+    /// Whether the scheduled automatic backup runs at all. Defaults to on: the
+    /// shops this protects are the ones who would never turn it on themselves.
+    pub auto_backup_enabled: bool,
+    /// `"daily"` | `"weekly"` | `"monthly"` — see `db::BACKUP_FREQUENCIES`.
+    pub auto_backup_frequency: String,
+    /// Time of day the automatic backup is due, `HH:MM` in local time.
+    pub auto_backup_time: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -370,4 +382,9 @@ pub struct SettingsPatch {
     pub shop_name: Option<String>,
     pub shop_info: Option<String>,
     pub alert_soon_days: Option<i64>,
+    /// The backup schedule *is* writable, unlike the two `last_*_at` stamps on
+    /// [`Settings`]: it is configuration, not a record of what happened.
+    pub auto_backup_enabled: Option<bool>,
+    pub auto_backup_frequency: Option<String>,
+    pub auto_backup_time: Option<String>,
 }

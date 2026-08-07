@@ -260,6 +260,19 @@ export interface Settings {
    * is why it has no counterpart in {@link SettingsPatch}.
    */
   lastBackupAt: string | null;
+  /**
+   * ISO date of the last automatic snapshot taken at launch, or `null` if none
+   * has run. Read-only, and deliberately **not** interchangeable with
+   * {@link Settings.lastBackupAt}: automatic copies sit beside the database on
+   * the same disk, so they never stand in for one the user took off the machine.
+   */
+  lastAutoBackupAt: string | null;
+  /** Whether the scheduled automatic backup runs at all. On by default. */
+  autoBackupEnabled: boolean;
+  /** `"daily" | "weekly" | "monthly"` — see `BACKUP_FREQUENCIES`. */
+  autoBackupFrequency: string;
+  /** Time of day the automatic backup is due, `HH:MM` in local time. */
+  autoBackupTime: string;
 }
 
 export interface SettingsPatch {
@@ -269,6 +282,13 @@ export interface SettingsPatch {
   shopName?: string;
   shopInfo?: string;
   alertSoonDays?: number;
+  /**
+   * The backup schedule is writable, unlike the two `last*At` stamps on
+   * {@link Settings}: it is configuration, not a record of what happened.
+   */
+  autoBackupEnabled?: boolean;
+  autoBackupFrequency?: string;
+  autoBackupTime?: string;
 }
 
 // ---------------------------------------------------------------------------

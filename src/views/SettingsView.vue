@@ -8,6 +8,7 @@ import {
   CURRENCIES,
   ALERT_SOON_DAYS_MIN,
   ALERT_SOON_DAYS_MAX,
+  BACKUP_FREQUENCIES,
 } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useLicenseStore } from "@/stores/license";
@@ -155,6 +156,47 @@ const backupStatus = computed(() =>
   settings.lastBackupAt
     ? t("settings.backupLast", { date: fmt.date(settings.lastBackupAt) })
     : t("settings.backupNever"),
+);
+
+/**
+ * The automatic-copy line. Shown as plain information, never as reassurance:
+ * these snapshots live beside the database on the same disk, so they are a
+ * safety net for mistakes, not for losing the machine. The nudge above is what
+ * asks for a real backup, and it ignores this value entirely.
+ */
+/** Local copy of the time field, so a rejected value can be rolled back. */
+const autoBackupTime = ref(settings.settings.autoBackupTime);
+
+async function onAutoBackupEnabled(e: Event) {
+  const enabled = (e.target as HTMLInputElement).checked;
+  await save(() => settings.update({ autoBackupEnabled: enabled }));
+}
+
+async function onAutoBackupFrequency(e: Event) {
+  const frequency = (e.target as HTMLSelectElement).value;
+  await save(() => settings.update({ autoBackupFrequency: frequency }));
+}
+
+/**
+ * `<input type="time">` can still hand us an empty string — the field is
+ * clearable — and the backend refuses anything that is not `HH:MM`. Roll the
+ * control back to what is stored rather than leaving the user looking at a
+ * value that was never saved.
+ */
+async function onAutoBackupTime() {
+  const value = autoBackupTime.value;
+  if (!value) {
+    autoBackupTime.value = settings.autoBackupTime;
+    return;
+  }
+  await save(() => settings.update({ autoBackupTime: value }));
+  autoBackupTime.value = settings.autoBackupTime;
+}
+
+const autoBackupStatus = computed(() =>
+  settings.lastAutoBackupAt
+    ? t("settings.backupAutoLast", { date: fmt.date(settings.lastAutoBackupAt) })
+    : t("settings.backupAutoNone"),
 );
 
 function dateSample(pattern: string): string {
@@ -376,10 +418,46 @@ async function pickLicense() {
           <button class="btn btn--ghost" type="button" @click="backupDatabase">
             <AppIcon name="download" :size="16" /> {{ t("settings.backupAction") }}
           </button>
+          <label class="check">
+            <input
+              type="checkbox"
+              :checked="settings.autoBackupEnabled"
+              :disabled="locked"
+              @change="onAutoBackupEnabled"
+            />
+            {{ t("settings.backupAuto") }}
+          </label>
+          <div class="field">
+            <label for="set-backup-frequency">{{ t("settings.backupFrequency") }}</label>
+            <select
+              id="set-backup-frequency"
+              class="input"
+              :value="settings.autoBackupFrequency"
+              :disabled="locked || !settings.autoBackupEnabled"
+              @change="onAutoBackupFrequency"
+            >
+              <option v-for="f in BACKUP_FREQUENCIES" :key="f" :value="f">
+                {{ t(`settings.backupFrequency_${f}`) }}
+              </option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="set-backup-time">{{ t("settings.backupTime") }}</label>
+            <input
+              id="set-backup-time"
+              v-model="autoBackupTime"
+              type="time"
+              class="input"
+              :disabled="locked || !settings.autoBackupEnabled"
+              @change="onAutoBackupTime"
+            />
+            <span class="hint">{{ t("settings.backupTimeHint") }}</span>
+          </div>
           <span :class="['hint', { 'hint--warn': settings.backupIsStale }]">
             {{ backupStatus }}
           </span>
           <span class="hint">{{ t("settings.backupHint") }}</span>
+          <span class="hint">{{ autoBackupStatus }}</span>
         </div>
       </div>
     </section>
@@ -405,6 +483,12 @@ async function pickLicense() {
 }
 /* Muted is the wrong register for "you have no backup" — it is the one hint on
    this page the user is meant to act on. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+}
 .hint--warn {
   color: var(--warning-text);
   font-weight: 600;

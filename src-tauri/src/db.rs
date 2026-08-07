@@ -2,7 +2,7 @@
 //! through the `Db` state, which the Tauri commands lock per call. The
 //! frontend never touches the file directly.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{Months, NaiveDate};
@@ -147,6 +147,67 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         }
     }
     Ok(())
+}
+
+/// What a launch needs to know about the database *before* opening it properly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMigration {
+    /// The version the ladder is about to advance to.
+    pub target: usize,
+    /// The UI language stored in `setting`, used for the one dialog that has to
+    /// speak to the user before the WebView exists. `None` when unreadable.
+    pub language: Option<String>,
+}
+
+/// Report whether opening this path would migrate a database that holds data.
+///
+/// Called before [`Db::open`] so the caller can snapshot first. It answers
+/// `None` whenever a snapshot would protect nothing, which is what keeps a
+/// failed snapshot from ever blocking a fresh install:
+///
+/// - **The file does not exist.** Checked before anything opens a connection,
+///   because `Connection::open` *creates* the file — open first and every first
+///   launch looks like a pending migration.
+/// - **There is no `client` table.** A file that exists but was never migrated
+///   (created and abandoned, or a zero-byte leftover) has nothing to lose.
+/// - **The version is already current**, or ahead of this build. Being ahead is
+///   [`migrate`]'s refusal to make, not this function's — answering `None` hands
+///   it back the untouched error path.
+pub fn pending_migration(path: &Path) -> DbResult<Option<PendingMigration>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open(path)?;
+    let has_client: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'client')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_client {
+        return Ok(None);
+    }
+
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if current.max(0) as usize >= MIGRATIONS.len() {
+        return Ok(None);
+    }
+
+    // Best-effort: a database old enough to need migrating may predate the
+    // `setting` table, and an unreadable language must not stop the snapshot
+    // that the caller is here to take.
+    let language = conn
+        .query_row(
+            "SELECT value FROM setting WHERE key = 'language'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+
+    Ok(Some(PendingMigration {
+        target: MIGRATIONS.len(),
+        language,
+    }))
 }
 
 /// v1 — the original schema. Frozen: see [`MIGRATIONS`].
@@ -345,6 +406,17 @@ pub const CURRENCY_CODES: [&str; 6] = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"
 /// every date the app renders, so an unrecognised pattern is repeated into
 /// every row of every table.
 pub const DATE_FORMATS: [&str; 4] = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
+
+/// How often the automatic backup runs. Mirrors `BACKUP_FREQUENCIES` in
+/// `src/stores/settings.ts`. Expressed as an interval rather than a calendar
+/// rule — see `autobackup::Frequency` for why a weekday picker was not worth
+/// the ways it can be configured into never firing.
+pub const BACKUP_FREQUENCIES: [&str; 3] = ["daily", "weekly", "monthly"];
+
+/// Time of day the automatic backup runs, when the shop has not chosen one.
+/// Late enough to catch a full trading day, early enough that someone is still
+/// there to see a failure.
+pub const DEFAULT_BACKUP_TIME: &str = "17:00";
 
 // Error codes. Kept as constants so the Rust guard and the doc table in
 // `error.rs` cannot drift apart, and so a typo is a compile error.
@@ -903,6 +975,75 @@ mod tests {
 
         drop(conn);
         drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `pending_migration` decides whether a launch has anything to protect.
+    ///
+    /// Every `None` here is load-bearing: the caller blocks startup when the
+    /// snapshot it asks for fails, so a false `Some` would turn a full disk into
+    /// an app that refuses to open on a database with nothing in it.
+    #[test]
+    fn pending_migration_reports_only_a_database_worth_protecting() {
+        let path = temp_db_path("pending");
+
+        // A path with no file behind it — the fresh-install case. This must not
+        // create the file, or the next launch would see one and disagree.
+        assert_eq!(pending_migration(&path).unwrap(), None);
+        assert!(!path.exists(), "the probe must not create the database");
+
+        // A file that exists but carries no schema.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0").unwrap();
+        }
+        assert_eq!(
+            pending_migration(&path).unwrap(),
+            None,
+            "a file with no client table has nothing to lose"
+        );
+
+        // Fully migrated: nothing pending.
+        {
+            let db = Db::open(&path).unwrap();
+            let conn = db.lock();
+            conn.execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Pending', 'Sentinel')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO setting (key, value) VALUES ('language', 'ar')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(pending_migration(&path).unwrap(), None);
+
+        // A pre-versioning database: tables and rows present, version reset.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0").unwrap();
+        }
+        let pending = pending_migration(&path).unwrap().expect("must be pending");
+        assert_eq!(pending.target, MIGRATIONS.len());
+        assert_eq!(
+            pending.language.as_deref(),
+            Some("ar"),
+            "the dialog has to speak the language the shop configured"
+        );
+
+        // Ahead of this build: still None. Refusing that is `migrate`'s job, and
+        // answering `Some` here would snapshot before handing over to a path
+        // that cannot proceed anyway.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() + 1))
+                .unwrap();
+        }
+        assert_eq!(pending_migration(&path).unwrap(), None);
+
         let _ = std::fs::remove_file(&path);
     }
 

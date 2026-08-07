@@ -64,6 +64,18 @@ const PAYMENT_LIMIT_MAX = 5000;
 const LANGUAGES = ["fr", "en", "ar"];
 const CURRENCY_CODES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
 const DATE_FORMAT_VALUES = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
+const BACKUP_FREQUENCIES = ["daily", "weekly", "monthly"];
+/**
+ * A clock time as `autobackup::parse_time` accepts it on the Rust side.
+ *
+ * Width-lenient on purpose: chrono's `%H:%M` takes one *or* two digits on
+ * either side, so `"9:05"` and `"17:6"` are valid and canonicalize to `"09:05"`
+ * and `"17:06"`. This regex used to demand two digits, which made the browser
+ * build reject times the desktop build accepted — the integration suite caught
+ * it. The range check lives in code below rather than in the pattern, so
+ * `"25:00"` fails for a readable reason.
+ */
+const CLOCK_TIME = /^(\d{1,2}):(\d{1,2})$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Throw `TEXT_TOO_LONG:{max}` when `value` exceeds `max` code points. */
@@ -1086,6 +1098,12 @@ class MockDb {
       alertSoonDays: Number(s.alert_soon_days ?? "7"),
       languageIsDefault: (s.language_is_default ?? "1") === "1",
       lastBackupAt: s.last_backup_at ? s.last_backup_at : null,
+      // The browser build has no launch hook and no file to snapshot, so this
+      // stays null unless a test writes the key directly.
+      lastAutoBackupAt: s.last_auto_backup_at ? s.last_auto_backup_at : null,
+      autoBackupEnabled: (s.auto_backup_enabled ?? "1") === "1",
+      autoBackupFrequency: s.auto_backup_frequency ?? "daily",
+      autoBackupTime: s.auto_backup_time ?? "17:00",
     };
   }
 
@@ -1105,6 +1123,20 @@ class MockDb {
     if (dateFormat !== undefined && !DATE_FORMAT_VALUES.includes(dateFormat)) {
       throw new Error("INVALID_SETTING_VALUE");
     }
+    const autoBackupFrequency = patch.autoBackupFrequency?.trim();
+    if (autoBackupFrequency !== undefined && !BACKUP_FREQUENCIES.includes(autoBackupFrequency)) {
+      throw new Error("INVALID_SETTING_VALUE");
+    }
+    // Normalised on the way in, exactly as `canonical_time` does in Rust, so a
+    // stored value always round-trips through `<input type="time">`.
+    let autoBackupTime: string | undefined;
+    if (patch.autoBackupTime !== undefined) {
+      const m = CLOCK_TIME.exec(patch.autoBackupTime.trim());
+      const hours = m ? Number(m[1]) : NaN;
+      const minutes = m ? Number(m[2]) : NaN;
+      if (!m || hours > 23 || minutes > 59) throw new Error("INVALID_SETTING_VALUE");
+      autoBackupTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+    }
     const shopName = patch.shopName?.trim();
     if (shopName !== undefined) assertBounded(shopName, SHORT_TEXT_MAX);
     const shopInfo = patch.shopInfo?.trim();
@@ -1118,6 +1150,13 @@ class MockDb {
     if (dateFormat !== undefined) this.settings.date_format = dateFormat;
     if (shopName !== undefined) this.settings.shop_name = shopName;
     if (shopInfo !== undefined) this.settings.shop_info = shopInfo;
+    if (patch.autoBackupEnabled !== undefined) {
+      this.settings.auto_backup_enabled = patch.autoBackupEnabled ? "1" : "0";
+    }
+    if (autoBackupFrequency !== undefined) {
+      this.settings.auto_backup_frequency = autoBackupFrequency;
+    }
+    if (autoBackupTime !== undefined) this.settings.auto_backup_time = autoBackupTime;
     if (patch.alertSoonDays !== undefined) {
       // Mirror the backend's defensive clamp (1..90).
       this.settings.alert_soon_days = String(

@@ -2,6 +2,7 @@
 //! Opens the SQLite database in the platform app-data directory, manages it as
 //! shared state, and registers the command handlers used by the Vue frontend.
 
+mod autobackup;
 mod commands;
 mod db;
 mod error;
@@ -14,6 +15,46 @@ mod models;
 mod seed;
 
 use tauri::Manager;
+
+/// Title and body for the pre-migration snapshot failure, per UI language.
+///
+/// The one piece of user-facing text this crate owns. It cannot come from
+/// `src/locales/*.json` like everything else: the dialog fires before the
+/// WebView is created, so vue-i18n does not exist yet. Three short strings
+/// duplicated here is the price of an Arabic-only shop being told why their app
+/// will not open, instead of getting French they cannot read at the one moment
+/// it matters. Keep them in step with the `errors.*` keys by hand.
+fn snapshot_failure_text(language: Option<&str>) -> (&'static str, &'static str) {
+    match language {
+        Some("ar") => (
+            "تعذّر إنشاء نسخة احتياطية",
+            "تعذّر إنشاء نسخة احتياطية قبل تحديث قاعدة البيانات، ولم يتم تعديل بياناتك. أفرغ بعض المساحة على القرص ثم أعد تشغيل التطبيق.",
+        ),
+        Some("en") => (
+            "Backup could not be created",
+            "A safety copy could not be created before updating the database, so your data has been left untouched. Free some disk space, then start the application again.",
+        ),
+        // French is the app's default language and the fallback for anything
+        // unrecognised, including a database too old to hold the setting.
+        _ => (
+            "Copie de sécurité impossible",
+            "Impossible de créer une copie de sécurité avant la mise à jour de la base de données ; vos données n'ont pas été modifiées. Libérez de l'espace disque, puis relancez l'application.",
+        ),
+    }
+}
+
+/// Managed only when startup refused to proceed, carrying what to tell the user.
+///
+/// The refusal has to be decided in `setup` — that is the one place with the
+/// app-data path, and it must happen before anything migrates — but it cannot be
+/// *shown* there. A native dialog needs a running event loop to pump it, and
+/// inside `setup` the loop has not started; `blocking_show` on the main thread is
+/// documented to deadlock. So `setup` records the verdict here and returns, and
+/// `RunEvent::Ready` shows it once the loop is alive.
+struct StartupBlocked {
+    title: &'static str,
+    body: &'static str,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -67,8 +108,49 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("payment_schedule.db");
+
+            // Snapshot before the schema ladder can advance. Per-step
+            // transactions in `migrate` already protect against a migration that
+            // *fails*; nothing protects against one that succeeds and is wrong,
+            // and this is the only copy the user has.
+            //
+            // `pending_migration` answers `Some` only when the database exists,
+            // carries a schema and holds data, so a fresh install can never be
+            // blocked by a snapshot that could not be written.
+            if let Some(pending) = db::pending_migration(&db_path)
+                .map_err(|e| format!("Failed to inspect the database: {e}"))?
+            {
+                let snapshot = autobackup::backups_dir(&data_dir).and_then(|dir| {
+                    autobackup::snapshot_before_migration(&db_path, &dir, pending.target)
+                });
+                if let Err(e) = snapshot {
+                    // Refuse to migrate rather than advance the schema with no
+                    // fallback. The user can free disk space; they cannot undo a
+                    // bad migration.
+                    //
+                    // Returning `Err` here would abort with no window and no
+                    // explanation, so instead: leave the database untouched,
+                    // hide the window that would otherwise show a UI with no
+                    // backend behind it, and let `RunEvent::Ready` explain and
+                    // exit. Nothing below runs, so `Db` is never managed and no
+                    // command can reach a database this build has not checked.
+                    log::error!("refusing to migrate without a pre-migration snapshot: {e}");
+                    let (title, body) = snapshot_failure_text(pending.language.as_deref());
+                    app.manage(StartupBlocked { title, body });
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    return Ok(());
+                }
+            }
+
             let database =
                 db::Db::open(&db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+
+            let backups_dir = autobackup::backups_dir(&data_dir);
+            if let Err(e) = &backups_dir {
+                log::warn!("no backups directory, automatic backups are disabled: {e}");
+            }
 
             // Validate the licence once, here, rather than per command: it reads
             // a file and hashes a machine identifier.
@@ -83,6 +165,15 @@ pub fn run() {
 
             app.manage(database);
             app.manage(license::LicenseState::new(status));
+
+            // Started last, because it reads the managed `Db` on every tick and
+            // its first pass runs immediately — which is also the launch
+            // catch-up, so nothing else has to check whether a backup is owed.
+            // Never fatal: a failure costs a backup, not the working day.
+            if let Ok(dir) = backups_dir {
+                autobackup::start_scheduler(app.handle().clone(), db_path, dir);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -123,6 +214,78 @@ pub fn run() {
             commands::get_license_status,
             commands::import_license,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running paymentSchedule");
+        .build(tauri::generate_context!())
+        .expect("error while running paymentSchedule")
+        .run(|handle, event| {
+            // The only place a dialog can be shown before the user has a window:
+            // the loop is running now, so it can pump one.
+            if matches!(event, tauri::RunEvent::Ready) {
+                if let Some(blocked) = handle.try_state::<StartupBlocked>() {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+                    let (title, body) = (blocked.title, blocked.body);
+                    let handle = handle.clone();
+                    // On its own thread, because this callback *is* the main
+                    // thread and `blocking_show` there deadlocks. Exiting from
+                    // the thread once the user has read it keeps the refusal
+                    // final.
+                    std::thread::spawn(move || {
+                        handle
+                            .dialog()
+                            .message(body)
+                            .title(title)
+                            .kind(MessageDialogKind::Error)
+                            .blocking_show();
+                        handle.exit(1);
+                    });
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot_failure_text;
+
+    /// The dialog must never fall back to a language the shop cannot read, and
+    /// an unset or unknown `language` is the common case on a database old
+    /// enough to need migrating.
+    #[test]
+    fn the_abort_dialog_speaks_the_configured_language() {
+        assert_eq!(
+            snapshot_failure_text(Some("ar")).0,
+            "تعذّر إنشاء نسخة احتياطية"
+        );
+        assert_eq!(
+            snapshot_failure_text(Some("en")).0,
+            "Backup could not be created"
+        );
+        assert_eq!(
+            snapshot_failure_text(Some("fr")).0,
+            "Copie de sécurité impossible"
+        );
+
+        // French is the app's own default, so it is what an absent or
+        // unrecognised setting resolves to.
+        assert_eq!(
+            snapshot_failure_text(None),
+            snapshot_failure_text(Some("fr"))
+        );
+        assert_eq!(
+            snapshot_failure_text(Some("de")),
+            snapshot_failure_text(Some("fr"))
+        );
+
+        for lang in [None, Some("ar"), Some("en"), Some("fr")] {
+            let (title, body) = snapshot_failure_text(lang);
+            // A body that is empty would show an explanationless box.
+            assert!(!body.is_empty());
+            // These strings were once written with `\` line continuations, which
+            // a rewrite silently turned into runs of literal spaces inside the
+            // sentence. Nothing but reading the rendered dialog would have shown
+            // it, so it is pinned here instead.
+            assert!(!title.contains("  "), "{title}");
+            assert!(!body.contains("  "), "{body}");
+        }
+    }
 }

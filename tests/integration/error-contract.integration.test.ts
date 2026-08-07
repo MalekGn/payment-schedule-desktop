@@ -307,6 +307,76 @@ describe("backup", () => {
     expect((await api.getSettings()).lastBackupAt).toBe(todayIso());
   });
 
+  // The automatic snapshots are taken in Rust at launch, so the browser build
+  // never writes this key — but it must still travel the gateway, or the
+  // Settings page renders `undefined` where the date belongs.
+  it("carries the automatic-copy date through the gateway", async () => {
+    const { mockDb } = await import("@/api/mock");
+
+    expect((await api.getSettings()).lastAutoBackupAt).toBeNull();
+
+    mockDb.settings.last_auto_backup_at = "2026-08-07";
+    expect((await api.getSettings()).lastAutoBackupAt).toBe("2026-08-07");
+
+    // And it survives a write to the settings the renderer *can* change —
+    // nothing in `SettingsPatch` may clear it.
+    const patched = await api.updateSettings({ shopInfo: "Rue de Marseille" });
+    expect(patched.lastAutoBackupAt).toBe("2026-08-07");
+  });
+
+  // The schedule is the one part of the backup story the shop controls, so the
+  // gateway has to carry it both ways — and the mock has to refuse exactly what
+  // Rust refuses, or the browser and desktop builds disagree about what a valid
+  // time is.
+  it("round-trips the backup schedule", async () => {
+    const initial = await api.getSettings();
+    expect(initial.autoBackupEnabled).toBe(true);
+    expect(initial.autoBackupFrequency).toBe("daily");
+    expect(initial.autoBackupTime).toBe("17:00");
+
+    const updated = await api.updateSettings({
+      autoBackupFrequency: "weekly",
+      autoBackupTime: "9:05",
+      autoBackupEnabled: false,
+    });
+    expect(updated.autoBackupFrequency).toBe("weekly");
+    // Normalised on write, exactly as `canonical_time` does in Rust, so the
+    // value always round-trips through `<input type="time">`.
+    expect(updated.autoBackupTime).toBe("09:05");
+    expect(updated.autoBackupEnabled).toBe(false);
+
+    expect((await api.getSettings()).autoBackupTime).toBe("09:05");
+  });
+
+  // Width-lenient exactly where chrono's `%H:%M` is, so the browser build never
+  // refuses a time the desktop build would take.
+  it.each([
+    ["9:05", "09:05"],
+    ["17:6", "17:06"],
+    [" 09:30 ", "09:30"],
+  ])("accepts %o as a backup time and stores %o", async (given, stored) => {
+    expect((await api.updateSettings({ autoBackupTime: given })).autoBackupTime).toBe(stored);
+  });
+
+  it.each(["25:00", "17:60", "17", "", "5pm", "17:00:00", "17:"])(
+    "refuses %o as a backup time",
+    async (bad) => {
+      // `codeOf`, not `.rejects`: the mock throws synchronously out of
+      // `api.updateSettings`, so there is no promise for `.rejects` to unwrap.
+      expect(await codeOf(() => api.updateSettings({ autoBackupTime: bad }))).toBe(
+        "INVALID_SETTING_VALUE",
+      );
+    },
+  );
+
+  it("refuses a frequency outside the offered set", async () => {
+    expect(await codeOf(() => api.updateSettings({ autoBackupFrequency: "hourly" }))).toBe(
+      "INVALID_SETTING_VALUE",
+    );
+    // And a rejected patch writes nothing.
+    expect((await api.getSettings()).autoBackupFrequency).toBe("daily");
+  });
+
   it("keeps the recorded date out of the writable settings patch", async () => {
     // `lastBackupAt` is read-only by construction — the renderer serializes
     // `SettingsPatch`, and a field it could write would let the UI lie about

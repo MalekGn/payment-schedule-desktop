@@ -19,9 +19,9 @@ use tauri::State;
 
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
-    Db, DbResult, CURRENCY_CODES, DATE_FORMATS, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE,
-    INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX, MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX,
-    UPCOMING_DAYS_RANGE,
+    Db, DbResult, BACKUP_FREQUENCIES, CURRENCY_CODES, DATE_FORMATS, DEFAULT_BACKUP_TIME,
+    INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX,
+    MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
@@ -1906,9 +1906,15 @@ pub async fn get_dashboard(
 /// Deliberately a setting rather than a schema column: `read_settings` resolves
 /// every key through [`get_setting`] with a default, so a key that has never
 /// been written reads as absent on an existing database and needs no migration.
-const LAST_BACKUP_KEY: &str = "last_backup_at";
+pub(crate) const LAST_BACKUP_KEY: &str = "last_backup_at";
 
-fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
+/// The backup schedule, all three resolved through [`get_setting`] with a
+/// default, so an existing database needs no migration to gain them.
+pub(crate) const AUTO_BACKUP_ENABLED_KEY: &str = "auto_backup_enabled";
+pub(crate) const AUTO_BACKUP_FREQUENCY_KEY: &str = "auto_backup_frequency";
+pub(crate) const AUTO_BACKUP_TIME_KEY: &str = "auto_backup_time";
+
+pub(crate) fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
     match conn
         .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
             r.get::<_, String>(0)
@@ -1927,7 +1933,7 @@ fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
     }
 }
 
-fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
+pub(crate) fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
     conn.execute(
         "INSERT INTO setting (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1936,7 +1942,7 @@ fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
     Ok(())
 }
 
-fn read_settings(conn: &Connection) -> Settings {
+pub(crate) fn read_settings(conn: &Connection) -> Settings {
     let logo = get_setting(conn, "logo_path", "");
     Settings {
         language: get_setting(conn, "language", "fr"),
@@ -1953,6 +1959,13 @@ fn read_settings(conn: &Connection) -> Settings {
             v if v.is_empty() => None,
             v => Some(v),
         },
+        last_auto_backup_at: match get_setting(conn, crate::autobackup::LAST_AUTO_BACKUP_KEY, "") {
+            v if v.is_empty() => None,
+            v => Some(v),
+        },
+        auto_backup_enabled: get_setting(conn, AUTO_BACKUP_ENABLED_KEY, "1") == "1",
+        auto_backup_frequency: get_setting(conn, AUTO_BACKUP_FREQUENCY_KEY, "daily"),
+        auto_backup_time: get_setting(conn, AUTO_BACKUP_TIME_KEY, DEFAULT_BACKUP_TIME),
     }
 }
 
@@ -1993,12 +2006,23 @@ fn is_language_only(patch: &SettingsPatch) -> bool {
         shop_name,
         shop_info,
         alert_soon_days,
+        auto_backup_enabled,
+        auto_backup_frequency,
+        auto_backup_time,
     } = patch;
     currency_code.is_none()
         && date_format.is_none()
         && shop_name.is_none()
         && shop_info.is_none()
         && alert_soon_days.is_none()
+        // The schedule is configuration of a licensed product, like the
+        // currency or the alert window. The backups themselves keep running on
+        // whatever is stored, and the manual button carries no gate at all, so
+        // an expired licence still cannot be left without a way to copy its
+        // ledger — it just cannot re-time the automatic one.
+        && auto_backup_enabled.is_none()
+        && auto_backup_frequency.is_none()
+        && auto_backup_time.is_none()
 }
 
 pub(crate) fn update_settings_impl(
@@ -2045,6 +2069,22 @@ pub(crate) fn update_settings_impl(
     if let Some(v) = &shop_info {
         bounded(v, LONG_TEXT_MAX)?;
     }
+    let auto_backup_frequency = patch.auto_backup_frequency.map(|v| v.trim().to_string());
+    if let Some(v) = &auto_backup_frequency {
+        if !BACKUP_FREQUENCIES.contains(&v.as_str()) {
+            return Err(AppError::validation(INVALID_SETTING_VALUE));
+        }
+    }
+    // Stored canonically as `HH:MM`, so the scheduler can parse it without
+    // re-deciding what "5 pm" means and the settings page always round-trips
+    // what an `<input type="time">` expects.
+    let auto_backup_time = match &patch.auto_backup_time {
+        Some(v) => Some(
+            crate::autobackup::canonical_time(v)
+                .ok_or_else(|| AppError::validation(INVALID_SETTING_VALUE))?,
+        ),
+        None => None,
+    };
 
     // One transaction for the whole patch. Applied one upsert at a time, a
     // mid-way failure left settings half-written — worst case `language`
@@ -2067,6 +2107,15 @@ pub(crate) fn update_settings_impl(
     }
     if let Some(v) = shop_info {
         put_setting(&tx, "shop_info", &v)?;
+    }
+    if let Some(v) = patch.auto_backup_enabled {
+        put_setting(&tx, AUTO_BACKUP_ENABLED_KEY, if v { "1" } else { "0" })?;
+    }
+    if let Some(v) = auto_backup_frequency {
+        put_setting(&tx, AUTO_BACKUP_FREQUENCY_KEY, &v)?;
+    }
+    if let Some(v) = auto_backup_time {
+        put_setting(&tx, AUTO_BACKUP_TIME_KEY, &v)?;
     }
     if let Some(v) = patch.alert_soon_days {
         // Clamp defensively so the schedule query and UI never see a nonsense
@@ -4896,6 +4945,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         }
     }
 
@@ -4915,6 +4967,9 @@ mod tests {
                 shop_name: Some("Chez Malek".into()),
                 shop_info: None,
                 alert_soon_days: Some(500),
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
         )
         .unwrap();
@@ -5379,6 +5434,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         };
         assert!(is_language_only(&language_only));
 
@@ -5390,6 +5448,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         }));
 
         // Anything smuggled alongside the language is refused.
@@ -5401,6 +5462,9 @@ mod tests {
                 shop_name: None,
                 shop_info: None,
                 alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
             SettingsPatch {
                 language: None,
@@ -5409,6 +5473,35 @@ mod tests {
                 shop_name: Some("Free branding".into()),
                 shop_info: None,
                 alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
+            },
+            // The backup *schedule* is licensed configuration, even though the
+            // backups themselves and the manual button are not. Re-timing the
+            // automatic copy is a setting like any other; being able to take one
+            // at all is the safety baseline, and that stays open.
+            SettingsPatch {
+                language: None,
+                currency_code: None,
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: None,
+                auto_backup_enabled: Some(false),
+                auto_backup_frequency: None,
+                auto_backup_time: None,
+            },
+            SettingsPatch {
+                language: Some("ar".into()),
+                currency_code: None,
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: Some("09:00".into()),
             },
             SettingsPatch {
                 language: None,
@@ -5417,6 +5510,9 @@ mod tests {
                 shop_name: None,
                 shop_info: None,
                 alert_soon_days: Some(30),
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
         ] {
             assert!(!is_language_only(&patch), "{patch:?} must be licensed");

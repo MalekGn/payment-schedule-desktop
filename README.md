@@ -281,6 +281,14 @@ Everything is stored locally in the OS **app-data directory**:
   dir and referenced from the `setting` table. Displayed in the sidebar/header
   via Tauri's asset protocol. Only PNG/JPG/WEBP/GIF are accepted, up to 5 MB,
   and the file contents are checked — not just the extension.
+- **`backups/`** — automatic snapshots: one before any pending schema migration
+  (`payment_schedule.pre-v<n>.db`) and one on a schedule (`auto-<date>.db`),
+  kept to the last 2 and 5 respectively. The schedule defaults to **17:00 every
+  day** and is editable in Settings → Backup (frequency and time). If the app is
+  closed at that hour the copy is taken the next time it opens. They are ordinary
+  SQLite files — restore one exactly as described below. They live on the same
+  disk as the database, so they are a safety net for a bad update or a mistaken
+  delete, **not** a replacement for a backup you keep elsewhere.
 - **`logs/`** — backend log files (also echoed to stdout). Written by
   `tauri-plugin-log` at `Info` level in release builds, `Debug` in dev. They
   record command failures with ids and error codes only, never client names,
@@ -313,7 +321,8 @@ operation, because the app has no in-app restore. Do it in this order:
 
 1. **Quit the app completely.** Restoring under a running app means writing the
    file out from under an open connection, which corrupts it.
-2. Open the app-data directory for your platform (see the table above).
+2. Open the app-data directory for your platform (see the table above). Your own
+   backup is wherever you saved it; the automatic ones are in `backups/`.
 3. Copy your backup over `payment_schedule.db`, replacing it. Keep the old file
    somewhere else first if there is any chance you want it back — this step is
    not reversible.

@@ -459,6 +459,68 @@ Three things follow from it being the _only_ recovery path:
 Restoring is a manual file operation, documented in `README.md` — there is no
 `restore_database` command.
 
+### Automatic snapshots
+
+`autobackup.rs` takes two snapshots at launch, both through
+`backup_database_impl` unchanged, so both inherit its verification:
+
+- **Before a pending migration.** `db::pending_migration` is consulted _before_
+  `Db::open`, and answers `Some` only when the file exists, carries a `client`
+  table and is behind `MIGRATIONS.len()` — so a fresh install is never affected.
+  On `Some`, `backups/payment_schedule.pre-v{n}.db` is written first. **If that
+  write fails the app refuses to migrate**: it records the reason, hides the
+  window, and `RunEvent::Ready` shows a native dialog before exiting. The user
+  can free disk space; they cannot undo a bad migration.
+- **On a schedule the shop sets** — 17:00 daily out of the box, with frequency
+  (daily/weekly/monthly) and time in Settings. `backups/auto-{date}.db`, guarded
+  by `last_auto_backup_at`. Never fatal: a failure costs a backup, not the
+  working day, because no irreversible step is waiting behind it.
+
+`autobackup::due` is the single predicate behind both the scheduler tick and the
+launch pass, so no second rule can disagree with it. It has two branches, and
+the first is what makes a time of day mean anything on a desktop app:
+
+```
+due = enabled AND ( elapsed >  interval                       // overdue → now
+                    OR (elapsed >= interval AND now >= time) )// today's window
+```
+
+A shop that runs the app 09:00–16:00 is never open at 17:00. Under a plain
+"fire at the scheduled time" rule they would never be backed up at all, and the
+failure would be silent until the day they needed the copy; the overdue branch
+catches them the next morning instead. The same branch is the launch catch-up.
+
+The scheduler is a plain `std::thread` polling every 60 s, not a computed sleep
+until the next occurrence: a poll is the only shape that survives the user
+changing the time, the machine suspending, and the clock moving. It re-reads the
+settings every pass, so an edit takes effect within a minute with no restart. A
+failed attempt is held off for an hour — otherwise a full disk means a
+`VACUUM INTO` attempt and a log line every minute, none of which can succeed.
+
+The scheduled snapshot opens **its own connection** rather than taking the
+shared `Mutex<Connection>`. At launch the mutex was free, but 17:00 lands while
+the shop is typing; in WAL mode a second connection reads a consistent snapshot
+without blocking writers.
+
+The schedule is licensed configuration, like the currency or the alert window —
+an expired install cannot re-time it, but the backups keep running on whatever
+is stored and the manual button carries no gate at all.
+
+Pruned as two pools, `auto-*` to 5 and `pre-v*` to 2, so daily snapshots can
+never evict the copy taken before a schema change.
+
+The dialog is the one piece of user-facing text this crate owns, in `lib.rs`
+rather than `src/locales/*.json`: it fires before the WebView exists, so
+vue-i18n cannot supply it. It reads `language` from `setting` and falls back to
+French.
+
+**These are not a substitute for the manual backup and never clear its staleness
+nudge.** `backups/` sits beside `payment_schedule.db` on the same disk: one
+failed drive or one stolen machine takes both. They defend against a bad
+migration and a mistaken delete, not against losing the computer, which is why
+`last_auto_backup_at` is reported separately from `last_backup_at` and why
+`backupIsStale` reads only the latter.
+
 ## Key decisions
 
 - **`rusqlite` behind commands** (not `tauri-plugin-sql`) so the requirement
