@@ -105,14 +105,17 @@ in `license.rs` is the authoritative copy.
 Design points that constrain later work:
 
 - **The gate is in Rust, not the UI.** `require_license` in `commands.rs` refuses
-  21 of the 29 commands with `LICENSE_REQUIRED` when the install is unlicensed.
+  20 of the 29 commands with `LICENSE_REQUIRED` when the install is unlicensed.
   The frontend mirrors that state, but a check that lived only in the renderer
   would be decoration: the WebView is the user's, and a `v-if` is not a control.
 - **The unlicensed baseline is narrow but genuinely usable**: reading clients and
-  purchases — list and detail — plus `get_settings` and a language-only
-  `update_settings`. Losing a licence must never hold a shop keeper's own ledger
-  hostage, and language has to stay editable or the licence screen could become
-  unreadable. `list_clients`/`list_purchases` **degrade** rather than refuse:
+  purchases — list and detail — plus `get_settings`, a language-only
+  `update_settings`, and `backup_database`. Losing a licence must never hold a
+  shop keeper's own ledger hostage, and language has to stay editable or the
+  licence screen could become unreadable. Backup belongs in that same safety
+  baseline: it only snapshots records the baseline already lets the user read,
+  and gating it withheld the copy a shop most needs — the one taken before
+  troubleshooting an expiry. `list_clients`/`list_purchases` **degrade** rather than refuse:
   an unlicensed caller is pinned to the active scope with no server-side search.
 - **Filters and sorting cannot be enforced here.** `useSort.ts` reorders rows
   already in the browser and `ListFilterBar.vue` filters in the parent component,
@@ -413,6 +416,15 @@ historical `CREATE TABLE IF NOT EXISTS` batch verbatim — re-running it is a
 no-op that stamps the version on. **Never reorder or edit a step that has
 shipped**; append a new one.
 
+**Shipped steps must also be additive** — add tables, add columns, add indexes;
+no `DROP`, no rename, no 12-step table rebuild. Both steps to date are, and this
+is why it matters: `migrate` refuses to open a database whose `user_version` is
+ahead of the binary, and `Db::open` is propagated with `?` from `setup`, so the
+previous installer does not merely misread a rebuilt schema — it will not
+launch. A destructive step therefore makes "reinstall the old version" stop
+being a recovery option for every user who has already upgraded. Nothing in CI
+enforces this; it is a review rule.
+
 **Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` was
 the first appended step, and it has to check `pragma_table_info` before its
 `ALTER TABLE ADD COLUMN` — SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind
@@ -427,6 +439,25 @@ this.
 in-flight write and, in WAL mode, miss everything still in the `-wal` file.
 It is the only recovery path in the app — client deletes cascade through
 purchases, installments and payments and cannot be undone.
+
+Three things follow from it being the _only_ recovery path:
+
+- **The snapshot is verified before it is accepted.** `VACUUM INTO` returning
+  `Ok` proves the statement ran, not that the file it wrote is a usable
+  database; a full disk or a failing drive lands here as success. The staged
+  file is opened and put through `PRAGMA integrity_check` and
+  `PRAGMA foreign_key_check` before the rename, so a bad snapshot fails loudly
+  now instead of silently at restore time.
+- **It carries no licence gate**, unlike every other write. See the licensing
+  section: a snapshot of records the unlicensed baseline already displays
+  protects nothing, and the gate withheld the copy a shop most needs.
+- **Success writes `last_backup_at` to the `setting` table**, and the command
+  returns the updated `Settings` so the Settings page can show when the last
+  backup happened and nudge after `BACKUP_STALE_DAYS`. Nothing schedules a
+  backup, so that nudge is the only thing that ever raises the subject.
+
+Restoring is a manual file operation, documented in `README.md` — there is no
+`restore_database` command.
 
 ## Key decisions
 

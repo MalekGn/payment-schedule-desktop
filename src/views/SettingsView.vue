@@ -14,7 +14,7 @@ import { useLicenseStore } from "@/stores/license";
 import { SUPPORTED_LOCALES, type AppLocale } from "@/i18n";
 import { resolveLogoSrc } from "@/lib/assets";
 import { formatDatePattern, useFormat } from "@/composables/useFormat";
-import { api, isTauri } from "@/api";
+import { isTauri } from "@/api";
 import { toUserMessage } from "@/lib/errors";
 import { todayIso } from "@/lib/finance";
 
@@ -25,10 +25,12 @@ const license = useLicenseStore();
 const fmt = useFormat();
 
 /**
- * Everything on this page except the language and the licence section itself is
- * a licensed setting. Language stays open deliberately: locking someone out of
- * a language they cannot read would make the licence screen unusable, and the
- * backend applies the same rule (`is_language_only` in `commands.rs`).
+ * Everything on this page is a licensed setting except three: the language, the
+ * licence section itself, and the backup. Language stays open deliberately —
+ * locking someone out of a language they cannot read would make the licence
+ * screen unusable — and the backend applies the same rule (`is_language_only`
+ * in `commands.rs`). Backup stays open because a shop must always be able to
+ * copy its own ledger; `backup_database` carries no gate either.
  */
 const locked = computed(() => !license.isLicensed);
 
@@ -141,8 +143,19 @@ async function backupDatabase() {
     filters: [{ name: "SQLite", extensions: ["db"] }],
   });
   if (typeof dest !== "string") return;
-  await save(() => api.backupDatabase(dest), "settings.backupDone");
+  await save(() => settings.backupDatabase(dest), "settings.backupDone");
 }
+
+/**
+ * The backup line under the button: when it last happened, or that it never
+ * has. Manual backups are invisible otherwise — nothing else in the app ever
+ * says whether this install has a copy of its data.
+ */
+const backupStatus = computed(() =>
+  settings.lastBackupAt
+    ? t("settings.backupLast", { date: fmt.date(settings.lastBackupAt) })
+    : t("settings.backupNever"),
+);
 
 function dateSample(pattern: string): string {
   return formatDatePattern(todayIso(), pattern);
@@ -357,9 +370,15 @@ async function pickLicense() {
       </div>
       <div class="set-body">
         <div class="field">
-          <button class="btn btn--ghost" type="button" :disabled="locked" @click="backupDatabase">
+          <!-- Not `:disabled="locked"`, unlike every other control on this
+               page: the backup command carries no licence gate either, so a
+               shop whose licence expired can still copy its own ledger. -->
+          <button class="btn btn--ghost" type="button" @click="backupDatabase">
             <AppIcon name="download" :size="16" /> {{ t("settings.backupAction") }}
           </button>
+          <span :class="['hint', { 'hint--warn': settings.backupIsStale }]">
+            {{ backupStatus }}
+          </span>
           <span class="hint">{{ t("settings.backupHint") }}</span>
         </div>
       </div>
@@ -383,6 +402,12 @@ async function pickLicense() {
 .hint {
   font-size: 12px;
   color: var(--text-muted);
+}
+/* Muted is the wrong register for "you have no backup" — it is the one hint on
+   this page the user is meant to act on. */
+.hint--warn {
+  color: var(--warning-text);
+  font-weight: 600;
 }
 .field-label {
   font-size: 13px;

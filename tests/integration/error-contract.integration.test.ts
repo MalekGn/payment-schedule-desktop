@@ -290,4 +290,31 @@ describe("backup", () => {
     await api.backupDatabase("/tmp/payment-schedule-backup.db");
     expect(mockDb.lastBackupPath).toBe("/tmp/payment-schedule-backup.db");
   });
+
+  // `backup_database` returns the updated `Settings` so the renderer can clear
+  // the staleness nudge from the same round trip. That contract is invisible to
+  // the unit suite — it lives in the shape the gateway hands back — and the mock
+  // is what the E2E build runs against, so a drift here means the browser build
+  // silently keeps nudging after a successful backup.
+  it("returns settings carrying the new backup date", async () => {
+    const before = await api.getSettings();
+    expect(before.lastBackupAt).toBeNull();
+
+    const after = await api.backupDatabase("/tmp/payment-schedule-backup.db");
+    expect(after.lastBackupAt).toBe(todayIso());
+
+    // And it is persisted, not just returned: a later read agrees.
+    expect((await api.getSettings()).lastBackupAt).toBe(todayIso());
+  });
+
+  it("keeps the recorded date out of the writable settings patch", async () => {
+    // `lastBackupAt` is read-only by construction — the renderer serializes
+    // `SettingsPatch`, and a field it could write would let the UI lie about
+    // when the ledger was last copied. Nothing but a real backup may set it.
+    await api.backupDatabase("/tmp/payment-schedule-backup.db");
+    const patched = await api.updateSettings({ shopInfo: "Rue de Marseille" });
+
+    expect(patched.shopInfo).toBe("Rue de Marseille");
+    expect(patched.lastBackupAt).toBe(todayIso());
+  });
 });

@@ -373,7 +373,9 @@
     "backup": "Sauvegarde",
     "backupHint": "Enregistrez une copie de votre base de données. Supprimer un client supprime aussi ses achats et paiements, sans retour possible.",
     "backupAction": "Sauvegarder la base",
-    "backupDone": "Sauvegarde enregistrée."
+    "backupDone": "Sauvegarde enregistrée.",
+    "backupLast": "Dernière sauvegarde : {date}",
+    "backupNever": "Cette base n'a jamais été sauvegardée."
   },
   "license": {
     "title": "Licence",

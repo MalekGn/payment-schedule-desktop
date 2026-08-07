@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api, isTauri } from "@/api";
 import { applyLocale, isSupportedLocale, resolveOsLocale, type AppLocale } from "@/i18n";
+import { dayDiff, todayIso } from "@/lib/finance";
 import type { Settings, SettingsPatch } from "@/types/models";
 
 const DEFAULTS: Settings = {
@@ -13,6 +14,7 @@ const DEFAULTS: Settings = {
   shopInfo: "",
   alertSoonDays: 7,
   languageIsDefault: true,
+  lastBackupAt: null,
 };
 
 export const DATE_FORMATS = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd-MM-yyyy"];
@@ -20,6 +22,14 @@ export const CURRENCIES = ["TND", "EUR", "USD", "FCFA", "DZD", "MAD"];
 /** Allowed bounds for the "due soon" alert window (days). */
 export const ALERT_SOON_DAYS_MIN = 1;
 export const ALERT_SOON_DAYS_MAX = 90;
+/**
+ * Age (in days) at which the Settings page starts nudging about the backup.
+ *
+ * Backups are manual and nothing else in the app ever mentions them, so an
+ * install that is never nudged is an install that is never backed up. A month
+ * is long enough not to nag and short enough that the loss window stays small.
+ */
+export const BACKUP_STALE_DAYS = 30;
 
 /** Detect the OS locale (Tauri OS plugin when available, else the browser). */
 async function detectOsLocale(): Promise<AppLocale> {
@@ -46,6 +56,17 @@ export const useSettingsStore = defineStore("settings", () => {
   const logoPath = computed(() => settings.value.logoPath);
   const shopName = computed(() => settings.value.shopName);
   const alertSoonDays = computed(() => settings.value.alertSoonDays);
+  const lastBackupAt = computed(() => settings.value.lastBackupAt);
+
+  /**
+   * Whether to nudge the user about backing up: never done, or done long
+   * enough ago that the data since then is worth more than the reminder costs.
+   */
+  const backupIsStale = computed(() => {
+    const last = settings.value.lastBackupAt;
+    if (!last) return true;
+    return dayDiff(todayIso(), last) >= BACKUP_STALE_DAYS;
+  });
 
   async function load() {
     settings.value = await api.getSettings();
@@ -75,6 +96,15 @@ export const useSettingsStore = defineStore("settings", () => {
     settings.value = await api.clearLogo();
   }
 
+  /**
+   * Snapshot the database to `dest`, then adopt the settings the command
+   * returns — they carry the new `lastBackupAt`, which is what clears the
+   * staleness nudge without a second round trip.
+   */
+  async function backupDatabase(dest: string) {
+    settings.value = await api.backupDatabase(dest);
+  }
+
   return {
     settings,
     loaded,
@@ -84,10 +114,13 @@ export const useSettingsStore = defineStore("settings", () => {
     logoPath,
     shopName,
     alertSoonDays,
+    lastBackupAt,
+    backupIsStale,
     load,
     update,
     setLanguage,
     setLogoFromPath,
     clearLogo,
+    backupDatabase,
   };
 });

@@ -373,7 +373,9 @@
     "backup": "Backup",
     "backupHint": "Save a copy of your database. Deleting a client also deletes their purchases and payments, and that cannot be undone.",
     "backupAction": "Backup database",
-    "backupDone": "Backup saved."
+    "backupDone": "Backup saved.",
+    "backupLast": "Last backup: {date}",
+    "backupNever": "This database has never been backed up."
   },
   "license": {
     "title": "Licence",

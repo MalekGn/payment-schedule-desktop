@@ -306,8 +306,30 @@ the new-purchase picker while keeping every record, and can be undone at any
 time from the "Archivés" tab. Archiving is refused while the client still owes
 money, so a client with unpaid installments can be neither deleted nor archived.
 
-To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
-development build it is re-seeded; in a release build it comes back empty.
+### Restoring a backup
+
+Settings → **Backup database** writes a snapshot; restoring one is a file
+operation, because the app has no in-app restore. Do it in this order:
+
+1. **Quit the app completely.** Restoring under a running app means writing the
+   file out from under an open connection, which corrupts it.
+2. Open the app-data directory for your platform (see the table above).
+3. Copy your backup over `payment_schedule.db`, replacing it. Keep the old file
+   somewhere else first if there is any chance you want it back — this step is
+   not reversible.
+4. Delete `payment_schedule.db-wal` and `payment_schedule.db-shm` if they are
+   there. They belong to the database you just replaced, and leaving them
+   beside a different file can undo part of the restore.
+5. Start the app. The data is the data as of the moment that backup was taken;
+   anything entered since is not in it.
+
+A backup taken by an older version of the app restores into a newer one — the
+schema migrates forward on launch. The reverse does not work: an older build
+refuses to open a database that a newer one has already migrated.
+
+To reset the app to a fresh state instead — **this destroys the data, it is not
+a restore** — delete `payment_schedule.db` and restart. In a development build
+it is re-seeded; in a release build it comes back empty.
 
 ---
 

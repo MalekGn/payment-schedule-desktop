@@ -1085,6 +1085,7 @@ class MockDb {
       shopInfo: s.shop_info ?? "",
       alertSoonDays: Number(s.alert_soon_days ?? "7"),
       languageIsDefault: (s.language_is_default ?? "1") === "1",
+      lastBackupAt: s.last_backup_at ? s.last_backup_at : null,
     };
   }
 
@@ -1138,10 +1139,14 @@ class MockDb {
 
   /**
    * Browser stand-in for the `VACUUM INTO` snapshot. There is no file to write
-   * here, so this only records the destination for tests to assert on.
+   * here, so this only records the destination for tests to assert on — but it
+   * must still stamp `last_backup_at` and return the settings, because that is
+   * how the real command tells the renderer to clear the staleness banner.
    */
-  backupDatabase(dest: string): void {
+  backupDatabase(dest: string): Settings {
     this.lastBackupPath = dest;
+    this.settings.last_backup_at = todayIso();
+    return this.getSettings();
   }
 
   // -- system --

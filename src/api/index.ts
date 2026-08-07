@@ -199,7 +199,7 @@ export const api = {
    * deleted at all, and a purchase must be archived before it can be
    * destroyed. What a backup still protects is that final, deliberate step.
    */
-  backupDatabase: (dest: string): Promise<void> =>
+  backupDatabase: (dest: string): Promise<Settings> =>
     isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),
 
   // -- system --

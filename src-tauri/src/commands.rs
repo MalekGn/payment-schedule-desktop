@@ -14,7 +14,7 @@
 //! `src/lib/errors.ts` maps to a localized message. Internal detail is logged,
 //! never sent.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use tauri::State;
 
 use crate::db::{
@@ -1901,6 +1901,13 @@ pub async fn get_dashboard(
 // Settings
 // ===========================================================================
 
+/// `setting` key holding the ISO date of the last successful backup.
+///
+/// Deliberately a setting rather than a schema column: `read_settings` resolves
+/// every key through [`get_setting`] with a default, so a key that has never
+/// been written reads as absent on an existing database and needs no migration.
+const LAST_BACKUP_KEY: &str = "last_backup_at";
+
 fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
     match conn
         .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
@@ -1942,6 +1949,10 @@ fn read_settings(conn: &Connection) -> Settings {
             .parse()
             .unwrap_or(7),
         language_is_default: get_setting(conn, "language_is_default", "1") == "1",
+        last_backup_at: match get_setting(conn, LAST_BACKUP_KEY, "") {
+            v if v.is_empty() => None,
+            v => Some(v),
+        },
     }
 }
 
@@ -2214,14 +2225,19 @@ pub async fn clear_logo(db: State<'_, Db>, lic: State<'_, LicenseState>) -> DbRe
 /// in-flight write and, in WAL mode, would miss everything still in the -wal
 /// file. This is the only recovery path the app has — client deletes cascade
 /// through purchases, installments and payments and are irreversible.
+///
+/// **Deliberately unlicensed**, unlike every other write in this module. The
+/// unlicensed baseline exists so that losing a licence never holds a shop
+/// keeper's own ledger hostage, and a snapshot of records they can already read
+/// on screen hands them nothing the licence was protecting. Gating it inverted
+/// the intent: the copy a shop most wants is the one taken *before* they go
+/// troubleshooting an expiry, which is exactly when the gate refused.
 #[tauri::command]
 pub async fn backup_database(
     db: State<'_, Db>,
-    lic: State<'_, LicenseState>,
     app: tauri::AppHandle,
     dest: String,
-) -> DbResult<()> {
-    require_license(&lic)?;
+) -> DbResult<Settings> {
     use tauri::Manager;
 
     // Staging happens inside app data, which the app owns outright — see
@@ -2230,7 +2246,24 @@ pub async fn backup_database(
     let staging_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&staging_dir)?;
 
-    backup_database_impl(&db.lock(), std::path::Path::new(&dest), &staging_dir)
+    let conn = db.lock();
+    backup_database_impl(&conn, std::path::Path::new(&dest), &staging_dir)?;
+
+    // Record that a backup happened, so the app can answer "when did this user
+    // last back up?" — it could not before, and the users who never think to
+    // back up are exactly the ones the manual-only design fails.
+    //
+    // A failure to record must not fail the command: the snapshot is already on
+    // disk and good, and reporting BACKUP_FAILED would send the user chasing a
+    // backup they actually have. Warn instead, so a settings table that has
+    // stopped accepting writes is not silent.
+    if let Err(e) = put_setting(&conn, LAST_BACKUP_KEY, &today().to_string()) {
+        log::warn!("backup succeeded but its date could not be recorded: {e}");
+    }
+
+    // Returned rather than voided so the renderer can refresh the staleness
+    // banner without a second round trip, as `set_logo`/`clear_logo` do.
+    Ok(read_settings(&conn))
 }
 
 pub(crate) fn backup_database_impl(
@@ -2286,6 +2319,17 @@ pub(crate) fn backup_database_impl(
         return Err(AppError::validation(BACKUP_FAILED));
     }
 
+    // A clean `VACUUM INTO` proves the statement ran, not that the bytes it left
+    // behind are a usable database — a full disk, a failing drive or a truncated
+    // write all land here as success. Verify the snapshot while it is still in
+    // staging, because after the rename the only person who finds out is the
+    // user, at the moment they need it.
+    if let Err(e) = verify_snapshot(&staged) {
+        log::error!("the backup snapshot did not verify: {e}");
+        discard(&staged);
+        return Err(AppError::validation(BACKUP_FAILED));
+    }
+
     // Rename is atomic and leaves any previous backup intact until the moment it
     // is replaced — but it only works within one filesystem, and a backup
     // destination is routinely a USB stick while app data is on the internal
@@ -2309,6 +2353,48 @@ pub(crate) fn backup_database_impl(
     }
 
     log::info!("database backup written");
+    Ok(())
+}
+
+/// Open a freshly written snapshot and prove it is a sound database.
+///
+/// `integrity_check` walks the b-trees and the freelist; `foreign_key_check`
+/// then proves the relationships the app relies on still resolve — a snapshot
+/// whose `payment` rows point at vanished installments would open fine and read
+/// wrong. Both return the string `"ok"` / no rows respectively on success.
+///
+/// The error is a plain string rather than an `AppError` because every caller
+/// maps it to `BACKUP_FAILED`; what matters is that the detail reaches the log.
+fn verify_snapshot(path: &std::path::Path) -> Result<(), String> {
+    // Read-only, so verification cannot alter the thing it is verifying and
+    // cannot leave a journal beside the staged file for the rename to strand.
+    // `VACUUM INTO` writes a rollback-journal database regardless of the source
+    // being WAL, so opening it read-only needs no `-shm` and always works.
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("cannot open the snapshot: {e}"))?;
+
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| format!("integrity_check did not run: {e}"))?;
+    if integrity != "ok" {
+        return Err(format!("integrity_check reported: {integrity}"));
+    }
+
+    // `foreign_key_check` yields one row per violation and nothing at all when
+    // the database is sound, so "no rows" is the passing case.
+    let mut stmt = conn
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|e| format!("foreign_key_check did not run: {e}"))?;
+    let violations = stmt
+        .query_map([], |_| Ok(()))
+        .map_err(|e| format!("foreign_key_check did not run: {e}"))?
+        .count();
+    if violations > 0 {
+        return Err(format!(
+            "foreign_key_check reported {violations} violation(s)"
+        ));
+    }
+
     Ok(())
 }
 
@@ -4842,6 +4928,27 @@ mod tests {
         assert!(!out.language_is_default);
     }
 
+    /// `last_backup_at` rides in on the settings default-resolution path rather
+    /// than a schema column, so it must read as "never" on any database that
+    /// predates it — no migration, no `NULL` column, no error.
+    #[test]
+    fn the_backup_date_reads_as_absent_until_one_is_recorded() {
+        let f = Fixture::new("last_backup");
+        let conn = f.db.lock();
+
+        assert_eq!(
+            read_settings(&conn).last_backup_at,
+            None,
+            "an install that has never backed up must report no date"
+        );
+
+        put_setting(&conn, LAST_BACKUP_KEY, "2026-08-07").unwrap();
+        assert_eq!(
+            read_settings(&conn).last_backup_at,
+            Some("2026-08-07".to_string())
+        );
+    }
+
     // --- missing rows ------------------------------------------------------
 
     #[test]
@@ -5060,6 +5167,45 @@ mod tests {
             .find(|c| c.is_dir() && same_device(c) != temp_dev)
     }
 
+    /// A `VACUUM INTO` that returns `Ok` is not proof the file it wrote is a
+    /// usable database, and the difference only ever surfaces at restore time.
+    /// This pins both directions of the gate that now stands between the
+    /// snapshot and the destination.
+    #[test]
+    fn a_snapshot_is_verified_before_it_is_accepted() {
+        let f = Fixture::new("backup_verify");
+        seeded_purchase(&f);
+
+        // What the backup path actually produces must pass.
+        let good = temp_db_path("backup_verify_good");
+        let staging = staging_dir("backup_verify_stage");
+        backup_database_impl(&f.db.lock(), &good, &staging).unwrap();
+        verify_snapshot(&good).expect("a real snapshot must verify");
+
+        // A damaged database must not. Truncating mid-file is the shape a full
+        // disk or a failing drive leaves behind: the header still says
+        // "SQLite format 3", so every check the destination guards perform
+        // passes, and only reading the pages reveals it.
+        let damaged = temp_db_path("backup_verify_damaged");
+        std::fs::copy(&good, &damaged).unwrap();
+        let len = std::fs::metadata(&damaged).unwrap().len();
+        assert!(len > 4096, "the fixture must be several pages long");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&damaged)
+            .unwrap()
+            .set_len(len / 2)
+            .unwrap();
+        assert!(
+            verify_snapshot(&damaged).is_err(),
+            "a truncated database must not pass verification"
+        );
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&damaged);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
     // --- dashboard ---------------------------------------------------------
 
     /// `upcoming_days` used to flow unvalidated into `Duration::days`, which
@@ -5168,6 +5314,26 @@ mod tests {
         assert!(!list_purchase_ids(&conn, PurchaseScope::Active)
             .unwrap()
             .is_empty());
+
+        // Backup is in that same baseline. It snapshots exactly the rows the two
+        // reads above already return, so gating it protected nothing and denied
+        // an expired install the one copy it most needs — the one taken before
+        // troubleshooting the expiry.
+        //
+        // The gate lives on the `backup_database` wrapper, which needs an
+        // `AppHandle` and so cannot be called from a unit test; what this pins is
+        // the capability the wrapper must keep exposing. The wrapper's own lack
+        // of a `require_license` call is enforced by review, not by this test.
+        let dest = temp_db_path("license_baseline_backup");
+        let staging = staging_dir("license_baseline_stage");
+        backup_database_impl(&conn, &dest, &staging).unwrap();
+        assert!(
+            dest.exists(),
+            "an unlicensed install must be able to back up"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
     }
 
     #[test]

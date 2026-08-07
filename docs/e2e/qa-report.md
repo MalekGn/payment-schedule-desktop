@@ -6,6 +6,210 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-07 — Pre-v1.0.0 backup safety: ungated, verified, and dated
+
+### Summary
+
+`db_report.md` audited the database practices at `834040a` and found the
+migration machinery sound but the safety net around it absent. Its own priority
+order puts "snapshot before migrating" first; that recommendation was
+**deliberately deferred**, because at v1.0.0 every install creates a fresh file
+and walks `user_version` 0→3 over an empty database — there is nothing to lose,
+and the snapshot is taken by the binary that performs the migration, so it can
+land in the release that introduces `m0004` and still protect that upgrade in
+full.
+
+What shipped instead is the category that only works if it is in the day-one
+binary, plus the fixes that made the existing backup untrustworthy:
+
+1. **Backup is no longer licence-gated.** `require_license` came off
+   `backup_database` and `:disabled="locked"` came off the Settings button. An
+   expired licence blocked the copy a shop most needs — the one taken before
+   troubleshooting the expiry — while protecting nothing, since a snapshot only
+   contains rows the unlicensed baseline already displays.
+2. **The snapshot is verified before it is accepted.** `backup_database_impl`
+   now opens the staged file **read-only** and runs `PRAGMA integrity_check` and
+   `PRAGMA foreign_key_check` before the rename. A clean `VACUUM INTO` proves the
+   statement ran, not that the bytes are a usable database; a full disk or a
+   failing drive previously reported success and was discovered at restore time.
+3. **`last_backup_at` is recorded and surfaced.** Success writes the date to the
+   `setting` table (no migration needed — `read_settings` resolves every key
+   through `get_setting` with a default) and the command returns the updated
+   `Settings`, so the Settings page shows the date and warns after
+   `BACKUP_STALE_DAYS` (30). This is the item that is worthless if deferred:
+   users who install v1.0.0 and are never nudged cannot be helped retroactively.
+4. **Restore is documented.** `README.md` previously documented only how to
+   _destroy_ the database. It now leads with a five-step restore (quit first,
+   replace the file, delete stale `-wal`/`-shm`), with the reset instructions
+   kept and relabelled as data loss.
+5. **The additive-only migration rule is written down** in `architecture.md`,
+   next to the append-only rule, with the reason: a destructive step makes
+   "reinstall the previous version" stop being a recovery option, because the
+   older binary refuses a forward `user_version` and `Db::open` is propagated
+   with `?` from `setup` — it will not launch at all.
+
+**Executed:** Rust `cargo test` **147 passed**, `cargo fmt --check`,
+`cargo clippy --all-targets -D warnings` — all clean. Frontend `npm test`
+**228 passed** (19 files), `npm run lint`, `npm run build` (`vue-tsc --noEmit`)
+— all clean. `tsc -p tsconfig.test.json --noEmit` clean.
+
+**Also executed on request:** integration **225 passed** (8 files), including
+the three new backup cases. E2E **49/50 passed** — the one failure,
+`rescheduling an unpaid tranche from the purchase editor holds the total`, is
+**pre-existing and unrelated**; it reproduces identically on a clean worktree of
+`834040a`. See _Issues found_.
+
+No new E2E case was added: the backup card is `v-if="isTauri()"`, so neither the
+button nor the new status line exists in the browser build the E2E suite drives.
+
+### Test cases
+
+#### Rust unit — `src-tauri/src/commands.rs` (executed, 147 passed)
+
+New:
+
+- `a_snapshot_is_verified_before_it_is_accepted` — a real snapshot from
+  `backup_database_impl` verifies; the same file truncated to half its length
+  does not. Truncation is the shape a full disk leaves: the `SQLite format 3`
+  header survives, so every destination guard still passes and only reading the
+  pages reveals it.
+- `the_backup_date_reads_as_absent_until_one_is_recorded` — `last_backup_at`
+  reads as `None` on a database that has never seen the key (the no-migration
+  claim), and round-trips once written.
+
+Extended:
+
+- `an_expired_licence_still_permits_reading_your_own_ledger` — now also takes a
+  backup, pinning the capability the unlicensed baseline must keep exposing.
+  **Stated limit:** the gate lived on the `backup_database` wrapper, which needs
+  an `AppHandle` and cannot be reached from a unit test. This test pins the
+  capability, not the absence of the call — that is a review rule.
+
+Unchanged and still passing: the five existing backup tests (readable snapshot,
+clobber refusal, sibling safety, overwrite, cross-filesystem fallback). The
+"staging directory must be empty after a successful backup" assertion inside
+`backup_writes_a_readable_snapshot` is load-bearing for the new verification
+step — it is what proves the read-only verification connection leaves no
+sidecar files behind for the rename to strand.
+
+#### Frontend unit — `src/stores/settings-backup.test.ts` (executed, 4 passed)
+
+New file, fake-timered on a fixed 2026-08-07 so the day arithmetic cannot drift:
+
+- an install that has never backed up is stale (`lastBackupAt === null`);
+- a backup taken today, and one taken yesterday, are not;
+- `BACKUP_STALE_DAYS - 1` is quiet and `BACKUP_STALE_DAYS` nudges — both edges,
+  so the comparison cannot silently invert.
+
+#### Integration — `tests/integration/error-contract.integration.test.ts` (executed, 225 passed)
+
+Two cases added to the existing `backup` block:
+
+- _returns settings carrying the new backup date_ — `getSettings()` reports
+  `null` first, `backupDatabase()` resolves to settings whose `lastBackupAt` is
+  today, and a later independent read agrees. This pins the api/mock parity that
+  the unit suite cannot see: the mock is what the E2E build runs against, and a
+  drift means the browser build keeps nudging after a successful backup.
+- _keeps the recorded date out of the writable settings patch_ — an
+  `updateSettings` round trip preserves `lastBackupAt`. The field is read-only by
+  construction (no counterpart in `SettingsPatch`, on either side), because the
+  renderer serializes the patch and a writable field would let the UI lie about
+  when the ledger was last copied.
+
+#### E2E — `tests/e2e/run.mjs` (executed, 49/50 passed, unchanged)
+
+`settings exposes a database backup action` still asserts the backup card is
+**hidden** outside the Tauri runtime — passing. No case was added: there is no
+database file in the browser preview, so the card, the button and the new status
+line are all absent by design there.
+
+### Issues found
+
+**Pre-existing, not introduced here — E2E `rescheduling an unpaid tranche from
+the purchase editor holds the total` fails.** Carried over from the 2026-08-04
+entry, whose own record states the E2E cases were "written, NOT run" — this one
+appears never to have passed.
+
+- _Reproduction:_ `npm run test:e2e`. Confirmed identical on a detached
+  worktree of `834040a` with none of this work applied, so it is not a
+  regression from the backup changes.
+- _Symptom:_ the test opens the Samsung purchase (id 1, 2 400 over 6 tranches of
+  400, tranche 1 settled), types `600` into tranche 2, sees the sum indicator
+  read `ok`, saves, and then finds tranche 2 still at 400 on the detail page.
+  The failure screenshot
+  (`tests/e2e/artifacts/rescheduling-an-unpaid-tranche-from-the-purchase-editor-holds-the-total.png`)
+  shows the right purchase with **all six tranches unchanged** and the total
+  still 2 400 — so nothing was written, rather than something wrong being
+  written.
+- _Isolated:_ a throwaway probe against the gateway performed the same
+  reschedule (`api.updatePurchase` with `[400, 600, 350, 350, 350, 350]`) and it
+  **persisted correctly**. The business layer is sound; the defect is in the
+  editor's save path or in the test's own expectation, and telling those apart
+  needs the modal driven in a real browser.
+- _Severity:_ unknown until that is settled — a silently dropped schedule edit
+  would be a should-fix before v1.0.0; a stale test expectation would not. It
+  blocks nothing in this pass.
+
+Nothing introduced by this work. Two findings from the self-review were fixed in
+place before this entry:
+
+1. **`verify_snapshot` opened the staged file read-write.** A verification step
+   that can modify what it verifies is the wrong shape, and a journal file left
+   beside the staged snapshot would be stranded by the rename. Changed to
+   `OpenFlags::SQLITE_OPEN_READ_ONLY`; safe unconditionally because
+   `VACUUM INTO` writes a rollback-journal database even from a WAL source, so
+   no `-shm` is required.
+2. **A stale comment in `SettingsView.vue`** still claimed every control on the
+   page except the language was licensed. Backup is now a third exception;
+   corrected rather than left to mislead the next reader.
+
+### Risks and edge cases
+
+- **The deferred gap is still open.** There is no pre-migration snapshot and no
+  post-migration `integrity_check`. This is safe _only_ while no shipped
+  migration runs against real data. The release that adds `m0004` must carry
+  both, plus pruning of the snapshots — see `db_report.md` recs 1-3. If any
+  machine outside this repo already holds a `payment_schedule.db` from a
+  sideloaded dev build, v1.0.0 **will** migrate real data there and this
+  assumption does not hold for that machine.
+- **A failure to record `last_backup_at` is logged, not surfaced.** Deliberate:
+  the snapshot is already on disk and good, and returning `BACKUP_FAILED` would
+  send a user chasing a backup they actually have. The cost is that a settings
+  table which has stopped accepting writes shows a permanently stale nudge, with
+  only `logs/` to explain it.
+- **The nudge fires on a brand-new empty install**, where there is nothing to
+  lose. Accepted: it is confined to the Settings backup card, and teaching the
+  habit before the data exists is the point.
+- **`backupIsStale` compares against the local clock**, so a user who moves the
+  system date backwards sees the nudge disappear. The licence clock watermark
+  defends the licence against exactly this; a backup nudge is not worth the same
+  machinery.
+- **Nothing verifies the destination after the rename.** Verification happens in
+  staging; a cross-filesystem `fs::copy` that truncates on the way out is still
+  undetected, as documented in the existing comment at that fallback.
+- **The snapshot is still written in clear.** It carries client names, phone
+  numbers and debt positions — PII under Tunisian loi 2004-63 — to a
+  user-chosen path, routinely a USB stick. Out of scope here; if addressed, use
+  SQLCipher or age/ChaCha20-Poly1305, never zip encryption (`db_report.md` §2).
+
+### Recommendations
+
+1. **Settle the pre-existing E2E failure** above before tagging v1.0.0 — it is
+   the only red in either suite, and it is a purchase-editor question, not a
+   backup one.
+2. **Manual desktop pass**, none of which the browser suites can reach: take a
+   backup and confirm the status line switches from "never backed up" to the
+   date; confirm the button works with an expired licence; walk the new README
+   restore steps end to end; check the Arabic RTL rendering of the new line.
+3. **Bundle recs 1-3 from `db_report.md` with the first new migration.** They are
+   one work item and there is no user data to protect until then.
+4. Longer term, unchanged from the audit: aged-fixture migration tests (rec 6),
+   backup encryption at rest, and `AUDIT_REPORT.md` I3 (`VACUUM INTO` holds the
+   connection mutex on the async runtime — now held slightly longer, since the
+   verification and the settings write share the same guard).
+
+---
+
 ## 2026-08-04 — Installment immutability: paid rows, payment dates, and one schedule editor
 
 ### Summary

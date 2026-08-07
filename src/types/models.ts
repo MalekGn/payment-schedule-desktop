@@ -254,6 +254,12 @@ export interface Settings {
   /** Horizon (in days) for "due soon" alerts on the Alertes page. */
   alertSoonDays: number;
   languageIsDefault: boolean;
+  /**
+   * ISO date of the last successful backup, or `null` if this install has never
+   * taken one. Read-only — written by `backupDatabase` on the Rust side, which
+   * is why it has no counterpart in {@link SettingsPatch}.
+   */
+  lastBackupAt: string | null;
 }
 
 export interface SettingsPatch {

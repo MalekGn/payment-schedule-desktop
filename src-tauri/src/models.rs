@@ -355,6 +355,10 @@ pub struct Settings {
     /// True until the user changes the language for the first time; lets the
     /// frontend apply OS-locale detection only on a genuinely fresh install.
     pub language_is_default: bool,
+    /// ISO date of the last successful backup, or `None` if this install has
+    /// never taken one. Read-only: it is written by `backup_database`, never by
+    /// the renderer, which is why it has no counterpart in [`SettingsPatch`].
+    pub last_backup_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
