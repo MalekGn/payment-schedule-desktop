@@ -817,12 +817,12 @@ intentionally committed (correct for a binary) with a comment explaining why.
 
 **Tests.**
 
-| Suite       | Files | Cases | Runs in CI?                 |
-| ----------- | ----- | ----- | --------------------------- |
-| Rust unit   | —     | 145   | ✅ since `9f9ad6c`          |
-| Vitest unit | 18    | 224   | ✅ `npm test`               |
-| Integration | 8     | 223   | ✅ since `18f2889`          |
-| E2E         | 1     | 50    | ✅ nightly, since `18f2889` |
+| Suite       | Files | Cases | Runs in CI?                |
+| ----------- | ----- | ----- | -------------------------- |
+| Rust unit   | —     | 145   | ✅ since `9f9ad6c`         |
+| Vitest unit | 18    | 224   | ✅ `npm test`              |
+| Integration | 8     | 223   | ✅ since `18f2889`         |
+| E2E         | 1     | 50    | ✅ weekly, since `18f2889` |
 
 The integration figure is the **runtime** case count, not a count of `it(`
 blocks: `error-contract.integration.test.ts` drives three `it.each` tables — the
