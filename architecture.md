@@ -133,6 +133,31 @@ Design points that constrain later work:
   type is branding, a name the vendor signs is identification. Note the fallback
   chain covers `clockTampered`, `invalidSignature` and `missing` — the statuses
   where no verified payload exists.
+- **The verdict is refreshed while the app runs, not only at launch.** A shop
+  that never closes the app would otherwise keep full access past its expiry
+  date, because the startup verdict stood for the whole process. A detached
+  thread (`start_license_watcher` in `commands.rs`, started from `lib.rs`
+  alongside the backup scheduler) re-runs `evaluate_license` every 15 minutes and
+  writes the result back into `LicenseState`, so `require_license` — the gate
+  that actually refuses — is authoritative within a tick. A poll rather than a
+  sleep until midnight, for the same reason as the backup tick: suspend/resume
+  and a moved system clock both invalidate a precomputed deadline. It advances
+  the clock watermark too, so a day rolling over is recorded without a restart.
+- **`license://changed` is the only backend-pushed event in the app.** Everything
+  else is request/response through a command. It is emitted only when the verdict
+  actually differs — 96 ticks a day, almost never a change — and carries a
+  `LicenseInfo`, the same projection `get_license_status` returns. The renderer
+  subscribes through `api.onLicenseChanged` (the gateway's one subscription; the
+  browser mock stands in for it via `setLicense`), and the licence store applies
+  the payload, which flips `App.vue`'s existing `blocked` computed with no
+  restart and no polling. The emit is best-effort: by then the cache is already
+  updated, so a failure costs a stale screen, not a stale gate. `core:event:default`
+  was already granted in `capabilities/default.json`.
+- **The re-evaluation and the publish are serialized under the connection guard**
+  both paths already take. There are two writers — the watcher and
+  `import_license` — and without that ordering a tick that read the licence file
+  just before an import landed could publish its stale verdict afterwards,
+  locking a customer out of the licence they had just installed.
 - **`LicenseStatus` never crosses IPC**; `LicenseInfo` does. The projection drops
   `Malformed { reason }`, which is parser detail for the log, exactly as
   `AppError::Internal` collapses to an opaque code.

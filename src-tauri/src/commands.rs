@@ -2489,10 +2489,111 @@ pub(crate) fn evaluate_license(app: &tauri::AppHandle, conn: &Connection) -> Lic
     status
 }
 
+/// How often the licence verdict is re-checked while the app runs.
+///
+/// Expiry is date-granular, so minute precision buys nothing — a quarter hour
+/// bounds how long a shop keeps working past an expiry without paying for a file
+/// read and a machine-id hash every minute.
+///
+/// A poll, not a computed sleep until midnight, for the same reasons as
+/// [`crate::autobackup`]'s tick: the machine suspends and wakes hours later, and
+/// the system clock moves. Both invalidate a deadline computed in advance; they
+/// cannot invalidate a fixed interval.
+const LICENSE_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Event carrying a changed licence verdict to the renderer. Payload:
+/// [`LicenseInfo`], the same projection [`get_license_status`] returns.
+///
+/// The **only** backend-pushed event in the app. Everything else is
+/// request/response through a command, so this is the one place the renderer
+/// learns something it did not ask for.
+pub(crate) const LICENSE_CHANGED_EVENT: &str = "license://changed";
+
+/// Store a freshly computed verdict and tell the window, but only if it differs.
+///
+/// The comparison is what keeps this quiet: the watcher runs every
+/// [`LICENSE_TICK`] and the verdict almost never changes, so without it the
+/// renderer would be woken 96 times a day to be told nothing.
+///
+/// Emitting is best-effort. By the time it runs the cache is already updated, so
+/// [`require_license`] is correct whatever the window does — a failed emit costs
+/// a stale screen, not a stale gate. The log line carries the status tag only:
+/// it is a fixed vocabulary, unlike the parser detail `Malformed` holds.
+///
+/// **Call this with the connection guard from the matching `evaluate_license`
+/// still held.** The compare-and-set here is not atomic with the evaluation that
+/// produced `next`, and there are two writers — the watcher thread and
+/// `import_license`. Left unserialized, a watcher that read the licence file just
+/// before an import lands would publish its stale verdict *after* the import
+/// published the new one, locking a customer out of the licence they just
+/// installed until the next tick. Holding the guard both already take is what
+/// orders the file read against the publish.
+fn publish_license(app: &tauri::AppHandle, lic: &LicenseState, next: LicenseStatus) {
+    use tauri::Emitter;
+
+    if lic.get() == next {
+        return;
+    }
+
+    let info = next.to_info(license::machine_fingerprint());
+    log::info!("licence verdict changed to {}", info.status);
+    lic.set(next);
+
+    if let Err(e) = app.emit(LICENSE_CHANGED_EVENT, &info) {
+        log::warn!("could not notify the window of the licence change: {e}");
+    }
+}
+
+/// Start the background licence watcher. Returns immediately.
+///
+/// Without this the verdict computed in `lib.rs` at startup stands for the whole
+/// process: a shop that leaves the app open across its expiry date keeps full
+/// access until it restarts (`AUDIT_REPORT.md` L4). Re-evaluating on a tick makes
+/// the Rust gate — the one that actually refuses — authoritative within
+/// [`LICENSE_TICK`], and [`publish_license`] flips the UI to match.
+///
+/// A plain `std::thread` rather than an async task, for the same reason as
+/// [`crate::autobackup::start_scheduler`]: the work is blocking (a file read, a
+/// hash, and a locked connection) and does not belong on the executor that
+/// serves IPC. Detached — process exit ends it, and there is nothing to join.
+///
+/// Must be started only after `Db` and `LicenseState` are managed; `state()`
+/// panics otherwise.
+pub(crate) fn start_license_watcher(app: tauri::AppHandle) {
+    use tauri::Manager;
+
+    std::thread::spawn(move || {
+        log::info!("licence watcher started");
+        loop {
+            // Sleeps first: `lib.rs` has just evaluated the licence, and an
+            // immediate second pass would only re-read the same file.
+            std::thread::sleep(LICENSE_TICK);
+
+            // Fetched per tick rather than held, so the thread borrows the
+            // database only while it is actually working. Advancing the clock
+            // watermark is part of `evaluate_license`, so a day rolling over is
+            // now recorded without a restart too.
+            //
+            // The guard spans the publish deliberately — see `publish_license`
+            // for the interleaving with `import_license` that would otherwise
+            // let this tick's stale verdict win.
+            let db = app.state::<Db>();
+            let conn = db.lock();
+            let next = evaluate_license(&app, &conn);
+            publish_license(&app, &app.state::<LicenseState>(), next);
+            drop(conn);
+        }
+    });
+}
+
 /// The current licence verdict, for the UI.
 ///
 /// Never fails: every outcome, including "no licence installed", is a status the
 /// frontend renders rather than an error it has to catch.
+///
+/// Reads the cache rather than re-validating: [`start_license_watcher`] keeps it
+/// fresh, and a command that hit the filesystem on every call would make the
+/// licence card the most expensive screen in the app.
 #[tauri::command]
 pub async fn get_license_status(lic: State<'_, LicenseState>) -> DbResult<LicenseInfo> {
     Ok(lic.get().to_info(license::machine_fingerprint()))
@@ -2538,8 +2639,16 @@ pub async fn import_license(
     // Re-evaluate from the installed path rather than trusting `candidate`:
     // this is what every later startup will see, and it also advances the clock
     // watermark. If the copy landed wrong, the user finds out now.
-    let status = evaluate_license(&app, &db.lock());
-    lic.set(status.clone());
+    //
+    // Published through the same path as the watcher, so the cache has exactly
+    // one writer and "the cache changed" can never drift from "the window was
+    // told". The event is redundant for this caller — it is handed the verdict
+    // below — but harmless. The connection guard spans both calls so the watcher
+    // cannot slip in a verdict it computed from the pre-import file.
+    let conn = db.lock();
+    let status = evaluate_license(&app, &conn);
+    publish_license(&app, &lic, status.clone());
+    drop(conn);
 
     if status.is_valid() {
         log::info!("licence installed");
@@ -5351,6 +5460,73 @@ mod tests {
             // prose, and not an opaque INTERNAL that tells the user nothing.
             assert_eq!(err.code(), "LICENSE_REQUIRED");
         }
+    }
+
+    #[test]
+    fn the_gate_follows_a_verdict_that_changes_mid_session() {
+        // The point of `start_license_watcher`: the gate must read the live
+        // cache, not a value snapshotted when the process started. Nothing here
+        // needs the watcher thread — it only needs `require_license` to consult
+        // `LicenseState` on every call, which is what makes a mid-session expiry
+        // take effect without a restart (AUDIT_REPORT L4).
+        let state = licensed();
+        assert!(require_license(&state).is_ok());
+
+        state.set(LicenseStatus::Expired {
+            license: License {
+                license_id: "PS-TEST".into(),
+                licensee: "Test".into(),
+                issued_at: "2026-01-01".into(),
+                expires_at: "2026-02-01".into(),
+                machine_id: None,
+                features: vec![],
+            },
+            expired_on: parse_date("2026-02-01").unwrap(),
+        });
+        assert_eq!(
+            require_license(&state)
+                .expect_err("must refuse once expired")
+                .code(),
+            "LICENSE_REQUIRED"
+        );
+
+        // And back: importing a licence has to unlock the same process.
+        state.set(LicenseStatus::Valid(License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2030-01-01".into(),
+            machine_id: None,
+            features: vec!["*".into()],
+        }));
+        assert!(require_license(&state).is_ok());
+    }
+
+    #[test]
+    fn a_re_evaluated_verdict_is_only_published_when_it_differs() {
+        // `publish_license` needs an `AppHandle` to emit, so what is testable
+        // here is the comparison it gates on: two evaluations of an unchanged
+        // licence must compare equal, or the watcher would wake the renderer 96
+        // times a day to tell it nothing.
+        let license = License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2030-01-01".into(),
+            machine_id: None,
+            features: vec!["*".into()],
+        };
+        assert_eq!(
+            LicenseStatus::Valid(license.clone()),
+            LicenseStatus::Valid(license.clone())
+        );
+        assert_ne!(
+            LicenseStatus::Valid(license.clone()),
+            LicenseStatus::Expired {
+                license,
+                expired_on: parse_date("2026-02-01").unwrap(),
+            }
+        );
     }
 
     #[test]

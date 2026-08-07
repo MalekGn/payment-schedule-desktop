@@ -152,8 +152,9 @@ pub fn run() {
                 log::warn!("no backups directory, automatic backups are disabled: {e}");
             }
 
-            // Validate the licence once, here, rather than per command: it reads
-            // a file and hashes a machine identifier.
+            // Validate the licence here rather than per command: it reads a file
+            // and hashes a machine identifier. This is the only synchronous
+            // evaluation; the watcher started below refreshes it on a tick.
             //
             // Deliberately not propagated with `?`. Returning `Err` from `setup`
             // aborts startup, and "no licence" or "expired" must never stop the
@@ -173,6 +174,12 @@ pub fn run() {
             if let Ok(dir) = backups_dir {
                 autobackup::start_scheduler(app.handle().clone(), db_path, dir);
             }
+
+            // The verdict above is a snapshot. Without a watcher it would stand
+            // for the life of the process, so a shop that never closes the app
+            // would keep full access past its expiry date. Started here, after
+            // both states are managed, and never on the refusal path above.
+            commands::start_license_watcher(app.handle().clone());
 
             Ok(())
         })

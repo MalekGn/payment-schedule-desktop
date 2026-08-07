@@ -413,7 +413,8 @@
     "machineMismatchBody": "This licence was issued for a different computer.",
     "clockTamperedBody": "The system date is earlier than the last date seen. Restore the correct time.",
     "goToSettings": "Manage licence",
-    "unlicensedNotice": "Unlicensed — reading clients and purchases only."
+    "unlicensedNotice": "Unlicensed — reading clients and purchases only.",
+    "lapsed": "Your licence is no longer active. The licensed features have just been disabled."
   },
   "validation": {
     "required": "This field is required.",

@@ -183,6 +183,12 @@ class MockDb {
     expiredOn: null,
     machineId: null,
   };
+  /**
+   * Subscribers to `onLicenseChanged`, the browser stand-in for the Tauri event
+   * the Rust watcher emits. A `Set` so an unsubscribe is exact and a handler
+   * registered twice is still called once.
+   */
+  private licenseWatchers = new Set<(info: LicenseInfo) => void>();
   private seq = { client: 0, purchase: 0, installment: 0, payment: 0 };
 
   constructor() {
@@ -1231,7 +1237,27 @@ class MockDb {
     return this.getLicenseStatus();
   }
 
-  /** Test hook: put the mock into a given licence state. */
+  /**
+   * Browser stand-in for the `license://changed` Tauri event.
+   *
+   * Rust pushes a verdict when its periodic re-check finds one that differs;
+   * here `setLicense` is what stands in for the passage of time. Returns the
+   * unsubscribe, matching the gateway's contract.
+   */
+  onLicenseChanged(handler: (info: LicenseInfo) => void): () => void {
+    this.licenseWatchers.add(handler);
+    return () => {
+      this.licenseWatchers.delete(handler);
+    };
+  }
+
+  /**
+   * Test hook: put the mock into a given licence state.
+   *
+   * Also fires `onLicenseChanged`, so a test can simulate an expiry landing
+   * mid-session — the case the Rust watcher exists for — without a second
+   * `getLicenseStatus` call.
+   */
   setLicense(status: LicenseStatusTag): void {
     this.license = {
       status,
@@ -1249,6 +1275,11 @@ class MockDb {
       expiredOn: status === "expired" ? "2026-02-01" : null,
       machineId: MOCK_MACHINE_ID,
     };
+    // Iterated over a copy: a handler that unsubscribes itself on the verdict it
+    // was waiting for would otherwise mutate the set mid-iteration.
+    for (const handler of [...this.licenseWatchers]) {
+      handler(this.getLicenseStatus());
+    }
   }
 }
 

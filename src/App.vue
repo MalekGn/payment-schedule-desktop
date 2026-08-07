@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import AppSidebar from "@/components/layout/AppSidebar.vue";
 import AppHeader from "@/components/layout/AppHeader.vue";
@@ -13,6 +14,7 @@ const ui = useUiStore();
 const stats = useStatsStore();
 const license = useLicenseStore();
 const route = useRoute();
+const { t } = useI18n();
 
 /**
  * Whether the current route's content is withheld pending a licence.
@@ -27,6 +29,17 @@ const blocked = computed(() => route.meta.licensed === true && !license.isLicens
 onMounted(() => {
   if (license.isLicensed) stats.refresh();
 });
+// The backend re-evaluates the licence while the app runs, so `blocked` above can
+// flip under a user who is mid-task. It swapping the page silently would read as
+// a bug; an error toast persists until dismissed, so the reason is still on
+// screen when they look up. Only the losing direction is announced — regaining a
+// licence already has its own confirmation on the import path.
+watch(
+  () => license.isLicensed,
+  (now, before) => {
+    if (before && !now) ui.notify(t("license.lapsed"), "error");
+  },
+);
 // Reset any per-page header-title override on navigation.
 watch(
   () => route.fullPath,

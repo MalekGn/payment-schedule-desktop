@@ -25,6 +25,9 @@ app.use(router);
 // rejection unhandled, so the reason never surfaced anywhere — hence the
 // explicit catch. The licence store swallows its own failure the same way, and
 // fails closed.
+//
+// Watching starts after the first verdict has landed, so a push cannot be
+// overwritten by an older `load()` still in flight.
 const settings = useSettingsStore(pinia);
 const license = useLicenseStore(pinia);
 Promise.all([
@@ -32,4 +35,10 @@ Promise.all([
     console.error("failed to load settings; starting with defaults:", e);
   }),
   license.load(),
-]).finally(() => app.mount("#app"));
+]).finally(() => {
+  // Not awaited: the licence is re-evaluated in Rust while the app runs, and
+  // this is how the window hears about it — but a listener that fails to
+  // register must cost a stale screen, never a window that never opens.
+  void license.watch();
+  app.mount("#app");
+});

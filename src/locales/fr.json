@@ -413,7 +413,8 @@
     "machineMismatchBody": "Cette licence a été émise pour un autre ordinateur.",
     "clockTamperedBody": "La date du système est antérieure à la dernière date connue. Rétablissez l'heure correcte.",
     "goToSettings": "Gérer la licence",
-    "unlicensedNotice": "Version sans licence — lecture des clients et des achats uniquement."
+    "unlicensedNotice": "Version sans licence — lecture des clients et des achats uniquement.",
+    "lapsed": "Votre licence n'est plus active. Les fonctionnalités sous licence viennent d'être désactivées."
   },
   "validation": {
     "required": "Ce champ est requis.",

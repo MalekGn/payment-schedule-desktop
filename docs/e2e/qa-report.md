@@ -6,6 +6,133 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-07 (d) — Licence expiry takes effect without a restart (AUDIT_REPORT L4)
+
+### Summary
+
+`AUDIT_REPORT.md` **L4** was the last correctness gap in the licensing module:
+the verdict was computed once in `lib.rs` and cached in `LicenseState` for the
+life of the process. Every gated command consulted that cache faithfully — but
+nothing ever recomputed it, so a shop that leaves the app open across its expiry
+date kept full access until the next launch. For a desktop app a shop keeper
+opens on Monday and closes on Saturday, "only on restart" can mean a week.
+
+The fix has two halves, and both were needed:
+
+- **The gate.** `commands::start_license_watcher` spawns a detached thread that
+  re-runs `evaluate_license` every **15 minutes** and writes the result back into
+  `LicenseState`, so `require_license` — the check that actually refuses — is
+  authoritative within a tick. 15 minutes because expiry is date-granular: minute
+  precision buys nothing, and a poll rather than a computed sleep to midnight is
+  the only shape that survives suspend/resume and a moved system clock. Same
+  reasoning, and the same `std::thread` shape, as the backup scheduler.
+- **The screen.** Without the second half the UI would go on presenting a
+  licensed install while every gated command refused — refusal toasts with no
+  explanation, which is worse than the bug. `publish_license` emits
+  `license://changed` when, and only when, the verdict differs; the renderer
+  subscribes through the new `api.onLicenseChanged`, and the store applies the
+  payload, flipping `App.vue`'s existing `blocked` computed with no restart and
+  no polling.
+
+Three decisions worth recording:
+
+- **A timer, not window focus.** The audit offered either. Focus is a signal the
+  renderer owns, and the renderer is the thing the gate defends against; a
+  verdict that only refreshes when the user clicks the window is not a control.
+- **`license://changed` is the app's first backend-pushed event.** Everything
+  else in the tree is request/response through a command. It was allowed for
+  free — `core:event:default` was already in `capabilities/default.json` — and it
+  is emitted only on an actual change, so 96 ticks a day produce no traffic.
+- **The lapse is announced.** The page swapping under a user mid-task without a
+  word reads as a bug, so `App.vue` toasts `license.lapsed` on the licensed →
+  unlicensed transition only. Error toasts persist until dismissed, so the reason
+  is still on screen when the user looks up.
+
+### Test cases
+
+**Rust — `cargo test`, 163 passed (was 161), run.**
+
+| #   | Case                                                                                                                                                                                                                                               | Result   |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| R1  | `the_gate_follows_a_verdict_that_changes_mid_session` — `require_license` admits a `Valid` state, refuses with `LICENSE_REQUIRED` after `set(Expired)`, and admits again after `set(Valid)`. The L4 property itself, and it needs no Tauri runtime | ✅       |
+| R2  | `a_re_evaluated_verdict_is_only_published_when_it_differs` — an unchanged licence compares equal across evaluations; `Valid` and `Expired` do not. The comparison `publish_license` gates its emit on                                              | ✅       |
+| R3  | Pre-existing licence suite (45 cases) re-run unchanged — expiry inclusivity, the clock guard, the watermark, wire projection, signature handling                                                                                                   | ✅       |
+| R4  | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`                                                                                                                                                                                   | ✅ clean |
+
+**Frontend unit — `npm test`, 238 passed across 19 files (was 224/19), run.**
+
+| #   | Case                                                                                                                          | Result   |
+| --- | ----------------------------------------------------------------------------------------------------------------------------- | -------- |
+| U1  | A verdict pushed by the backend is adopted with no second `load()`; `status`, `isLicensed` and `expiredOn` all follow         | ✅       |
+| U2  | A licence installed elsewhere in the session unlocks the store the same way                                                   | ✅       |
+| U3  | `watch()` subscribes exactly once — including two calls in the same tick, before the first resolves                           | ✅       |
+| U4  | `unwatch()` stops delivery                                                                                                    | ✅       |
+| U5  | A subscription that cannot be set up leaves the current verdict alone and logs. Deliberately **not** fail-closed — see Issues | ✅       |
+| U6  | Pre-existing store suite (8 cases) re-run unchanged, including fail-closed on a broken `getLicenseStatus`                     | ✅       |
+| U7  | `npm run lint`, `npm run build` (`vue-tsc --noEmit`)                                                                          | ✅ clean |
+
+**Integration — `tests/integration/license-gate.integration.test.ts`, 5 new cases. Written, _not run_** (per `CLAUDE.md`: integration and E2E execute only on explicit request).
+
+| #   | Case                                                                                                                              |
+| --- | --------------------------------------------------------------------------------------------------------------------------------- |
+| I1  | A lapse travels backend → gateway → store, carrying `expiredOn` and the attested licensee                                         |
+| I2  | The pushed payload and `getLicenseStatus()` agree — two projections of one verdict, so the UI cannot depend on which arrived last |
+| I3  | Releasing the subscription stops delivery                                                                                         |
+| I4  | An import recovers the session, through the same publish path the watcher uses                                                    |
+| I5  | `license.lapsed` resolves to a real sentence in fr, en and ar — a missing key would echo the key back at the user                 |
+
+**E2E** — no new scenarios. `tests/e2e/run.mjs` drives the mock through the UI and has no hook for a timed backend push; the transition is covered at the integration layer instead.
+
+**Manual (not yet performed — needs a real bundle):** install a licence expiring today; leave the app open across midnight or swap `license.json`; confirm within 15 minutes that the log records the change, the licensed route swaps to `LicenseRequiredPanel` with the date, the toast appears, and a gated action refuses. Repeat in Arabic to confirm the toast mirrors.
+
+### Issues found
+
+**1. Race between the watcher and `import_license` — found in self-review, fixed before QA.**
+Both write `LicenseState`, and `publish_license` compares-then-sets. A tick that
+read the licence file just before an import landed would publish its stale
+verdict _after_ the import published the new one, locking a paying customer out
+of the licence they had just installed for up to 15 minutes. Fixed by holding the
+connection guard — which both paths already take — across the evaluate/publish
+pair, so the file read is ordered against the publish. Lock order was checked for
+inversion: `require_license` releases the `LicenseState` read lock before any
+path acquires the connection, so no path takes them in the opposite order.
+
+**2. Synchronous throw escaping a `Promise`-typed gateway call — found by a test, fixed.**
+The gateway's browser branch is `Promise.resolve(mockDb.x())`, which evaluates
+its argument first, so a mock that throws throws _synchronously_ despite the
+declared `Promise` return. The store's first `.catch()`-on-a-chain form never saw
+it. Rewritten as an `async` helper, which normalizes both. This shape is
+pre-existing across the whole gateway (`importLicense` has it too) and is
+harmless wherever the caller is itself `async` — noted below rather than fixed
+project-wide.
+
+**3. No blockers outstanding.** No security or data-loss issue open.
+
+### Recommendations
+
+- **A stale screen is preferred to a locked-out shop, deliberately.** If the
+  subscription cannot be registered the store keeps its current verdict and logs,
+  rather than failing closed as `load()` does. The Rust gate still refuses on its
+  own, so the cost is a screen that lags until the next launch; failing closed
+  would lock a paying shop out over a missing event listener. Recorded here
+  because it is the one place in the licence path that does not fail closed.
+- **The 15-minute window is a business choice, not a technical limit.** A shop
+  can work up to 15 minutes past an expiry. Narrowing it is a one-constant change
+  (`LICENSE_TICK`); the cost is a file read and a machine-id hash per tick.
+- **Consider normalizing the gateway's mock branch** so no `Promise`-typed call
+  can throw synchronously. Every current caller is `async` and absorbs it, so
+  this is hygiene, not a live bug — but issue 2 above is what it looks like when
+  a caller is not.
+- **The event name is duplicated across the boundary** (`commands.rs` and
+  `src/api/index.ts`), like every command name. Unavoidable without a codegen
+  step; both sides carry a comment pointing at the other.
+- **Run the integration suite** (`npm run test:integration`) before the release
+  bundle, and perform the manual pass above once a signed licence is available —
+  the timer and the real Tauri event bridge are the two things no test in the
+  tree exercises.
+
+---
+
 ## 2026-08-07 (c) — The automatic backup becomes a schedule the shop controls
 
 ### Summary

@@ -312,11 +312,16 @@ pub struct LicenseInfo {
     pub machine_id: Option<String>,
 }
 
-/// Managed Tauri state holding the licence verdict for the running process.
+/// Managed Tauri state holding the current licence verdict.
 ///
 /// Validation touches the filesystem and hashes a machine identifier, so it runs
-/// once at startup rather than per command. `import_license` replaces the value,
-/// which is why this is a lock and not a plain field.
+/// on a schedule rather than per command: once at startup, then on every tick of
+/// `commands::start_license_watcher`, plus whenever `import_license` installs a
+/// file. Three writers is why this is a lock and not a plain field.
+///
+/// Read it, do not cache it. `require_license` calls [`Self::is_valid`] on every
+/// gated command precisely so a verdict that changes mid-session takes effect
+/// without a restart.
 pub struct LicenseState {
     status: std::sync::RwLock<LicenseStatus>,
 }
