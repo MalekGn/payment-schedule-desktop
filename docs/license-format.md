@@ -172,13 +172,12 @@ Nothing is gated on it yet.
 
 Reserved for a future tier, should one appear:
 
-| String       | Would cover                                |
-| ------------ | ------------------------------------------ |
-| `reports`    | The Rapports page (still a placeholder)    |
-| `export`     | CSV export of the filtered Impayés list    |
-| `backup`     | Settings → Backup database (`VACUUM INTO`) |
-| `alerts`     | The Alertes centre and the header bell     |
-| `multi-shop` | Nothing yet                                |
+| String       | Would cover                             |
+| ------------ | --------------------------------------- |
+| `reports`    | The Rapports page (still a placeholder) |
+| `export`     | CSV export of the filtered Impayés list |
+| `alerts`     | The Alertes centre and the header bell  |
+| `multi-shop` | Nothing yet                             |
 
 ### Unlicensed baseline
 
@@ -188,11 +187,14 @@ Independent of `features`, this is what the app does with **no licence at all**:
 > and without sorting** requires no licence.
 
 Everything else is licensed, and this **is enforced**: `require_license` in
-`src-tauri/src/commands.rs` refuses 21 of the 29 commands. The four baseline
+`src-tauri/src/commands.rs` refuses 20 of the 29 commands. The four baseline
 reads _degrade_ rather than refuse — an unlicensed caller is pinned to the active
 scope with no server-side search — so the pages still render. `get_settings` and
 a language-only `update_settings` also stay open, because a user who cannot read
 the current language must still be able to reach the licence screen.
+`backup_database` stays open too: it snapshots only what the baseline reads
+already show, and an expired licence must never stop a shop copying its own
+ledger.
 
 One honest limit: sorting and most filtering run in the browser on rows already
 fetched, so the backend never sees them. Disabling those controls communicates

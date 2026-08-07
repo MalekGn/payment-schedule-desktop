@@ -38,6 +38,21 @@ async function openWithOs(url: string): Promise<void> {
   return openUrl(url);
 }
 
+/**
+ * Subscribe to a backend-pushed Tauri event, resolving to the unsubscribe.
+ *
+ * The counterpart to `invoke`, and the only other direction the boundary runs
+ * in. Lazily imported for the same reason: `@tauri-apps/api` must not be pulled
+ * into the browser bundle that the mock serves.
+ */
+async function listenTo<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<T>(event, (e) => handler(e.payload));
+}
+
+/** Rust emits this when the licence verdict changes. See `commands.rs`. */
+const LICENSE_CHANGED_EVENT = "license://changed";
+
 export const api = {
   // -- clients --
   /**
@@ -199,7 +214,7 @@ export const api = {
    * deleted at all, and a purchase must be archived before it can be
    * destroyed. What a backup still protects is that final, deliberate step.
    */
-  backupDatabase: (dest: string): Promise<void> =>
+  backupDatabase: (dest: string): Promise<Settings> =>
     isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),
 
   // -- system --
@@ -237,4 +252,20 @@ export const api = {
     isTauri()
       ? invoke("import_license", { sourcePath })
       : Promise.resolve(mockDb.importLicense(sourcePath)),
+
+  /**
+   * Watch for licence verdicts the backend pushes on its own.
+   *
+   * The backend re-evaluates the licence periodically, so an expiry takes effect
+   * while the app is running rather than at the next launch. This is how the UI
+   * hears about it; without it the screen would keep claiming the install is
+   * licensed while every gated command refused.
+   *
+   * The only subscription in the gateway. Resolves to an unsubscribe function —
+   * call it, or the handler outlives whatever registered it.
+   */
+  onLicenseChanged: (handler: (info: LicenseInfo) => void): Promise<() => void> =>
+    isTauri()
+      ? listenTo<LicenseInfo>(LICENSE_CHANGED_EVENT, handler)
+      : Promise.resolve(mockDb.onLicenseChanged(handler)),
 };

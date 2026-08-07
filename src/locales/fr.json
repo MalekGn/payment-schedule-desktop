@@ -373,7 +373,18 @@
     "backup": "Sauvegarde",
     "backupHint": "Enregistrez une copie de votre base de données. Supprimer un client supprime aussi ses achats et paiements, sans retour possible.",
     "backupAction": "Sauvegarder la base",
-    "backupDone": "Sauvegarde enregistrée."
+    "backupAuto": "Sauvegarder automatiquement",
+    "backupFrequency": "Fréquence",
+    "backupFrequency_daily": "Chaque jour",
+    "backupFrequency_weekly": "Chaque semaine",
+    "backupFrequency_monthly": "Chaque mois",
+    "backupTime": "Heure",
+    "backupTimeHint": "La copie est faite à cette heure si l'application est ouverte. Sinon, elle est faite à la prochaine ouverture.",
+    "backupDone": "Sauvegarde enregistrée.",
+    "backupLast": "Dernière sauvegarde : {date}",
+    "backupNever": "Cette base n'a jamais été sauvegardée.",
+    "backupAutoLast": "Copie automatique sur cet ordinateur : {date}. Elle ne remplace pas une sauvegarde conservée ailleurs.",
+    "backupAutoNone": "Aucune copie automatique pour l'instant. Elle est créée au démarrage de l'application."
   },
   "license": {
     "title": "Licence",
@@ -402,7 +413,8 @@
     "machineMismatchBody": "Cette licence a été émise pour un autre ordinateur.",
     "clockTamperedBody": "La date du système est antérieure à la dernière date connue. Rétablissez l'heure correcte.",
     "goToSettings": "Gérer la licence",
-    "unlicensedNotice": "Version sans licence — lecture des clients et des achats uniquement."
+    "unlicensedNotice": "Version sans licence — lecture des clients et des achats uniquement.",
+    "lapsed": "Votre licence n'est plus active. Les fonctionnalités sous licence viennent d'être désactivées."
   },
   "validation": {
     "required": "Ce champ est requis.",

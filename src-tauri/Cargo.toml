@@ -1,6 +1,9 @@
 [package]
 name = "payment-schedule"
-version = "0.1.0"
+# Single source of truth for the shipped app version: `tauri.conf.json` omits
+# its `version` key, so Tauri falls back to this one for the installer names,
+# the MSI product version and `app.getVersion()`. See README "Releases via CI".
+version = "1.0.0"
 description = "paymentSchedule — installment-sale tracking for small Tunisian appliance shops"
 authors = ["paymentSchedule"]
 edition = "2021"

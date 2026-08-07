@@ -86,6 +86,90 @@ describe("the licence verdict reaches the UI", () => {
   });
 });
 
+describe("a verdict that changes mid-session reaches the UI", () => {
+  // Rust re-evaluates the licence every 15 minutes and pushes `license://changed`
+  // when the verdict differs, so an expiry no longer waits for a restart. Across
+  // the real gateway that arrives as `api.onLicenseChanged`; in the browser
+  // `mockDb.setLicense` stands in for the passage of time.
+
+  it("carries a lapse from the backend through the gateway to the store", async () => {
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+    expect(license.isLicensed).toBe(true);
+
+    mockDb.setLicense("expired");
+
+    // `App.vue` gates on exactly this: `route.meta.licensed && !isLicensed`.
+    expect(license.isLicensed).toBe(false);
+    expect(license.status).toBe("expired");
+    // `LicenseRequiredPanel` names the date the licence lapsed.
+    expect(license.info.expiredOn).toBe("2026-02-01");
+    // The licensee is still attested, so the sidebar brand keeps its name
+    // rather than falling back mid-session.
+    expect(license.license?.licensee).toBeTruthy();
+
+    license.unwatch();
+  });
+
+  it("delivers the same payload the polled command would have returned", async () => {
+    const seen: string[] = [];
+    const off = await api.onLicenseChanged((info) => seen.push(info.status));
+
+    mockDb.setLicense("clockTampered");
+    const polled = await api.getLicenseStatus();
+
+    // The pushed event and `get_license_status` are two projections of one
+    // verdict; if they could disagree the UI would depend on which arrived last.
+    expect(seen).toEqual(["clockTampered"]);
+    expect(polled.status).toBe("clockTampered");
+
+    off();
+  });
+
+  it("stops delivering once the subscription is released", async () => {
+    const seen: string[] = [];
+    const off = await api.onLicenseChanged((info) => seen.push(info.status));
+    off();
+
+    mockDb.setLicense("expired");
+    expect(seen).toEqual([]);
+  });
+
+  it("recovers the session when a licence is installed", async () => {
+    mockDb.setLicense("expired");
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+    expect(license.isLicensed).toBe(false);
+
+    // The Rust command publishes through the same path as the watcher, so an
+    // import both returns the verdict and pushes it.
+    await license.importFrom("/tmp/licence.json");
+    expect(license.isLicensed).toBe(true);
+
+    license.unwatch();
+  });
+
+  it("announces the lapse in a sentence, in all three languages", () => {
+    // The screen swapping under a user mid-task without a word reads as a bug.
+    // `App.vue` toasts `license.lapsed` on the valid → unlicensed transition.
+    for (const [locale, messages] of Object.entries({ fr, en, ar })) {
+      const i18n = createI18n({
+        legacy: false,
+        locale,
+        messages: { [locale]: messages },
+      });
+      const t = i18n.global.t as unknown as (k: string) => string;
+
+      const message = t("license.lapsed");
+      expect(message).toBeTruthy();
+      // A missing key makes vue-i18n echo the key back at the user.
+      expect(message).not.toContain("license.lapsed");
+    }
+  });
+});
+
 describe("the unlicensed baseline stays usable", () => {
   it("still lists clients and purchases, which are never gated", async () => {
     mockDb.setLicense("missing");

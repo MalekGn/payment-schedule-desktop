@@ -91,6 +91,91 @@ describe("licence store — reporting the verdict", () => {
   });
 });
 
+describe("licence store — following the backend mid-session", () => {
+  // Rust re-evaluates the licence on a timer, so a verdict can change under a
+  // user who is mid-task. These cover the half of that fix that lives here: the
+  // screen has to follow, or the app goes on claiming to be licensed while every
+  // gated command refuses.
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockDb.setLicense("valid");
+  });
+
+  it("adopts a verdict the backend pushes, with no second load()", async () => {
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+    expect(license.isLicensed).toBe(true);
+
+    // What the Rust watcher does when the expiry date passes.
+    mockDb.setLicense("expired");
+
+    expect(license.isLicensed).toBe(false);
+    expect(license.status).toBe("expired");
+    // The date has to come through too: `LicenseRequiredPanel` says *when* the
+    // licence lapsed, and an empty date there reads as a bug.
+    expect(license.info.expiredOn).toBe("2026-02-01");
+  });
+
+  it("unlocks again when a licence is installed elsewhere in the session", async () => {
+    mockDb.setLicense("missing");
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+
+    mockDb.setLicense("valid");
+    expect(license.isLicensed).toBe(true);
+  });
+
+  it("subscribes once however often watch() is called", async () => {
+    const license = useLicenseStore();
+    const spy = vi.spyOn(mockDb, "onLicenseChanged");
+
+    // Both in the same tick, before the first has resolved — the case a guard on
+    // the unsubscribe handle would miss.
+    await Promise.all([license.watch(), license.watch()]);
+    await license.watch();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops following once unwatched", async () => {
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+    license.unwatch();
+
+    mockDb.setLicense("expired");
+    expect(license.isLicensed).toBe(true);
+  });
+
+  it("keeps the current verdict when the subscription cannot be set up", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(mockDb, "onLicenseChanged").mockImplementation(() => {
+      throw new Error("no event bridge");
+    });
+
+    const license = useLicenseStore();
+    await license.load();
+    await license.watch();
+
+    // Deliberately *not* fail-closed: a missing listener costs a stale screen
+    // until the next launch, and the Rust gate still refuses on its own.
+    // Locking a paying shop out over it would be the worse failure.
+    expect(license.isLicensed).toBe(true);
+    expect(spy).toHaveBeenCalled();
+  });
+
+  afterEach(() => {
+    // Handlers outlive the store instance otherwise: `mockDb` is a module
+    // singleton shared by every test in the run.
+    useLicenseStore().unwatch();
+    vi.restoreAllMocks();
+    mockDb.setLicense("valid");
+  });
+});
+
 describe("licence store — importing", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

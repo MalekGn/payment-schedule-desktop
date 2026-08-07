@@ -3,15 +3,14 @@ name: E2E
 # The Playwright suite: 50 scenarios driving the real Vue app in headless
 # Chromium against the in-memory mock backend.
 #
-# Nightly rather than per-push, deliberately. It needs a ~100 MB browser
+# Scheduled rather than per-push, deliberately. It needs a ~100 MB browser
 # download and runs for minutes, where the rest of the gate finishes in seconds
 # — and a flaky UI test blocking an unrelated merge trains people to ignore CI.
-# Running it every night still catches a regression within a day, which is the
-# point. `workflow_dispatch` is there for when a change warrants it sooner.
+# `workflow_dispatch` is there for when a change warrants it sooner.
 on:
   schedule:
-    # 02:00 UTC daily.
-    - cron: "0 2 * * *"
+    # 02:00 UTC every Thursday.
+    - cron: "0 2 * * 4"
   workflow_dispatch:
 
 permissions:

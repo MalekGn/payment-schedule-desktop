@@ -230,11 +230,20 @@ publishes them to a **GitHub Release** for that tag:
 | `ubuntu-22.04`   | `.deb` (Debian/Ubuntu) + `.rpm` (RedHat/Fedora) |
 | `windows-latest` | `.msi` + NSIS `-setup.exe` (Windows 10/11)      |
 
-To cut a release:
+The **app version** is set in one place: `version` in `src-tauri/Cargo.toml`.
+`src-tauri/tauri.conf.json` deliberately omits its `version` key so Tauri
+inherits that value — it drives the installer filenames, the Windows MSI product
+version, and the deb/rpm package version. (`package.json` carries its own
+`version` for npm metadata; it has no effect on the built app, but keep it in
+step.)
+
+To cut a release, bump the version and **commit it before tagging** — the
+workflow takes the release name from the tag and the installer names from the
+build, so tagging first ships a release whose title and assets disagree:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 Both runners attach their installers to one shared Release, published as a
@@ -272,6 +281,14 @@ Everything is stored locally in the OS **app-data directory**:
   dir and referenced from the `setting` table. Displayed in the sidebar/header
   via Tauri's asset protocol. Only PNG/JPG/WEBP/GIF are accepted, up to 5 MB,
   and the file contents are checked — not just the extension.
+- **`backups/`** — automatic snapshots: one before any pending schema migration
+  (`payment_schedule.pre-v<n>.db`) and one on a schedule (`auto-<date>.db`),
+  kept to the last 2 and 5 respectively. The schedule defaults to **17:00 every
+  day** and is editable in Settings → Backup (frequency and time). If the app is
+  closed at that hour the copy is taken the next time it opens. They are ordinary
+  SQLite files — restore one exactly as described below. They live on the same
+  disk as the database, so they are a safety net for a bad update or a mistaken
+  delete, **not** a replacement for a backup you keep elsewhere.
 - **`logs/`** — backend log files (also echoed to stdout). Written by
   `tauri-plugin-log` at `Info` level in release builds, `Debug` in dev. They
   record command failures with ids and error codes only, never client names,
@@ -297,8 +314,31 @@ the new-purchase picker while keeping every record, and can be undone at any
 time from the "Archivés" tab. Archiving is refused while the client still owes
 money, so a client with unpaid installments can be neither deleted nor archived.
 
-To reset the app to a fresh state, delete `payment_schedule.db` and restart. In a
-development build it is re-seeded; in a release build it comes back empty.
+### Restoring a backup
+
+Settings → **Backup database** writes a snapshot; restoring one is a file
+operation, because the app has no in-app restore. Do it in this order:
+
+1. **Quit the app completely.** Restoring under a running app means writing the
+   file out from under an open connection, which corrupts it.
+2. Open the app-data directory for your platform (see the table above). Your own
+   backup is wherever you saved it; the automatic ones are in `backups/`.
+3. Copy your backup over `payment_schedule.db`, replacing it. Keep the old file
+   somewhere else first if there is any chance you want it back — this step is
+   not reversible.
+4. Delete `payment_schedule.db-wal` and `payment_schedule.db-shm` if they are
+   there. They belong to the database you just replaced, and leaving them
+   beside a different file can undo part of the restore.
+5. Start the app. The data is the data as of the moment that backup was taken;
+   anything entered since is not in it.
+
+A backup taken by an older version of the app restores into a newer one — the
+schema migrates forward on launch. The reverse does not work: an older build
+refuses to open a database that a newer one has already migrated.
+
+To reset the app to a fresh state instead — **this destroys the data, it is not
+a restore** — delete `payment_schedule.db` and restart. In a development build
+it is re-seeded; in a release build it comes back empty.
 
 ---
 

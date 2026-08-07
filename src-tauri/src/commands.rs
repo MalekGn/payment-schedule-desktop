@@ -14,14 +14,14 @@
 //! `src/lib/errors.ts` maps to a localized message. Internal detail is logged,
 //! never sent.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use tauri::State;
 
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
-    Db, DbResult, CURRENCY_CODES, DATE_FORMATS, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE,
-    INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX, MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX,
-    UPCOMING_DAYS_RANGE,
+    Db, DbResult, BACKUP_FREQUENCIES, CURRENCY_CODES, DATE_FORMATS, DEFAULT_BACKUP_TIME,
+    INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX,
+    MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
@@ -1901,7 +1901,20 @@ pub async fn get_dashboard(
 // Settings
 // ===========================================================================
 
-fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
+/// `setting` key holding the ISO date of the last successful backup.
+///
+/// Deliberately a setting rather than a schema column: `read_settings` resolves
+/// every key through [`get_setting`] with a default, so a key that has never
+/// been written reads as absent on an existing database and needs no migration.
+pub(crate) const LAST_BACKUP_KEY: &str = "last_backup_at";
+
+/// The backup schedule, all three resolved through [`get_setting`] with a
+/// default, so an existing database needs no migration to gain them.
+pub(crate) const AUTO_BACKUP_ENABLED_KEY: &str = "auto_backup_enabled";
+pub(crate) const AUTO_BACKUP_FREQUENCY_KEY: &str = "auto_backup_frequency";
+pub(crate) const AUTO_BACKUP_TIME_KEY: &str = "auto_backup_time";
+
+pub(crate) fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
     match conn
         .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
             r.get::<_, String>(0)
@@ -1920,7 +1933,7 @@ fn get_setting(conn: &Connection, key: &str, default: &str) -> String {
     }
 }
 
-fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
+pub(crate) fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
     conn.execute(
         "INSERT INTO setting (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1929,7 +1942,7 @@ fn put_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
     Ok(())
 }
 
-fn read_settings(conn: &Connection) -> Settings {
+pub(crate) fn read_settings(conn: &Connection) -> Settings {
     let logo = get_setting(conn, "logo_path", "");
     Settings {
         language: get_setting(conn, "language", "fr"),
@@ -1942,6 +1955,17 @@ fn read_settings(conn: &Connection) -> Settings {
             .parse()
             .unwrap_or(7),
         language_is_default: get_setting(conn, "language_is_default", "1") == "1",
+        last_backup_at: match get_setting(conn, LAST_BACKUP_KEY, "") {
+            v if v.is_empty() => None,
+            v => Some(v),
+        },
+        last_auto_backup_at: match get_setting(conn, crate::autobackup::LAST_AUTO_BACKUP_KEY, "") {
+            v if v.is_empty() => None,
+            v => Some(v),
+        },
+        auto_backup_enabled: get_setting(conn, AUTO_BACKUP_ENABLED_KEY, "1") == "1",
+        auto_backup_frequency: get_setting(conn, AUTO_BACKUP_FREQUENCY_KEY, "daily"),
+        auto_backup_time: get_setting(conn, AUTO_BACKUP_TIME_KEY, DEFAULT_BACKUP_TIME),
     }
 }
 
@@ -1982,12 +2006,23 @@ fn is_language_only(patch: &SettingsPatch) -> bool {
         shop_name,
         shop_info,
         alert_soon_days,
+        auto_backup_enabled,
+        auto_backup_frequency,
+        auto_backup_time,
     } = patch;
     currency_code.is_none()
         && date_format.is_none()
         && shop_name.is_none()
         && shop_info.is_none()
         && alert_soon_days.is_none()
+        // The schedule is configuration of a licensed product, like the
+        // currency or the alert window. The backups themselves keep running on
+        // whatever is stored, and the manual button carries no gate at all, so
+        // an expired licence still cannot be left without a way to copy its
+        // ledger — it just cannot re-time the automatic one.
+        && auto_backup_enabled.is_none()
+        && auto_backup_frequency.is_none()
+        && auto_backup_time.is_none()
 }
 
 pub(crate) fn update_settings_impl(
@@ -2034,6 +2069,22 @@ pub(crate) fn update_settings_impl(
     if let Some(v) = &shop_info {
         bounded(v, LONG_TEXT_MAX)?;
     }
+    let auto_backup_frequency = patch.auto_backup_frequency.map(|v| v.trim().to_string());
+    if let Some(v) = &auto_backup_frequency {
+        if !BACKUP_FREQUENCIES.contains(&v.as_str()) {
+            return Err(AppError::validation(INVALID_SETTING_VALUE));
+        }
+    }
+    // Stored canonically as `HH:MM`, so the scheduler can parse it without
+    // re-deciding what "5 pm" means and the settings page always round-trips
+    // what an `<input type="time">` expects.
+    let auto_backup_time = match &patch.auto_backup_time {
+        Some(v) => Some(
+            crate::autobackup::canonical_time(v)
+                .ok_or_else(|| AppError::validation(INVALID_SETTING_VALUE))?,
+        ),
+        None => None,
+    };
 
     // One transaction for the whole patch. Applied one upsert at a time, a
     // mid-way failure left settings half-written — worst case `language`
@@ -2056,6 +2107,15 @@ pub(crate) fn update_settings_impl(
     }
     if let Some(v) = shop_info {
         put_setting(&tx, "shop_info", &v)?;
+    }
+    if let Some(v) = patch.auto_backup_enabled {
+        put_setting(&tx, AUTO_BACKUP_ENABLED_KEY, if v { "1" } else { "0" })?;
+    }
+    if let Some(v) = auto_backup_frequency {
+        put_setting(&tx, AUTO_BACKUP_FREQUENCY_KEY, &v)?;
+    }
+    if let Some(v) = auto_backup_time {
+        put_setting(&tx, AUTO_BACKUP_TIME_KEY, &v)?;
     }
     if let Some(v) = patch.alert_soon_days {
         // Clamp defensively so the schedule query and UI never see a nonsense
@@ -2214,14 +2274,19 @@ pub async fn clear_logo(db: State<'_, Db>, lic: State<'_, LicenseState>) -> DbRe
 /// in-flight write and, in WAL mode, would miss everything still in the -wal
 /// file. This is the only recovery path the app has — client deletes cascade
 /// through purchases, installments and payments and are irreversible.
+///
+/// **Deliberately unlicensed**, unlike every other write in this module. The
+/// unlicensed baseline exists so that losing a licence never holds a shop
+/// keeper's own ledger hostage, and a snapshot of records they can already read
+/// on screen hands them nothing the licence was protecting. Gating it inverted
+/// the intent: the copy a shop most wants is the one taken *before* they go
+/// troubleshooting an expiry, which is exactly when the gate refused.
 #[tauri::command]
 pub async fn backup_database(
     db: State<'_, Db>,
-    lic: State<'_, LicenseState>,
     app: tauri::AppHandle,
     dest: String,
-) -> DbResult<()> {
-    require_license(&lic)?;
+) -> DbResult<Settings> {
     use tauri::Manager;
 
     // Staging happens inside app data, which the app owns outright — see
@@ -2230,7 +2295,24 @@ pub async fn backup_database(
     let staging_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&staging_dir)?;
 
-    backup_database_impl(&db.lock(), std::path::Path::new(&dest), &staging_dir)
+    let conn = db.lock();
+    backup_database_impl(&conn, std::path::Path::new(&dest), &staging_dir)?;
+
+    // Record that a backup happened, so the app can answer "when did this user
+    // last back up?" — it could not before, and the users who never think to
+    // back up are exactly the ones the manual-only design fails.
+    //
+    // A failure to record must not fail the command: the snapshot is already on
+    // disk and good, and reporting BACKUP_FAILED would send the user chasing a
+    // backup they actually have. Warn instead, so a settings table that has
+    // stopped accepting writes is not silent.
+    if let Err(e) = put_setting(&conn, LAST_BACKUP_KEY, &today().to_string()) {
+        log::warn!("backup succeeded but its date could not be recorded: {e}");
+    }
+
+    // Returned rather than voided so the renderer can refresh the staleness
+    // banner without a second round trip, as `set_logo`/`clear_logo` do.
+    Ok(read_settings(&conn))
 }
 
 pub(crate) fn backup_database_impl(
@@ -2286,6 +2368,17 @@ pub(crate) fn backup_database_impl(
         return Err(AppError::validation(BACKUP_FAILED));
     }
 
+    // A clean `VACUUM INTO` proves the statement ran, not that the bytes it left
+    // behind are a usable database — a full disk, a failing drive or a truncated
+    // write all land here as success. Verify the snapshot while it is still in
+    // staging, because after the rename the only person who finds out is the
+    // user, at the moment they need it.
+    if let Err(e) = verify_snapshot(&staged) {
+        log::error!("the backup snapshot did not verify: {e}");
+        discard(&staged);
+        return Err(AppError::validation(BACKUP_FAILED));
+    }
+
     // Rename is atomic and leaves any previous backup intact until the moment it
     // is replaced — but it only works within one filesystem, and a backup
     // destination is routinely a USB stick while app data is on the internal
@@ -2309,6 +2402,48 @@ pub(crate) fn backup_database_impl(
     }
 
     log::info!("database backup written");
+    Ok(())
+}
+
+/// Open a freshly written snapshot and prove it is a sound database.
+///
+/// `integrity_check` walks the b-trees and the freelist; `foreign_key_check`
+/// then proves the relationships the app relies on still resolve — a snapshot
+/// whose `payment` rows point at vanished installments would open fine and read
+/// wrong. Both return the string `"ok"` / no rows respectively on success.
+///
+/// The error is a plain string rather than an `AppError` because every caller
+/// maps it to `BACKUP_FAILED`; what matters is that the detail reaches the log.
+fn verify_snapshot(path: &std::path::Path) -> Result<(), String> {
+    // Read-only, so verification cannot alter the thing it is verifying and
+    // cannot leave a journal beside the staged file for the rename to strand.
+    // `VACUUM INTO` writes a rollback-journal database regardless of the source
+    // being WAL, so opening it read-only needs no `-shm` and always works.
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("cannot open the snapshot: {e}"))?;
+
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| format!("integrity_check did not run: {e}"))?;
+    if integrity != "ok" {
+        return Err(format!("integrity_check reported: {integrity}"));
+    }
+
+    // `foreign_key_check` yields one row per violation and nothing at all when
+    // the database is sound, so "no rows" is the passing case.
+    let mut stmt = conn
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|e| format!("foreign_key_check did not run: {e}"))?;
+    let violations = stmt
+        .query_map([], |_| Ok(()))
+        .map_err(|e| format!("foreign_key_check did not run: {e}"))?
+        .count();
+    if violations > 0 {
+        return Err(format!(
+            "foreign_key_check reported {violations} violation(s)"
+        ));
+    }
+
     Ok(())
 }
 
@@ -2354,10 +2489,111 @@ pub(crate) fn evaluate_license(app: &tauri::AppHandle, conn: &Connection) -> Lic
     status
 }
 
+/// How often the licence verdict is re-checked while the app runs.
+///
+/// Expiry is date-granular, so minute precision buys nothing — a quarter hour
+/// bounds how long a shop keeps working past an expiry without paying for a file
+/// read and a machine-id hash every minute.
+///
+/// A poll, not a computed sleep until midnight, for the same reasons as
+/// [`crate::autobackup`]'s tick: the machine suspends and wakes hours later, and
+/// the system clock moves. Both invalidate a deadline computed in advance; they
+/// cannot invalidate a fixed interval.
+const LICENSE_TICK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Event carrying a changed licence verdict to the renderer. Payload:
+/// [`LicenseInfo`], the same projection [`get_license_status`] returns.
+///
+/// The **only** backend-pushed event in the app. Everything else is
+/// request/response through a command, so this is the one place the renderer
+/// learns something it did not ask for.
+pub(crate) const LICENSE_CHANGED_EVENT: &str = "license://changed";
+
+/// Store a freshly computed verdict and tell the window, but only if it differs.
+///
+/// The comparison is what keeps this quiet: the watcher runs every
+/// [`LICENSE_TICK`] and the verdict almost never changes, so without it the
+/// renderer would be woken 96 times a day to be told nothing.
+///
+/// Emitting is best-effort. By the time it runs the cache is already updated, so
+/// [`require_license`] is correct whatever the window does — a failed emit costs
+/// a stale screen, not a stale gate. The log line carries the status tag only:
+/// it is a fixed vocabulary, unlike the parser detail `Malformed` holds.
+///
+/// **Call this with the connection guard from the matching `evaluate_license`
+/// still held.** The compare-and-set here is not atomic with the evaluation that
+/// produced `next`, and there are two writers — the watcher thread and
+/// `import_license`. Left unserialized, a watcher that read the licence file just
+/// before an import lands would publish its stale verdict *after* the import
+/// published the new one, locking a customer out of the licence they just
+/// installed until the next tick. Holding the guard both already take is what
+/// orders the file read against the publish.
+fn publish_license(app: &tauri::AppHandle, lic: &LicenseState, next: LicenseStatus) {
+    use tauri::Emitter;
+
+    if lic.get() == next {
+        return;
+    }
+
+    let info = next.to_info(license::machine_fingerprint());
+    log::info!("licence verdict changed to {}", info.status);
+    lic.set(next);
+
+    if let Err(e) = app.emit(LICENSE_CHANGED_EVENT, &info) {
+        log::warn!("could not notify the window of the licence change: {e}");
+    }
+}
+
+/// Start the background licence watcher. Returns immediately.
+///
+/// Without this the verdict computed in `lib.rs` at startup stands for the whole
+/// process: a shop that leaves the app open across its expiry date keeps full
+/// access until it restarts (`AUDIT_REPORT.md` L4). Re-evaluating on a tick makes
+/// the Rust gate — the one that actually refuses — authoritative within
+/// [`LICENSE_TICK`], and [`publish_license`] flips the UI to match.
+///
+/// A plain `std::thread` rather than an async task, for the same reason as
+/// [`crate::autobackup::start_scheduler`]: the work is blocking (a file read, a
+/// hash, and a locked connection) and does not belong on the executor that
+/// serves IPC. Detached — process exit ends it, and there is nothing to join.
+///
+/// Must be started only after `Db` and `LicenseState` are managed; `state()`
+/// panics otherwise.
+pub(crate) fn start_license_watcher(app: tauri::AppHandle) {
+    use tauri::Manager;
+
+    std::thread::spawn(move || {
+        log::info!("licence watcher started");
+        loop {
+            // Sleeps first: `lib.rs` has just evaluated the licence, and an
+            // immediate second pass would only re-read the same file.
+            std::thread::sleep(LICENSE_TICK);
+
+            // Fetched per tick rather than held, so the thread borrows the
+            // database only while it is actually working. Advancing the clock
+            // watermark is part of `evaluate_license`, so a day rolling over is
+            // now recorded without a restart too.
+            //
+            // The guard spans the publish deliberately — see `publish_license`
+            // for the interleaving with `import_license` that would otherwise
+            // let this tick's stale verdict win.
+            let db = app.state::<Db>();
+            let conn = db.lock();
+            let next = evaluate_license(&app, &conn);
+            publish_license(&app, &app.state::<LicenseState>(), next);
+            drop(conn);
+        }
+    });
+}
+
 /// The current licence verdict, for the UI.
 ///
 /// Never fails: every outcome, including "no licence installed", is a status the
 /// frontend renders rather than an error it has to catch.
+///
+/// Reads the cache rather than re-validating: [`start_license_watcher`] keeps it
+/// fresh, and a command that hit the filesystem on every call would make the
+/// licence card the most expensive screen in the app.
 #[tauri::command]
 pub async fn get_license_status(lic: State<'_, LicenseState>) -> DbResult<LicenseInfo> {
     Ok(lic.get().to_info(license::machine_fingerprint()))
@@ -2403,8 +2639,16 @@ pub async fn import_license(
     // Re-evaluate from the installed path rather than trusting `candidate`:
     // this is what every later startup will see, and it also advances the clock
     // watermark. If the copy landed wrong, the user finds out now.
-    let status = evaluate_license(&app, &db.lock());
-    lic.set(status.clone());
+    //
+    // Published through the same path as the watcher, so the cache has exactly
+    // one writer and "the cache changed" can never drift from "the window was
+    // told". The event is redundant for this caller — it is handed the verdict
+    // below — but harmless. The connection guard spans both calls so the watcher
+    // cannot slip in a verdict it computed from the pre-import file.
+    let conn = db.lock();
+    let status = evaluate_license(&app, &conn);
+    publish_license(&app, &lic, status.clone());
+    drop(conn);
 
     if status.is_valid() {
         log::info!("licence installed");
@@ -4810,6 +5054,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         }
     }
 
@@ -4829,6 +5076,9 @@ mod tests {
                 shop_name: Some("Chez Malek".into()),
                 shop_info: None,
                 alert_soon_days: Some(500),
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
         )
         .unwrap();
@@ -4840,6 +5090,27 @@ mod tests {
         // Choosing a language explicitly must also end OS-locale detection —
         // the pair that was previously written outside a transaction.
         assert!(!out.language_is_default);
+    }
+
+    /// `last_backup_at` rides in on the settings default-resolution path rather
+    /// than a schema column, so it must read as "never" on any database that
+    /// predates it — no migration, no `NULL` column, no error.
+    #[test]
+    fn the_backup_date_reads_as_absent_until_one_is_recorded() {
+        let f = Fixture::new("last_backup");
+        let conn = f.db.lock();
+
+        assert_eq!(
+            read_settings(&conn).last_backup_at,
+            None,
+            "an install that has never backed up must report no date"
+        );
+
+        put_setting(&conn, LAST_BACKUP_KEY, "2026-08-07").unwrap();
+        assert_eq!(
+            read_settings(&conn).last_backup_at,
+            Some("2026-08-07".to_string())
+        );
     }
 
     // --- missing rows ------------------------------------------------------
@@ -5060,6 +5331,45 @@ mod tests {
             .find(|c| c.is_dir() && same_device(c) != temp_dev)
     }
 
+    /// A `VACUUM INTO` that returns `Ok` is not proof the file it wrote is a
+    /// usable database, and the difference only ever surfaces at restore time.
+    /// This pins both directions of the gate that now stands between the
+    /// snapshot and the destination.
+    #[test]
+    fn a_snapshot_is_verified_before_it_is_accepted() {
+        let f = Fixture::new("backup_verify");
+        seeded_purchase(&f);
+
+        // What the backup path actually produces must pass.
+        let good = temp_db_path("backup_verify_good");
+        let staging = staging_dir("backup_verify_stage");
+        backup_database_impl(&f.db.lock(), &good, &staging).unwrap();
+        verify_snapshot(&good).expect("a real snapshot must verify");
+
+        // A damaged database must not. Truncating mid-file is the shape a full
+        // disk or a failing drive leaves behind: the header still says
+        // "SQLite format 3", so every check the destination guards perform
+        // passes, and only reading the pages reveals it.
+        let damaged = temp_db_path("backup_verify_damaged");
+        std::fs::copy(&good, &damaged).unwrap();
+        let len = std::fs::metadata(&damaged).unwrap().len();
+        assert!(len > 4096, "the fixture must be several pages long");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&damaged)
+            .unwrap()
+            .set_len(len / 2)
+            .unwrap();
+        assert!(
+            verify_snapshot(&damaged).is_err(),
+            "a truncated database must not pass verification"
+        );
+
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&damaged);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
     // --- dashboard ---------------------------------------------------------
 
     /// `upcoming_days` used to flow unvalidated into `Duration::days`, which
@@ -5153,6 +5463,73 @@ mod tests {
     }
 
     #[test]
+    fn the_gate_follows_a_verdict_that_changes_mid_session() {
+        // The point of `start_license_watcher`: the gate must read the live
+        // cache, not a value snapshotted when the process started. Nothing here
+        // needs the watcher thread — it only needs `require_license` to consult
+        // `LicenseState` on every call, which is what makes a mid-session expiry
+        // take effect without a restart (AUDIT_REPORT L4).
+        let state = licensed();
+        assert!(require_license(&state).is_ok());
+
+        state.set(LicenseStatus::Expired {
+            license: License {
+                license_id: "PS-TEST".into(),
+                licensee: "Test".into(),
+                issued_at: "2026-01-01".into(),
+                expires_at: "2026-02-01".into(),
+                machine_id: None,
+                features: vec![],
+            },
+            expired_on: parse_date("2026-02-01").unwrap(),
+        });
+        assert_eq!(
+            require_license(&state)
+                .expect_err("must refuse once expired")
+                .code(),
+            "LICENSE_REQUIRED"
+        );
+
+        // And back: importing a licence has to unlock the same process.
+        state.set(LicenseStatus::Valid(License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2030-01-01".into(),
+            machine_id: None,
+            features: vec!["*".into()],
+        }));
+        assert!(require_license(&state).is_ok());
+    }
+
+    #[test]
+    fn a_re_evaluated_verdict_is_only_published_when_it_differs() {
+        // `publish_license` needs an `AppHandle` to emit, so what is testable
+        // here is the comparison it gates on: two evaluations of an unchanged
+        // licence must compare equal, or the watcher would wake the renderer 96
+        // times a day to tell it nothing.
+        let license = License {
+            license_id: "PS-TEST".into(),
+            licensee: "Test".into(),
+            issued_at: "2026-01-01".into(),
+            expires_at: "2030-01-01".into(),
+            machine_id: None,
+            features: vec!["*".into()],
+        };
+        assert_eq!(
+            LicenseStatus::Valid(license.clone()),
+            LicenseStatus::Valid(license.clone())
+        );
+        assert_ne!(
+            LicenseStatus::Valid(license.clone()),
+            LicenseStatus::Expired {
+                license,
+                expired_on: parse_date("2026-02-01").unwrap(),
+            }
+        );
+    }
+
+    #[test]
     fn an_expired_licence_still_permits_reading_your_own_ledger() {
         // The deliberate shape of the baseline: losing a licence must never hold
         // a shop keeper's own client and purchase records hostage. Those two
@@ -5168,6 +5545,26 @@ mod tests {
         assert!(!list_purchase_ids(&conn, PurchaseScope::Active)
             .unwrap()
             .is_empty());
+
+        // Backup is in that same baseline. It snapshots exactly the rows the two
+        // reads above already return, so gating it protected nothing and denied
+        // an expired install the one copy it most needs — the one taken before
+        // troubleshooting the expiry.
+        //
+        // The gate lives on the `backup_database` wrapper, which needs an
+        // `AppHandle` and so cannot be called from a unit test; what this pins is
+        // the capability the wrapper must keep exposing. The wrapper's own lack
+        // of a `require_license` call is enforced by review, not by this test.
+        let dest = temp_db_path("license_baseline_backup");
+        let staging = staging_dir("license_baseline_stage");
+        backup_database_impl(&conn, &dest, &staging).unwrap();
+        assert!(
+            dest.exists(),
+            "an unlicensed install must be able to back up"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
     }
 
     #[test]
@@ -5213,6 +5610,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         };
         assert!(is_language_only(&language_only));
 
@@ -5224,6 +5624,9 @@ mod tests {
             shop_name: None,
             shop_info: None,
             alert_soon_days: None,
+            auto_backup_enabled: None,
+            auto_backup_frequency: None,
+            auto_backup_time: None,
         }));
 
         // Anything smuggled alongside the language is refused.
@@ -5235,6 +5638,9 @@ mod tests {
                 shop_name: None,
                 shop_info: None,
                 alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
             SettingsPatch {
                 language: None,
@@ -5243,6 +5649,35 @@ mod tests {
                 shop_name: Some("Free branding".into()),
                 shop_info: None,
                 alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
+            },
+            // The backup *schedule* is licensed configuration, even though the
+            // backups themselves and the manual button are not. Re-timing the
+            // automatic copy is a setting like any other; being able to take one
+            // at all is the safety baseline, and that stays open.
+            SettingsPatch {
+                language: None,
+                currency_code: None,
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: None,
+                auto_backup_enabled: Some(false),
+                auto_backup_frequency: None,
+                auto_backup_time: None,
+            },
+            SettingsPatch {
+                language: Some("ar".into()),
+                currency_code: None,
+                date_format: None,
+                shop_name: None,
+                shop_info: None,
+                alert_soon_days: None,
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: Some("09:00".into()),
             },
             SettingsPatch {
                 language: None,
@@ -5251,6 +5686,9 @@ mod tests {
                 shop_name: None,
                 shop_info: None,
                 alert_soon_days: Some(30),
+                auto_backup_enabled: None,
+                auto_backup_frequency: None,
+                auto_backup_time: None,
             },
         ] {
             assert!(!is_language_only(&patch), "{patch:?} must be licensed");

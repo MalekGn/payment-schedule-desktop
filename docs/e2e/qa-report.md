@@ -6,6 +6,711 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-07 (d) — Licence expiry takes effect without a restart (AUDIT_REPORT L4)
+
+### Summary
+
+`AUDIT_REPORT.md` **L4** was the last correctness gap in the licensing module:
+the verdict was computed once in `lib.rs` and cached in `LicenseState` for the
+life of the process. Every gated command consulted that cache faithfully — but
+nothing ever recomputed it, so a shop that leaves the app open across its expiry
+date kept full access until the next launch. For a desktop app a shop keeper
+opens on Monday and closes on Saturday, "only on restart" can mean a week.
+
+The fix has two halves, and both were needed:
+
+- **The gate.** `commands::start_license_watcher` spawns a detached thread that
+  re-runs `evaluate_license` every **15 minutes** and writes the result back into
+  `LicenseState`, so `require_license` — the check that actually refuses — is
+  authoritative within a tick. 15 minutes because expiry is date-granular: minute
+  precision buys nothing, and a poll rather than a computed sleep to midnight is
+  the only shape that survives suspend/resume and a moved system clock. Same
+  reasoning, and the same `std::thread` shape, as the backup scheduler.
+- **The screen.** Without the second half the UI would go on presenting a
+  licensed install while every gated command refused — refusal toasts with no
+  explanation, which is worse than the bug. `publish_license` emits
+  `license://changed` when, and only when, the verdict differs; the renderer
+  subscribes through the new `api.onLicenseChanged`, and the store applies the
+  payload, flipping `App.vue`'s existing `blocked` computed with no restart and
+  no polling.
+
+Three decisions worth recording:
+
+- **A timer, not window focus.** The audit offered either. Focus is a signal the
+  renderer owns, and the renderer is the thing the gate defends against; a
+  verdict that only refreshes when the user clicks the window is not a control.
+- **`license://changed` is the app's first backend-pushed event.** Everything
+  else in the tree is request/response through a command. It was allowed for
+  free — `core:event:default` was already in `capabilities/default.json` — and it
+  is emitted only on an actual change, so 96 ticks a day produce no traffic.
+- **The lapse is announced.** The page swapping under a user mid-task without a
+  word reads as a bug, so `App.vue` toasts `license.lapsed` on the licensed →
+  unlicensed transition only. Error toasts persist until dismissed, so the reason
+  is still on screen when the user looks up.
+
+### Test cases
+
+**Rust — `cargo test`, 163 passed (was 161), run.**
+
+| #   | Case                                                                                                                                                                                                                                               | Result   |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| R1  | `the_gate_follows_a_verdict_that_changes_mid_session` — `require_license` admits a `Valid` state, refuses with `LICENSE_REQUIRED` after `set(Expired)`, and admits again after `set(Valid)`. The L4 property itself, and it needs no Tauri runtime | ✅       |
+| R2  | `a_re_evaluated_verdict_is_only_published_when_it_differs` — an unchanged licence compares equal across evaluations; `Valid` and `Expired` do not. The comparison `publish_license` gates its emit on                                              | ✅       |
+| R3  | Pre-existing licence suite (45 cases) re-run unchanged — expiry inclusivity, the clock guard, the watermark, wire projection, signature handling                                                                                                   | ✅       |
+| R4  | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`                                                                                                                                                                                   | ✅ clean |
+
+**Frontend unit — `npm test`, 238 passed across 19 files (was 224/19), run.**
+
+| #   | Case                                                                                                                          | Result   |
+| --- | ----------------------------------------------------------------------------------------------------------------------------- | -------- |
+| U1  | A verdict pushed by the backend is adopted with no second `load()`; `status`, `isLicensed` and `expiredOn` all follow         | ✅       |
+| U2  | A licence installed elsewhere in the session unlocks the store the same way                                                   | ✅       |
+| U3  | `watch()` subscribes exactly once — including two calls in the same tick, before the first resolves                           | ✅       |
+| U4  | `unwatch()` stops delivery                                                                                                    | ✅       |
+| U5  | A subscription that cannot be set up leaves the current verdict alone and logs. Deliberately **not** fail-closed — see Issues | ✅       |
+| U6  | Pre-existing store suite (8 cases) re-run unchanged, including fail-closed on a broken `getLicenseStatus`                     | ✅       |
+| U7  | `npm run lint`, `npm run build` (`vue-tsc --noEmit`)                                                                          | ✅ clean |
+
+**Integration — `tests/integration/license-gate.integration.test.ts`, 5 new cases. Written, _not run_** (per `CLAUDE.md`: integration and E2E execute only on explicit request).
+
+| #   | Case                                                                                                                              |
+| --- | --------------------------------------------------------------------------------------------------------------------------------- |
+| I1  | A lapse travels backend → gateway → store, carrying `expiredOn` and the attested licensee                                         |
+| I2  | The pushed payload and `getLicenseStatus()` agree — two projections of one verdict, so the UI cannot depend on which arrived last |
+| I3  | Releasing the subscription stops delivery                                                                                         |
+| I4  | An import recovers the session, through the same publish path the watcher uses                                                    |
+| I5  | `license.lapsed` resolves to a real sentence in fr, en and ar — a missing key would echo the key back at the user                 |
+
+**E2E** — no new scenarios. `tests/e2e/run.mjs` drives the mock through the UI and has no hook for a timed backend push; the transition is covered at the integration layer instead.
+
+**Manual (not yet performed — needs a real bundle):** install a licence expiring today; leave the app open across midnight or swap `license.json`; confirm within 15 minutes that the log records the change, the licensed route swaps to `LicenseRequiredPanel` with the date, the toast appears, and a gated action refuses. Repeat in Arabic to confirm the toast mirrors.
+
+### Issues found
+
+**1. Race between the watcher and `import_license` — found in self-review, fixed before QA.**
+Both write `LicenseState`, and `publish_license` compares-then-sets. A tick that
+read the licence file just before an import landed would publish its stale
+verdict _after_ the import published the new one, locking a paying customer out
+of the licence they had just installed for up to 15 minutes. Fixed by holding the
+connection guard — which both paths already take — across the evaluate/publish
+pair, so the file read is ordered against the publish. Lock order was checked for
+inversion: `require_license` releases the `LicenseState` read lock before any
+path acquires the connection, so no path takes them in the opposite order.
+
+**2. Synchronous throw escaping a `Promise`-typed gateway call — found by a test, fixed.**
+The gateway's browser branch is `Promise.resolve(mockDb.x())`, which evaluates
+its argument first, so a mock that throws throws _synchronously_ despite the
+declared `Promise` return. The store's first `.catch()`-on-a-chain form never saw
+it. Rewritten as an `async` helper, which normalizes both. This shape is
+pre-existing across the whole gateway (`importLicense` has it too) and is
+harmless wherever the caller is itself `async` — noted below rather than fixed
+project-wide.
+
+**3. No blockers outstanding.** No security or data-loss issue open.
+
+### Recommendations
+
+- **A stale screen is preferred to a locked-out shop, deliberately.** If the
+  subscription cannot be registered the store keeps its current verdict and logs,
+  rather than failing closed as `load()` does. The Rust gate still refuses on its
+  own, so the cost is a screen that lags until the next launch; failing closed
+  would lock a paying shop out over a missing event listener. Recorded here
+  because it is the one place in the licence path that does not fail closed.
+- **The 15-minute window is a business choice, not a technical limit.** A shop
+  can work up to 15 minutes past an expiry. Narrowing it is a one-constant change
+  (`LICENSE_TICK`); the cost is a file read and a machine-id hash per tick.
+- **Consider normalizing the gateway's mock branch** so no `Promise`-typed call
+  can throw synchronously. Every current caller is `async` and absorbs it, so
+  this is hygiene, not a live bug — but issue 2 above is what it looks like when
+  a caller is not.
+- **The event name is duplicated across the boundary** (`commands.rs` and
+  `src/api/index.ts`), like every command name. Unavoidable without a codegen
+  step; both sides carry a comment pointing at the other.
+- **Run the integration suite** (`npm run test:integration`) before the release
+  bundle, and perform the manual pass above once a signed licence is available —
+  the timer and the real Tauri event bridge are the two things no test in the
+  tree exercises.
+
+---
+
+## 2026-08-07 (c) — The automatic backup becomes a schedule the shop controls
+
+### Summary
+
+The automatic backup added in the previous entry fired at launch and nowhere
+else, which is a safety net rather than a schedule: nobody could say when it ran,
+and an app left open all week produced one copy. It now runs on a schedule —
+**17:00 every day by default** — with the frequency (daily/weekly/monthly) and
+the time editable in Settings. The pre-migration snapshot is untouched: it
+answers a different risk and must stay tied to the launch that migrates.
+
+Everything hangs off one pure predicate, `autobackup::due`, used by both the
+scheduler tick and the launch pass so no second rule can disagree:
+
+```
+due = enabled AND ( elapsed >  interval                        // overdue → now
+                    OR (elapsed >= interval AND now >= time) ) // today's window
+```
+
+The first branch is the one that makes a time of day mean anything here. A shop
+that runs the app 09:00–16:00 is never open at 17:00; under a plain "fire at the
+scheduled time" rule they would **never be backed up at all**, and the failure
+would stay silent until the day they needed the copy. The overdue branch catches
+them the next morning, and is also the launch catch-up.
+
+Three supporting decisions, each visible in the code and its comment:
+
+- **A 60 s poll, not a computed sleep to the next occurrence.** A poll is the
+  only shape that survives the user changing the time, the machine suspending,
+  and the clock moving — and it is what makes an edit take effect within a
+  minute with no restart.
+- **A plain `std::thread`, not an async task.** The work is blocking
+  (`VACUUM INTO` plus two verification PRAGMAs); keeping it off the executor is
+  the fix `AUDIT_REPORT.md:172` (I3) asks for on the manual path.
+- **Its own connection, not the shared `Mutex<Connection>`.** At launch the mutex
+  was free; 17:00 lands while the shop is typing, and WAL lets a second
+  connection read a consistent snapshot without blocking writers.
+
+The schedule is licensed configuration, like the currency or the alert window —
+`is_language_only` refuses it. The backups keep running on whatever is stored,
+and the manual button still carries no gate, so no expired install is ever left
+unable to copy its ledger.
+
+**Executed:** Rust `cargo test` **161 passed**, `cargo fmt --check`,
+`cargo clippy --all-targets -D warnings` — clean. Frontend `npm test`
+**233 passed** (19 files), `npm run lint`, `npm run build`,
+`tsc -p tsconfig.test.json --noEmit` — clean.
+
+**Also executed:** the real application, four times, against an isolated
+`XDG_DATA_HOME`. See _Live application_ — this is where a scheduler either works
+or does not, and unit tests cannot tell you which.
+
+**Also executed on request:** integration **238 passed** (8 files) — after fixing
+a real api/mock parity break it caught, see _Issues found_. **E2E could not
+run**: Playwright's browser is missing from this machine
+(`chromium_headless_shell-1234`), so `npx playwright install` is needed first.
+It ran green earlier today (49/50, one pre-existing unrelated failure), and this
+change adds nothing it exercises — the backup card is `v-if="isTauri()"`.
+
+### Test cases
+
+#### Rust unit — `autobackup.rs` (executed, part of 161 passed)
+
+`due()` is the feature, so it gets a truth table rather than a happy path:
+
+- `the_daily_schedule_fires_at_its_time_and_not_before` — 16:59 no, 17:00 yes,
+  21:30 yes; and never twice on a day already covered.
+- `a_shop_that_is_never_open_at_the_scheduled_time_is_still_backed_up` — the
+  overdue branch, written out as the 09:00–16:00 shop it exists for.
+- `a_launch_after_the_window_catches_up_immediately` — 19:30 start, nothing
+  taken today.
+- `the_longer_frequencies_wait_out_their_interval` — weekly and monthly at both
+  edges of their interval.
+- `a_first_run_is_owed_a_backup_immediately` — absent _and_ unparseable dates
+  both read as "never".
+- `a_disabled_schedule_never_fires` — including when long overdue.
+- `the_scheduled_time_is_canonical_or_rejected` — `"7:05"` → `"07:05"`;
+  `"25:00"`, `"17:60"`, `"17"`, `""`, `"5pm"`, `"17:00:00"`, `"-1:00"` refused.
+  Refused rather than silently read as midnight, which would move every future
+  backup to the middle of the night.
+- `an_unknown_frequency_falls_back_to_daily` — a hand-edited database must not
+  be able to stop the backups.
+- The two pre-existing snapshot tests now also assert the `Outcome` they report,
+  which is what arms the failure backoff.
+
+`commands.rs`: `language_is_the_only_setting_an_unlicensed_user_may_change`
+gained two cases covering the schedule fields, so the licence gate cannot start
+admitting them by accident.
+
+#### Frontend unit — `src/stores/settings-backup.test.ts` (executed, 9 passed)
+
+Three added: the schedule does not feed `backupIsStale` either (an install set
+to _monthly_ needs the nudge more, not less); the defaults ship as
+enabled/daily/17:00; and `BACKUP_FREQUENCIES` matches the closed set the backend
+accepts, so the `<select>` cannot offer a value that will be refused.
+
+#### Live application (executed, four runs, isolated `XDG_DATA_HOME`)
+
+1. **Catch-up.** Local time 18:06, default 17:00 schedule, nothing taken today →
+   snapshot written on the first tick, same second as
+   `automatic backup scheduler started`.
+2. **No repeat.** Relaunch the same day → no second snapshot, mtime unchanged,
+   zero `automatic backup written` lines.
+3. **Fires at its time, not at startup.** `last_auto_backup_at` set to yesterday
+   and the time set two minutes ahead. Scheduler started **18:08:05 and did not
+   snapshot**; the copy was written at **18:10:05** — the first tick past the
+   scheduled minute. This is the headline behaviour and the one that cannot be
+   inferred from unit tests.
+4. **A settings change applies without a restart.** Started with the time at
+   23:59; after 75 s, no snapshot. The time was then changed **while the app
+   kept running**; the copy appeared on the next tick. Confirms the per-tick
+   re-read.
+
+#### Integration — `error-contract.integration.test.ts` (executed, 238 passed)
+
+The schedule round-trips through the gateway with the time normalised; three
+lenient forms (`"9:05"`, `"17:6"`, `" 09:30 "`) are accepted and stored padded;
+seven malformed times are each refused with `INVALID_SETTING_VALUE`; and a
+frequency outside the set is refused **and writes nothing**.
+
+These use the suite's own `codeOf` helper rather than `expect(...).rejects`: the
+mock throws **synchronously** out of `api.updateSettings`, because the gateway
+evaluates `mockDb.updateSettings(patch)` before wrapping it in
+`Promise.resolve`, so there is no promise for `.rejects` to unwrap. The first
+draft used `.rejects` and failed for that reason alone.
+
+#### E2E — unchanged
+
+The backup card is `v-if="isTauri()"`, so none of these controls exist in the
+browser build the E2E suite drives.
+
+### Issues found
+
+**One parity break, found by running the integration suite and fixed.** The
+mock's clock-time pattern required two digits (`^([01]\d|2[0-3]):([0-5]\d)$`),
+while the Rust side parses with chrono's `%H:%M`, which takes one _or_ two
+digits on either side. So `"9:05"` and `"17:6"` were accepted by the desktop
+build and **refused by the browser build** — the api/mock parity invariant
+`CLAUDE.md` calls a blocker rather than a nit. The unit tests could not see it:
+each side was self-consistent, and only a test driving the shared gateway
+compares them.
+
+Fixed by making the mock width-lenient with the range check in code. The exact
+leniency was then confirmed against chrono rather than assumed — the Rust test
+now pins `"17:6"` → `"17:06"`, `"7:5"` → `"07:05"` and `"17:"` refused, so both
+sides are held by assertions.
+
+**One found in review and fixed: a retry storm.** On a persistent failure — a
+full disk is the realistic case — an owed backup stays owed, so the scheduler
+would have retried `VACUUM INTO` **every 60 seconds for as long as the app was
+open**, writing megabytes of doomed attempts and a warning line a minute. Fixed
+by having `snapshot_if_due` report an `Outcome` and the loop hold attempts off
+for an hour after a failure. Ticking continues, so a settings change stays
+responsive; only the attempt is suppressed. Pinned by the two tests that now
+assert `Outcome::Failed` and `Outcome::NotDue`.
+
+Nothing else introduced.
+
+### Risks and edge cases
+
+- **The "does not block the UI" claim is reasoned, not measured.** The scheduled
+  snapshot opens its own connection and WAL permits a concurrent reader, so it
+  should not stall commands — but no test drives the UI during a snapshot. At
+  the observed 57 KB the window is too short to measure; it would matter at a
+  much larger database.
+- **A monthly schedule is 30 days, not a calendar month.** Deliberate — an
+  interval cannot be configured into never firing, unlike "the 31st" — but
+  someone expecting "the 1st of the month" will see it drift.
+- **Moving the system clock backwards delays the next backup** by as much as the
+  jump, because `due` compares dates. The licence clock watermark defends the
+  licence against exactly this; a backup schedule is not worth the same
+  machinery.
+- **A disabled schedule still ticks**, taking the connection mutex once a minute
+  to re-read settings. Cheap, and it is what lets re-enabling take effect
+  without a restart, but it is not zero.
+- **The hour-long backoff also delays a legitimate retry** after a transient
+  failure — a USB stick briefly unmounted, say. An hour of exposure against a
+  minute of hammering; the trade is deliberate.
+- Unchanged and still open: no post-migration `integrity_check`
+  (`db_report.md` rec 2), no encryption at rest, the unverified startup dialog
+  from entry (b), and the E2E failure in `rescheduling an unpaid tranche from
+the purchase editor holds the total`, which remains unrelated to any of this.
+
+### Recommendations
+
+1. **Run E2E once Playwright's browser is installed** (`npx playwright install`)
+   — it is the only suite that has not run against this change.
+2. **Confirm the Arabic layout** of the new controls: a `<select>` and an
+   `<input type="time">` in an RTL card is the one thing here that reads
+   differently by locale and that no test covers.
+3. Still open from entry (b): confirm the startup dialog visually, and ship
+   `db_report.md` rec 2 alongside `m0004`.
+
+---
+
+## 2026-08-07 (b) — Automatic database backup at launch
+
+### Summary
+
+Backup was manual-only: one button, and a nudge that merely prompts a human.
+This adds two automatic snapshots, both taken at launch and both routed through
+the existing `backup_database_impl` unchanged — no extraction, no second code
+path, and they inherit its read-only `integrity_check`/`foreign_key_check`
+verification for free. (`db_report.md` rec 1 asks for that core to be extracted;
+it is already parameterised as `(conn, dest_path, staging_dir)`, so the
+refactor was unnecessary.)
+
+1. **Before a pending migration.** New `db::pending_migration` runs _before_
+   `Db::open` and answers `Some` only when the file exists, carries a `client`
+   table and sits behind `MIGRATIONS.len()`. On `Some`,
+   `backups/payment_schedule.pre-v{n}.db` is written first. **If that fails the
+   app refuses to migrate** — the ledger is left untouched and a native dialog
+   explains why before it exits. This closes `db_report.md` rec 1, deferred in
+   the previous entry.
+2. **Once a day, after the schema is current.** `backups/auto-{date}.db`,
+   guarded by a new `last_auto_backup_at` setting. Never fatal: a failure logs
+   and is swallowed, because no irreversible step waits behind it.
+
+Pruned as two pools — `auto-*` to 5, `pre-v*` to 2 — so a run of daily snapshots
+can never evict the copy taken before a schema change.
+
+**The automatic copies do not clear the manual-backup nudge, by design.**
+`backups/` sits beside `payment_schedule.db` on one disk; a failed drive or a
+stolen machine takes both. They defend against a bad migration and a mistaken
+delete, not against losing the computer. `backupIsStale` still reads only
+`lastBackupAt`, and a unit test pins that.
+
+**Executed:** Rust `cargo test` **153 passed**, `cargo fmt --check`,
+`cargo clippy --all-targets -D warnings` — all clean. Frontend `npm test`
+**230 passed** (19 files), `npm run lint`, `npm run build` — all clean.
+`tsc -p tsconfig.test.json --noEmit` clean.
+
+**Also executed:** the real application, three times, against isolated
+app-data directories via `XDG_DATA_HOME`. See _Test cases → Live application_.
+
+**NOT executed:** integration and E2E, per the Phase 4 constraint.
+
+### Test cases
+
+#### Rust unit — `db.rs`, `autobackup.rs`, `lib.rs` (executed, 153 passed)
+
+- `pending_migration_reports_only_a_database_worth_protecting` — walks all five
+  answers in one fixture: absent file (and asserts the probe **does not create**
+  it), file with no `client` table, fully-migrated database, pre-versioning
+  database (returns the target _and_ the configured language), and a version
+  ahead of this build. Every `None` is load-bearing: a false `Some` would turn a
+  full disk into an app that refuses to open on a database with nothing in it.
+- `the_pre_migration_snapshot_carries_the_data_and_leaves_the_source_alone` —
+  the snapshot holds the sentinel row and staging is left clean.
+- `the_daily_snapshot_runs_once_and_records_its_date` — snapshots, records the
+  date, and a second call the same day is a no-op (asserted on mtime, since the
+  filename would look identical either way).
+- `a_failed_daily_snapshot_never_reaches_the_caller` — a missing directory logs
+  and returns, and crucially **records no date**, so it does not suppress the
+  retry for the rest of the day.
+- `pruning_keeps_the_newest_and_touches_nothing_else` — 8 `auto-*` files reduce
+  to the newest 5, while a `pre-v*` sibling and an unrelated `notes.txt` survive.
+- `the_abort_dialog_speaks_the_configured_language` — ar/en/fr, with French as
+  the fallback for absent and unrecognised values.
+
+#### Frontend unit — `src/stores/settings-backup.test.ts` (executed, 6 passed)
+
+Two cases added to the four from the previous entry:
+
+- _is not satisfied by an automatic snapshot_ — a fresh automatic copy with no
+  manual backup still nudges.
+- _still nudges when the manual backup is stale but the automatic one is fresh_.
+
+Both exist to stop the two notions being merged later by accident, which would
+tell a shop they are covered when every copy they have is on the machine that
+just died.
+
+#### Live application (executed, three runs)
+
+- **Daily snapshot, real dev database** (5 clients, 7 purchases, 30 payments,
+  `user_version = 3`, with a 169 KB live `-wal`). Produced
+  `backups/auto-2026-08-07.db`; `integrity_check` **ok**, `foreign_key_check`
+  clean, all 5 clients present — so the snapshot carried the WAL contents, not
+  just the main file. `last_auto_backup_at` recorded. The live database was
+  verified healthy and unchanged afterwards (`integrity_check` ok,
+  `user_version` still 3, same row counts).
+- **Pre-migration snapshot**, isolated in a scratch `XDG_DATA_HOME` with a
+  throwaway `m0004` appended and then reverted. The log ordering is the point:
+  `took a pre-migration snapshot for schema version 4` precedes
+  `applying schema migration 4`. The snapshot verified at `user_version = 3`
+  **without** the probe table; the live copy advanced to 4 **with** it. The
+  fallback is exactly the pre-migration state.
+- **Refusal path**, same isolation, with `backups` made a regular file so only
+  the snapshot could fail. The app logged
+  `refusing to migrate without a pre-migration snapshot`, and the database was
+  left at `user_version = 3` with no probe table and all 5 clients — the
+  migration never ran.
+
+#### Integration — `tests/integration/error-contract.integration.test.ts` (written, NOT run)
+
+_carries the automatic-copy date through the gateway_ — `lastAutoBackupAt` is
+`null` by default, travels the gateway when the mock holds the key, and survives
+an `updateSettings` round trip. The Rust side writes it at launch, which the
+browser build has no equivalent of, so without this the field could rot to
+`undefined` unnoticed.
+
+#### E2E — unchanged
+
+Nothing to add: the backup card is `v-if="isTauri()"`, and the launch hook has
+no browser equivalent at all.
+
+### Issues found
+
+**One defect found by this review and fixed, one design flaw found by running
+the app and fixed.**
+
+1. **The dialog strings contained runs of literal spaces.** They were written
+   with `\` line continuations that a rewrite silently flattened, leaving
+   `"...قاعدة البيانات،              ولم يتم..."` mid-sentence in all three
+   languages. Nothing but reading the rendered dialog would have shown it.
+   Fixed, and pinned by an assertion that no title or body contains a double
+   space.
+2. **The abort hung instead of aborting.** The first implementation called
+   `blocking_show` from a thread joined inside `setup` — but a native dialog
+   needs a running event loop to pump it, and inside `setup` the loop has not
+   started. Measured: the process sat until the 45 s test timeout. Restructured
+   so `setup` records the verdict in a `StartupBlocked` state, hides the window
+   and returns, and `RunEvent::Ready` shows the dialog from a spawned thread
+   once the loop is alive. Re-measured: **exits in 5 s**, ledger untouched.
+
+### Risks and edge cases
+
+- **The dialog's rendering is not verified.** GTK cannot initialise under Xvfb
+  on this machine (`Failed to initialize GTK`), and the earlier window probe was
+  invalid because `WAYLAND_DISPLAY` made GTK ignore the virtual X display
+  entirely. What _is_ verified is everything around it: the refusal, the
+  untouched database, and a prompt exit rather than a hang. **Confirm the dialog
+  visually in a real desktop session before shipping** — the recipe is in
+  _Recommendations_.
+- **The exit code is 0, not the 1 requested.** `handle.exit(1)` is called but the
+  process reports 0. Cosmetic for a desktop app — nothing consumes it — and
+  untangling it was not worth delaying the correct behaviour, but it is a small
+  known inaccuracy.
+- **Startup now does disk work before the window appears**: `VACUUM INTO` plus
+  two PRAGMAs, on the first launch of each day. Tens of milliseconds at the few-
+  MB scale this data reaches; a much larger database would make it noticeable.
+- **`backups/` grows to at most 7 files** (5 + 2). At the observed 57 KB that is
+  nothing; at a few MB per copy it is tens of MB, all inside app-data.
+- **The dialog text duplicates a fragment of `src/locales/*.json` in Rust**, and
+  nothing keeps them in step but the comment saying so. Accepted: the dialog
+  fires before vue-i18n exists, and the alternative is an Arabic-only shop
+  reading French at the one moment it matters.
+- **A same-day clock change can skip or repeat a snapshot**, since the guard
+  compares ISO dates. Harmless in both directions.
+- **The pre-migration snapshot still runs before `Db::open`**, so it opens the
+  database on its own. It is the only writer at that moment — the
+  single-instance plugin is registered first — but that ordering is load-bearing
+  and worth remembering before anything else is added to `setup`.
+- Unchanged from the previous entry: no post-migration `integrity_check`
+  (`db_report.md` rec 2), no encryption at rest, and the E2E failure in
+  `rescheduling an unpaid tranche from the purchase editor holds the total`,
+  which is still open and still unrelated.
+
+### Recommendations
+
+1. **Confirm the dialog visually.** In a real desktop session:
+   `mkdir -p /tmp/h/tn.paymentschedule && cp <a populated db> /tmp/h/tn.paymentschedule/ && printf x > /tmp/h/tn.paymentschedule/backups`,
+   append a throwaway `m0004`, then
+   `XDG_DATA_HOME=/tmp/h npm run tauri dev`. Expect a native error dialog in the
+   database's configured language, and the app exiting when it is dismissed.
+2. **Run the integration suite** before tagging — say the word.
+3. **Ship `db_report.md` rec 2 with `m0004`**: a post-migration
+   `integrity_check` whose failure message points at the snapshot this change
+   now guarantees exists.
+4. Still open from the previous entry: the purchase-editor E2E failure, aged-
+   fixture migration tests (rec 6), and backup encryption at rest.
+
+---
+
+## 2026-08-07 — Pre-v1.0.0 backup safety: ungated, verified, and dated
+
+### Summary
+
+`db_report.md` audited the database practices at `834040a` and found the
+migration machinery sound but the safety net around it absent. Its own priority
+order puts "snapshot before migrating" first; that recommendation was
+**deliberately deferred**, because at v1.0.0 every install creates a fresh file
+and walks `user_version` 0→3 over an empty database — there is nothing to lose,
+and the snapshot is taken by the binary that performs the migration, so it can
+land in the release that introduces `m0004` and still protect that upgrade in
+full.
+
+What shipped instead is the category that only works if it is in the day-one
+binary, plus the fixes that made the existing backup untrustworthy:
+
+1. **Backup is no longer licence-gated.** `require_license` came off
+   `backup_database` and `:disabled="locked"` came off the Settings button. An
+   expired licence blocked the copy a shop most needs — the one taken before
+   troubleshooting the expiry — while protecting nothing, since a snapshot only
+   contains rows the unlicensed baseline already displays.
+2. **The snapshot is verified before it is accepted.** `backup_database_impl`
+   now opens the staged file **read-only** and runs `PRAGMA integrity_check` and
+   `PRAGMA foreign_key_check` before the rename. A clean `VACUUM INTO` proves the
+   statement ran, not that the bytes are a usable database; a full disk or a
+   failing drive previously reported success and was discovered at restore time.
+3. **`last_backup_at` is recorded and surfaced.** Success writes the date to the
+   `setting` table (no migration needed — `read_settings` resolves every key
+   through `get_setting` with a default) and the command returns the updated
+   `Settings`, so the Settings page shows the date and warns after
+   `BACKUP_STALE_DAYS` (30). This is the item that is worthless if deferred:
+   users who install v1.0.0 and are never nudged cannot be helped retroactively.
+4. **Restore is documented.** `README.md` previously documented only how to
+   _destroy_ the database. It now leads with a five-step restore (quit first,
+   replace the file, delete stale `-wal`/`-shm`), with the reset instructions
+   kept and relabelled as data loss.
+5. **The additive-only migration rule is written down** in `architecture.md`,
+   next to the append-only rule, with the reason: a destructive step makes
+   "reinstall the previous version" stop being a recovery option, because the
+   older binary refuses a forward `user_version` and `Db::open` is propagated
+   with `?` from `setup` — it will not launch at all.
+
+**Executed:** Rust `cargo test` **147 passed**, `cargo fmt --check`,
+`cargo clippy --all-targets -D warnings` — all clean. Frontend `npm test`
+**228 passed** (19 files), `npm run lint`, `npm run build` (`vue-tsc --noEmit`)
+— all clean. `tsc -p tsconfig.test.json --noEmit` clean.
+
+**Also executed on request:** integration **225 passed** (8 files), including
+the three new backup cases. E2E **49/50 passed** — the one failure,
+`rescheduling an unpaid tranche from the purchase editor holds the total`, is
+**pre-existing and unrelated**; it reproduces identically on a clean worktree of
+`834040a`. See _Issues found_.
+
+No new E2E case was added: the backup card is `v-if="isTauri()"`, so neither the
+button nor the new status line exists in the browser build the E2E suite drives.
+
+### Test cases
+
+#### Rust unit — `src-tauri/src/commands.rs` (executed, 147 passed)
+
+New:
+
+- `a_snapshot_is_verified_before_it_is_accepted` — a real snapshot from
+  `backup_database_impl` verifies; the same file truncated to half its length
+  does not. Truncation is the shape a full disk leaves: the `SQLite format 3`
+  header survives, so every destination guard still passes and only reading the
+  pages reveals it.
+- `the_backup_date_reads_as_absent_until_one_is_recorded` — `last_backup_at`
+  reads as `None` on a database that has never seen the key (the no-migration
+  claim), and round-trips once written.
+
+Extended:
+
+- `an_expired_licence_still_permits_reading_your_own_ledger` — now also takes a
+  backup, pinning the capability the unlicensed baseline must keep exposing.
+  **Stated limit:** the gate lived on the `backup_database` wrapper, which needs
+  an `AppHandle` and cannot be reached from a unit test. This test pins the
+  capability, not the absence of the call — that is a review rule.
+
+Unchanged and still passing: the five existing backup tests (readable snapshot,
+clobber refusal, sibling safety, overwrite, cross-filesystem fallback). The
+"staging directory must be empty after a successful backup" assertion inside
+`backup_writes_a_readable_snapshot` is load-bearing for the new verification
+step — it is what proves the read-only verification connection leaves no
+sidecar files behind for the rename to strand.
+
+#### Frontend unit — `src/stores/settings-backup.test.ts` (executed, 4 passed)
+
+New file, fake-timered on a fixed 2026-08-07 so the day arithmetic cannot drift:
+
+- an install that has never backed up is stale (`lastBackupAt === null`);
+- a backup taken today, and one taken yesterday, are not;
+- `BACKUP_STALE_DAYS - 1` is quiet and `BACKUP_STALE_DAYS` nudges — both edges,
+  so the comparison cannot silently invert.
+
+#### Integration — `tests/integration/error-contract.integration.test.ts` (executed, 225 passed)
+
+Two cases added to the existing `backup` block:
+
+- _returns settings carrying the new backup date_ — `getSettings()` reports
+  `null` first, `backupDatabase()` resolves to settings whose `lastBackupAt` is
+  today, and a later independent read agrees. This pins the api/mock parity that
+  the unit suite cannot see: the mock is what the E2E build runs against, and a
+  drift means the browser build keeps nudging after a successful backup.
+- _keeps the recorded date out of the writable settings patch_ — an
+  `updateSettings` round trip preserves `lastBackupAt`. The field is read-only by
+  construction (no counterpart in `SettingsPatch`, on either side), because the
+  renderer serializes the patch and a writable field would let the UI lie about
+  when the ledger was last copied.
+
+#### E2E — `tests/e2e/run.mjs` (executed, 49/50 passed, unchanged)
+
+`settings exposes a database backup action` still asserts the backup card is
+**hidden** outside the Tauri runtime — passing. No case was added: there is no
+database file in the browser preview, so the card, the button and the new status
+line are all absent by design there.
+
+### Issues found
+
+**Pre-existing, not introduced here — E2E `rescheduling an unpaid tranche from
+the purchase editor holds the total` fails.** Carried over from the 2026-08-04
+entry, whose own record states the E2E cases were "written, NOT run" — this one
+appears never to have passed.
+
+- _Reproduction:_ `npm run test:e2e`. Confirmed identical on a detached
+  worktree of `834040a` with none of this work applied, so it is not a
+  regression from the backup changes.
+- _Symptom:_ the test opens the Samsung purchase (id 1, 2 400 over 6 tranches of
+  400, tranche 1 settled), types `600` into tranche 2, sees the sum indicator
+  read `ok`, saves, and then finds tranche 2 still at 400 on the detail page.
+  The failure screenshot
+  (`tests/e2e/artifacts/rescheduling-an-unpaid-tranche-from-the-purchase-editor-holds-the-total.png`)
+  shows the right purchase with **all six tranches unchanged** and the total
+  still 2 400 — so nothing was written, rather than something wrong being
+  written.
+- _Isolated:_ a throwaway probe against the gateway performed the same
+  reschedule (`api.updatePurchase` with `[400, 600, 350, 350, 350, 350]`) and it
+  **persisted correctly**. The business layer is sound; the defect is in the
+  editor's save path or in the test's own expectation, and telling those apart
+  needs the modal driven in a real browser.
+- _Severity:_ unknown until that is settled — a silently dropped schedule edit
+  would be a should-fix before v1.0.0; a stale test expectation would not. It
+  blocks nothing in this pass.
+
+Nothing introduced by this work. Two findings from the self-review were fixed in
+place before this entry:
+
+1. **`verify_snapshot` opened the staged file read-write.** A verification step
+   that can modify what it verifies is the wrong shape, and a journal file left
+   beside the staged snapshot would be stranded by the rename. Changed to
+   `OpenFlags::SQLITE_OPEN_READ_ONLY`; safe unconditionally because
+   `VACUUM INTO` writes a rollback-journal database even from a WAL source, so
+   no `-shm` is required.
+2. **A stale comment in `SettingsView.vue`** still claimed every control on the
+   page except the language was licensed. Backup is now a third exception;
+   corrected rather than left to mislead the next reader.
+
+### Risks and edge cases
+
+- **The deferred gap is still open.** There is no pre-migration snapshot and no
+  post-migration `integrity_check`. This is safe _only_ while no shipped
+  migration runs against real data. The release that adds `m0004` must carry
+  both, plus pruning of the snapshots — see `db_report.md` recs 1-3. If any
+  machine outside this repo already holds a `payment_schedule.db` from a
+  sideloaded dev build, v1.0.0 **will** migrate real data there and this
+  assumption does not hold for that machine.
+- **A failure to record `last_backup_at` is logged, not surfaced.** Deliberate:
+  the snapshot is already on disk and good, and returning `BACKUP_FAILED` would
+  send a user chasing a backup they actually have. The cost is that a settings
+  table which has stopped accepting writes shows a permanently stale nudge, with
+  only `logs/` to explain it.
+- **The nudge fires on a brand-new empty install**, where there is nothing to
+  lose. Accepted: it is confined to the Settings backup card, and teaching the
+  habit before the data exists is the point.
+- **`backupIsStale` compares against the local clock**, so a user who moves the
+  system date backwards sees the nudge disappear. The licence clock watermark
+  defends the licence against exactly this; a backup nudge is not worth the same
+  machinery.
+- **Nothing verifies the destination after the rename.** Verification happens in
+  staging; a cross-filesystem `fs::copy` that truncates on the way out is still
+  undetected, as documented in the existing comment at that fallback.
+- **The snapshot is still written in clear.** It carries client names, phone
+  numbers and debt positions — PII under Tunisian loi 2004-63 — to a
+  user-chosen path, routinely a USB stick. Out of scope here; if addressed, use
+  SQLCipher or age/ChaCha20-Poly1305, never zip encryption (`db_report.md` §2).
+
+### Recommendations
+
+1. **Settle the pre-existing E2E failure** above before tagging v1.0.0 — it is
+   the only red in either suite, and it is a purchase-editor question, not a
+   backup one.
+2. **Manual desktop pass**, none of which the browser suites can reach: take a
+   backup and confirm the status line switches from "never backed up" to the
+   date; confirm the button works with an expired licence; walk the new README
+   restore steps end to end; check the Arabic RTL rendering of the new line.
+3. **Bundle recs 1-3 from `db_report.md` with the first new migration.** They are
+   one work item and there is no user data to protect until then.
+4. Longer term, unchanged from the audit: aged-fixture migration tests (rec 6),
+   backup encryption at rest, and `AUDIT_REPORT.md` I3 (`VACUUM INTO` holds the
+   connection mutex on the async runtime — now held slightly longer, since the
+   verification and the settings write share the same guard).
+
+---
+
 ## 2026-08-04 — Installment immutability: paid rows, payment dates, and one schedule editor
 
 ### Summary

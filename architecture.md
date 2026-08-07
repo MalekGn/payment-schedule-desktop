@@ -105,14 +105,17 @@ in `license.rs` is the authoritative copy.
 Design points that constrain later work:
 
 - **The gate is in Rust, not the UI.** `require_license` in `commands.rs` refuses
-  21 of the 29 commands with `LICENSE_REQUIRED` when the install is unlicensed.
+  20 of the 29 commands with `LICENSE_REQUIRED` when the install is unlicensed.
   The frontend mirrors that state, but a check that lived only in the renderer
   would be decoration: the WebView is the user's, and a `v-if` is not a control.
 - **The unlicensed baseline is narrow but genuinely usable**: reading clients and
-  purchases — list and detail — plus `get_settings` and a language-only
-  `update_settings`. Losing a licence must never hold a shop keeper's own ledger
-  hostage, and language has to stay editable or the licence screen could become
-  unreadable. `list_clients`/`list_purchases` **degrade** rather than refuse:
+  purchases — list and detail — plus `get_settings`, a language-only
+  `update_settings`, and `backup_database`. Losing a licence must never hold a
+  shop keeper's own ledger hostage, and language has to stay editable or the
+  licence screen could become unreadable. Backup belongs in that same safety
+  baseline: it only snapshots records the baseline already lets the user read,
+  and gating it withheld the copy a shop most needs — the one taken before
+  troubleshooting an expiry. `list_clients`/`list_purchases` **degrade** rather than refuse:
   an unlicensed caller is pinned to the active scope with no server-side search.
 - **Filters and sorting cannot be enforced here.** `useSort.ts` reorders rows
   already in the browser and `ListFilterBar.vue` filters in the parent component,
@@ -130,6 +133,31 @@ Design points that constrain later work:
   type is branding, a name the vendor signs is identification. Note the fallback
   chain covers `clockTampered`, `invalidSignature` and `missing` — the statuses
   where no verified payload exists.
+- **The verdict is refreshed while the app runs, not only at launch.** A shop
+  that never closes the app would otherwise keep full access past its expiry
+  date, because the startup verdict stood for the whole process. A detached
+  thread (`start_license_watcher` in `commands.rs`, started from `lib.rs`
+  alongside the backup scheduler) re-runs `evaluate_license` every 15 minutes and
+  writes the result back into `LicenseState`, so `require_license` — the gate
+  that actually refuses — is authoritative within a tick. A poll rather than a
+  sleep until midnight, for the same reason as the backup tick: suspend/resume
+  and a moved system clock both invalidate a precomputed deadline. It advances
+  the clock watermark too, so a day rolling over is recorded without a restart.
+- **`license://changed` is the only backend-pushed event in the app.** Everything
+  else is request/response through a command. It is emitted only when the verdict
+  actually differs — 96 ticks a day, almost never a change — and carries a
+  `LicenseInfo`, the same projection `get_license_status` returns. The renderer
+  subscribes through `api.onLicenseChanged` (the gateway's one subscription; the
+  browser mock stands in for it via `setLicense`), and the licence store applies
+  the payload, which flips `App.vue`'s existing `blocked` computed with no
+  restart and no polling. The emit is best-effort: by then the cache is already
+  updated, so a failure costs a stale screen, not a stale gate. `core:event:default`
+  was already granted in `capabilities/default.json`.
+- **The re-evaluation and the publish are serialized under the connection guard**
+  both paths already take. There are two writers — the watcher and
+  `import_license` — and without that ordering a tick that read the licence file
+  just before an import landed could publish its stale verdict afterwards,
+  locking a customer out of the licence they had just installed.
 - **`LicenseStatus` never crosses IPC**; `LicenseInfo` does. The projection drops
   `Malformed { reason }`, which is parser detail for the log, exactly as
   `AppError::Internal` collapses to an opaque code.
@@ -413,6 +441,15 @@ historical `CREATE TABLE IF NOT EXISTS` batch verbatim — re-running it is a
 no-op that stamps the version on. **Never reorder or edit a step that has
 shipped**; append a new one.
 
+**Shipped steps must also be additive** — add tables, add columns, add indexes;
+no `DROP`, no rename, no 12-step table rebuild. Both steps to date are, and this
+is why it matters: `migrate` refuses to open a database whose `user_version` is
+ahead of the binary, and `Db::open` is propagated with `?` from `setup`, so the
+previous installer does not merely misread a rebuilt schema — it will not
+launch. A destructive step therefore makes "reinstall the old version" stop
+being a recovery option for every user who has already upgraded. Nothing in CI
+enforces this; it is a review rule.
+
 **Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` was
 the first appended step, and it has to check `pragma_table_info` before its
 `ALTER TABLE ADD COLUMN` — SQLite has no `ADD COLUMN IF NOT EXISTS`, and a blind
@@ -427,6 +464,87 @@ this.
 in-flight write and, in WAL mode, miss everything still in the `-wal` file.
 It is the only recovery path in the app — client deletes cascade through
 purchases, installments and payments and cannot be undone.
+
+Three things follow from it being the _only_ recovery path:
+
+- **The snapshot is verified before it is accepted.** `VACUUM INTO` returning
+  `Ok` proves the statement ran, not that the file it wrote is a usable
+  database; a full disk or a failing drive lands here as success. The staged
+  file is opened and put through `PRAGMA integrity_check` and
+  `PRAGMA foreign_key_check` before the rename, so a bad snapshot fails loudly
+  now instead of silently at restore time.
+- **It carries no licence gate**, unlike every other write. See the licensing
+  section: a snapshot of records the unlicensed baseline already displays
+  protects nothing, and the gate withheld the copy a shop most needs.
+- **Success writes `last_backup_at` to the `setting` table**, and the command
+  returns the updated `Settings` so the Settings page can show when the last
+  backup happened and nudge after `BACKUP_STALE_DAYS`. Nothing schedules a
+  backup, so that nudge is the only thing that ever raises the subject.
+
+Restoring is a manual file operation, documented in `README.md` — there is no
+`restore_database` command.
+
+### Automatic snapshots
+
+`autobackup.rs` takes two snapshots at launch, both through
+`backup_database_impl` unchanged, so both inherit its verification:
+
+- **Before a pending migration.** `db::pending_migration` is consulted _before_
+  `Db::open`, and answers `Some` only when the file exists, carries a `client`
+  table and is behind `MIGRATIONS.len()` — so a fresh install is never affected.
+  On `Some`, `backups/payment_schedule.pre-v{n}.db` is written first. **If that
+  write fails the app refuses to migrate**: it records the reason, hides the
+  window, and `RunEvent::Ready` shows a native dialog before exiting. The user
+  can free disk space; they cannot undo a bad migration.
+- **On a schedule the shop sets** — 17:00 daily out of the box, with frequency
+  (daily/weekly/monthly) and time in Settings. `backups/auto-{date}.db`, guarded
+  by `last_auto_backup_at`. Never fatal: a failure costs a backup, not the
+  working day, because no irreversible step is waiting behind it.
+
+`autobackup::due` is the single predicate behind both the scheduler tick and the
+launch pass, so no second rule can disagree with it. It has two branches, and
+the first is what makes a time of day mean anything on a desktop app:
+
+```
+due = enabled AND ( elapsed >  interval                       // overdue → now
+                    OR (elapsed >= interval AND now >= time) )// today's window
+```
+
+A shop that runs the app 09:00–16:00 is never open at 17:00. Under a plain
+"fire at the scheduled time" rule they would never be backed up at all, and the
+failure would be silent until the day they needed the copy; the overdue branch
+catches them the next morning instead. The same branch is the launch catch-up.
+
+The scheduler is a plain `std::thread` polling every 60 s, not a computed sleep
+until the next occurrence: a poll is the only shape that survives the user
+changing the time, the machine suspending, and the clock moving. It re-reads the
+settings every pass, so an edit takes effect within a minute with no restart. A
+failed attempt is held off for an hour — otherwise a full disk means a
+`VACUUM INTO` attempt and a log line every minute, none of which can succeed.
+
+The scheduled snapshot opens **its own connection** rather than taking the
+shared `Mutex<Connection>`. At launch the mutex was free, but 17:00 lands while
+the shop is typing; in WAL mode a second connection reads a consistent snapshot
+without blocking writers.
+
+The schedule is licensed configuration, like the currency or the alert window —
+an expired install cannot re-time it, but the backups keep running on whatever
+is stored and the manual button carries no gate at all.
+
+Pruned as two pools, `auto-*` to 5 and `pre-v*` to 2, so daily snapshots can
+never evict the copy taken before a schema change.
+
+The dialog is the one piece of user-facing text this crate owns, in `lib.rs`
+rather than `src/locales/*.json`: it fires before the WebView exists, so
+vue-i18n cannot supply it. It reads `language` from `setting` and falls back to
+French.
+
+**These are not a substitute for the manual backup and never clear its staleness
+nudge.** `backups/` sits beside `payment_schedule.db` on the same disk: one
+failed drive or one stolen machine takes both. They defend against a bad
+migration and a mistaken delete, not against losing the computer, which is why
+`last_auto_backup_at` is reported separately from `last_backup_at` and why
+`backupIsStale` reads only the latter.
 
 ## Key decisions
 
