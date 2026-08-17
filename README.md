@@ -259,11 +259,13 @@ own package formats.
 
 You do not bump the version by hand. When you **publish** the draft Release,
 this workflow opens the next patch version (`v1.2.3` → `1.2.4`) and commits it
-to both `main` and `dev` as `github-actions[bot]`, keeping all four files in
-step: `package.json`, both version sites in `package-lock.json`,
-`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
+to `main` as `github-actions[bot]`, keeping all four files in step:
+`package.json`, both version sites in `package-lock.json`,
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Only `main` is bumped —
+tags are cut from it, and `dev` picks the new version up the next time `main`
+is merged down.
 
-The target version comes from the released tag, not from whatever a branch
+The target version comes from the released tag, not from whatever the branch
 currently holds, so a branch that has fallen behind still lands on the right
 number. A branch already at or past that version is skipped with a notice, which
 also makes re-running the workflow harmless. `workflow_dispatch` takes a `tag`
