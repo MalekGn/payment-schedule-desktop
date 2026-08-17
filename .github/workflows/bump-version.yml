@@ -1,0 +1,218 @@
+name: Bump version
+
+# Cutting a release ends with a tag push; starting the next one has always meant
+# hand-editing the version in four files. That was done by hand twice and got it
+# wrong both times: `834040a` bumped package.json but not package-lock.json, so
+# `aa91662` had to repair a stale 0.1.0 -> 1.0.1 jump there. The number lives in
+# package.json, both sites in package-lock.json, src-tauri/Cargo.toml and
+# src-tauri/Cargo.lock, and every one of them has to move together.
+#
+# So: once a Release is *published*, open the next patch version on the branches
+# that develop it. `build.yml` opens the Release as a draft from two matrix
+# runners, and a draft does not fire `published` — only a human clicking publish
+# does, exactly once. Triggering on `created` instead would fire while the assets
+# were still unreviewed, and twice.
+#
+# The target version comes from the released tag, never from what a branch
+# happens to hold, so the result is the same no matter which branch is behind.
+on:
+  release:
+    types: [published]
+  # Escape hatch: re-run a bump that failed, or backfill one for a Release that
+  # was published before this workflow existed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Released tag to bump past, e.g. v1.2.3"
+        required: true
+        type: string
+
+# Two Releases published back to back must not race each other to the same
+# branches; queue them instead of cancelling, since a cancelled bump is a lost one.
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+# Third-party actions are pinned to a full commit SHA (with the human-readable
+# version in a trailing comment) so a moved tag can't silently swap the code we
+# run. Dependabot keeps the pins current.
+jobs:
+  # `main` and `dev` are bumped as two independent matrix legs rather than by
+  # cherry-picking one branch's commit onto the other. Re-deriving "set the
+  # version to N" per branch cannot conflict and is idempotent, whereas a
+  # cherry-pick conflicts the moment the branches disagree — which they already
+  # do (main 1.0.0, dev 1.0.1).
+  bump:
+    name: Bump ${{ matrix.branch }}
+    runs-on: ubuntu-22.04
+    strategy:
+      # A failure on one branch is a real result about that branch; still try the other.
+      fail-fast: false
+      matrix:
+        branch: [main, dev]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.branch }}
+
+      # The tag is interpolated into the environment rather than into the script
+      # body, so its contents can never be parsed as shell.
+      - name: Compute the next patch version
+        id: next
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Released tag: $TAG"
+          VER="${TAG#v}"
+          if [[ ! "$VER" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Tag '$TAG' is not a plain vMAJOR.MINOR.PATCH tag, so there is no unambiguous next patch version."
+            echo "build.yml sets prerelease: false, so a pre-release or suffixed tag reaching this workflow is a mistake worth stopping on."
+            exit 1
+          fi
+          NEXT="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(( ${BASH_REMATCH[3]} + 1 ))"
+          echo "Next version: $NEXT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      # Makes a re-run harmless and lets a branch that is already ahead sit it
+      # out: on a v1.0.0 Release, dev (already 1.0.1) has nothing to do.
+      #
+      # The branch's version is taken as the *lowest* of its manifests, not
+      # package.json alone. `834040a` moved package.json and left the lockfile
+      # on 0.1.0; reading one file would call a branch in that state up to date
+      # and leave the laggard behind for good. Taking the minimum means any file
+      # that has fallen behind re-runs the bump and re-syncs all four.
+      - name: Skip if ${{ matrix.branch }} is already at or past that version
+        id: guard
+        shell: bash
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          NPM_VER="$(node -p "require('./package.json').version")"
+          LOCK_VER="$(node -p "require('./package-lock.json').version")"
+          # The only column-0 `version` key in the file is the one under [package].
+          CARGO_VER="$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)"
+          echo "$BRANCH: package.json $NPM_VER, package-lock.json $LOCK_VER, Cargo.toml $CARGO_VER; target is $NEXT."
+
+          CUR="$(printf '%s\n%s\n%s\n' "$NPM_VER" "$LOCK_VER" "$CARGO_VER" | sort -V | head -1)"
+          HIGHEST="$(printf '%s\n%s\n' "$CUR" "$NEXT" | sort -V | tail -1)"
+          if [ "$HIGHEST" = "$CUR" ]; then
+            echo "::notice::$BRANCH is already at or past $NEXT (lowest manifest is $CUR) — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only Prettier needs the dependency tree. It is worth the install: a push
+      # made with GITHUB_TOKEN does not fire `push` workflows, so ci.yml's
+      # `npm run format:check` will not see this commit until someone opens the
+      # next PR — by which point the failure looks like their fault.
+      - name: Install JS dependencies
+        if: steps.guard.outputs.skip != 'true'
+        run: npm ci
+
+      # Writes package.json and *both* version sites in package-lock.json
+      # (`.version` and `.packages[""].version`) — the pair that was missed by hand.
+      - name: Bump package.json + package-lock.json
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: npm version "$NEXT" --no-git-tag-version --allow-same-version
+
+      - name: Set up Rust
+        if: steps.guard.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      # Prebuilt binary. `cargo install cargo-edit --locked` would compile it from
+      # source on every run for the sake of one manifest edit; install-action is
+      # already how security.yml gets cargo-audit and cargo-deny.
+      - name: Install cargo-edit
+        if: steps.guard.outputs.skip != 'true'
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+        with:
+          tool: cargo-edit
+
+      # `cargo set-version` rewrites Cargo.lock too, but only for the manifest it
+      # was pointed at; `cargo update -w` re-resolves the workspace member entry
+      # and costs nothing when it is already correct. Neither compiles anything,
+      # which is why this job needs no libwebkit2gtk/libgtk-3 apt step — the old
+      # draft reached for `cargo check` and dragged in the whole native build.
+      - name: Bump Cargo.toml + Cargo.lock
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          set -euo pipefail
+          cargo set-version "$NEXT" --manifest-path src-tauri/Cargo.toml
+          cargo update -w --manifest-path src-tauri/Cargo.toml
+
+      # lint-staged formats these files on every human commit; CI checkouts have
+      # no husky hooks, so do it explicitly and keep format:check green.
+      - name: Format the touched manifests
+        if: steps.guard.outputs.skip != 'true'
+        run: npx prettier --write package.json package-lock.json
+
+      - name: Commit and push to ${{ matrix.branch }}
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+          BRANCH: ${{ matrix.branch }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+
+          # Not a failure: the guard passed but the files were already correct,
+          # e.g. someone bumped by hand between the Release and this run.
+          if git diff --cached --quiet; then
+            echo "::notice::$BRANCH already contains $NEXT in every version file — nothing to commit."
+            exit 0
+          fi
+
+          git commit -F - <<EOF
+          chore(release): bump version to $NEXT
+
+          Release $TAG has been published, so $BRANCH now develops the version
+          after it. Bumping at publish time rather than before tagging keeps the
+          tag pointing at a tree whose version matches the installers it built.
+
+          The number lives in four files and they only work in lockstep:
+          Cargo.toml drives the bundle and MSI product versions (tauri.conf.json
+          deliberately has no version key so it inherits), Cargo.lock records the
+          same for the payment-schedule package, and package.json/package-lock.json
+          carry the npm metadata. Editing them by hand has already dropped
+          package-lock.json once.
+          EOF
+
+          # dev takes ordinary pushes and can move underneath this job.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:$BRANCH"; then
+              echo "Pushed $NEXT to $BRANCH."
+              exit 0
+            fi
+            echo "Push to $BRANCH rejected (attempt $attempt/3) — refetching and rebasing."
+            git fetch origin "$BRANCH"
+            if ! git rebase "origin/$BRANCH"; then
+              git rebase --abort || true
+              echo "::error::Rebase onto origin/$BRANCH conflicted; $BRANCH needs a manual bump to $NEXT."
+              exit 1
+            fi
+          done
+          echo "::error::Could not push $NEXT to $BRANCH after 3 attempts."
+          exit 1
