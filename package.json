@@ -2,7 +2,7 @@
   "name": "payment-schedule",
   "private": true,
   "license": "UNLICENSED",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "engines": {
     "node": "^22.22.2 || ^24.15.0"
