@@ -6,6 +6,120 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-16 — Automated version bump on release publish (`bump-version.yml`)
+
+### Summary
+
+The app version lives in four files — `package.json`, both version sites in
+`package-lock.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` — and had
+only ever been moved by hand. Both attempts got it wrong: `834040a` bumped
+`package.json` and left `package-lock.json` on `0.1.0`, which `aa91662` had to
+repair. `main` and `dev` had also drifted apart (1.0.0 vs 1.0.1) with nothing to
+notice it.
+
+`.github/workflows/bump-version.yml` now opens the next patch version on both
+branches when a GitHub Release is **published**. `published` rather than
+`created` because `build.yml` opens the Release as a draft from two matrix
+runners; only a human publishing it fires `published`, and it fires once. The
+target version is derived from the released tag, so a branch that has fallen
+behind still lands on the right number.
+
+A GitHub Actions workflow has no home in the Vitest or Playwright suites, so it
+was verified by extracting the workflow's own `run:` scripts from the YAML and
+executing them verbatim against a throwaway clone with a local bare remote —
+only `${{ }}` interpolation and `$GITHUB_OUTPUT` were simulated. The harness
+lived in the session scratchpad and is **not** checked in; see Recommendations.
+
+### Test cases run
+
+Static — all executed, all clean:
+
+- `python3 -c "yaml.safe_load(...)"` — parses.
+- `actionlint 1.7.12` across the whole of `.github/workflows/` — no findings
+  (shellcheck was not installed on this machine, so its shell-level pass was
+  skipped; see Recommendations).
+- `npm run format:check` (Prettier covers YAML and Markdown) and `npm run lint`
+  — clean.
+- Assertion that no `${{ }}` expression survives inside any `run:` body.
+
+Behavioural, against a copy of the tree at `aa91662` with a local bare `origin`:
+
+- **Version derivation** — `v1.0.1` → `1.0.2`.
+- **Pre-release tag rejected** — `v1.0.1-rc1` exits 1 with a `::error::` naming
+  the tag, rather than inventing a version.
+- **Skip guard, branch ahead** — a `v1.0.0` Release against a branch at 1.0.1
+  skips with a `::notice::` and touches nothing. This is the real `dev` case on
+  the next release.
+- **Full bump** — exactly four files change; `1.0.2` lands at all five write
+  sites (`package-lock.json` carries two); `Cargo.lock` moves only the
+  `payment-schedule` entry, no dependency churn.
+- **Idempotence** — re-running the same tag skips at the guard; forcing past the
+  guard reaches the `git diff --cached --quiet` branch and exits 0 with a notice
+  rather than failing, which the earlier draft workflow did not.
+- **Half-bumped branch is repaired, not skipped** — with `package.json` at 1.0.2
+  and `Cargo.toml`/`Cargo.lock` committed at 1.0.1 (the exact `834040a` failure
+  shape), the guard reads the _lowest_ manifest, runs, and commits only the two
+  laggard files.
+- **Concurrent push to the same branch** — with `origin/main` moved ahead by an
+  unrelated commit, the push is rejected, the retry loop fetches and rebases, and
+  the second attempt succeeds with the unrelated commit preserved.
+- **Commit shape** — authored `github-actions[bot]
+<41898282+github-actions[bot]@users.noreply.github.com>`, subject
+  `chore(release): bump version to 1.0.2`, multi-line body intact, and no
+  `Co-Authored-By` trailer.
+
+Not run: `npm run test:integration` and `npm run test:e2e`. Neither is affected
+by this change (no application code was touched), and per CLAUDE.md they are not
+executed without an explicit request.
+
+### Issues found
+
+Two were found during Code Review and fixed before this pass; both are covered
+by the cases above.
+
+1. **Skip guard read `package.json` only** (should-fix, fixed). A branch whose
+   `package.json` had been bumped but whose Cargo manifests had not would be
+   read as up to date and the laggards left behind permanently — precisely the
+   `834040a` state. The guard now takes the lowest of `package.json`,
+   `package-lock.json` and `Cargo.toml`.
+2. **`${{ steps.next.outputs.next }}` interpolated into two `run:` bodies** (nit,
+   fixed). The value is digits-and-dots by construction — the compute step
+   rejects anything not matching `^[0-9]+\.[0-9]+\.[0-9]+$` — so it was not
+   exploitable, but "no expression reaches the shell" should be checkable on
+   sight. Both now arrive through `env:`, as the tag already did.
+
+No blockers. Open risks, none of them defects:
+
+- A `GITHUB_TOKEN` push does not fire `push` workflows, so `ci.yml` does not run
+  on the bump commit. That is also what prevents a trigger loop; the workflow
+  runs Prettier itself so `format:check` stays green for the next PR.
+- The push is direct. `main` has no branch protection today (`gh api
+.../branches/main/protection` → 404, rulesets empty); if protection is added,
+  the workflow will need a PAT or GitHub App token.
+- `concurrency: bump-version` queues rather than cancels, but GitHub holds only
+  one pending run per group. Publishing three Releases in quick succession could
+  drop the middle bump. Recovery is one `workflow_dispatch`, and the guard makes
+  it safe.
+- `fail-fast: false` means one branch can succeed while the other fails. That is
+  deliberate — a half-applied bump is repairable by re-dispatch, and the guard
+  makes the successful branch a no-op on that re-run.
+
+### Recommendations
+
+- Do the first real run manually before trusting it on a Release:
+  `gh workflow run bump-version.yml -f tag=v1.0.0`. Expected on today's tree —
+  `main` (1.0.0) bumps to 1.0.1, `dev` (1.0.1) skips with a notice. That also
+  closes the existing `main`/`dev` drift.
+- Add `actionlint` (with `shellcheck`) to `ci.yml`. This workflow now carries
+  non-trivial bash that nothing in CI reads; the check is a few seconds and would
+  have caught the shell-level issues the local run had to skip.
+- Consider promoting the scratchpad harness into `tests/` if more shell-bearing
+  workflows appear. It was not checked in here: the repo has no Python tooling,
+  and the suite needs `cargo-edit` plus network, so it would not fit the existing
+  Vitest or Playwright runners without adding a third test stack.
+
+---
+
 ## 2026-08-07 (d) — Licence expiry takes effect without a restart (AUDIT_REPORT L4)
 
 ### Summary

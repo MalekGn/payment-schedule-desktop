@@ -237,13 +237,16 @@ version, and the deb/rpm package version. (`package.json` carries its own
 `version` for npm metadata; it has no effect on the built app, but keep it in
 step.)
 
-To cut a release, bump the version and **commit it before tagging** — the
-workflow takes the release name from the tag and the installer names from the
-build, so tagging first ships a release whose title and assets disagree:
+To cut a release, tag the commit that already carries the version you are
+shipping — the workflow takes the release name from the tag and the installer
+names from the build, so tagging a tree whose version disagrees ships a release
+whose title and assets disagree:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# Tag whatever version is committed, so the two can never drift apart.
+VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+git tag "v$VERSION"
+git push origin "v$VERSION"
 ```
 
 Both runners attach their installers to one shared Release, published as a
@@ -251,6 +254,31 @@ Both runners attach their installers to one shared Release, published as a
 workflow can also be triggered manually via **workflow_dispatch**. Per-OS bundle
 targets are set with `tauri build --bundles …`, so each runner emits only its
 own package formats.
+
+### Opening the next version (`.github/workflows/bump-version.yml`)
+
+You do not bump the version by hand. When you **publish** the draft Release,
+this workflow opens the next patch version (`v1.2.3` → `1.2.4`) and commits it
+to both `main` and `dev` as `github-actions[bot]`, keeping all four files in
+step: `package.json`, both version sites in `package-lock.json`,
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
+
+The target version comes from the released tag, not from whatever a branch
+currently holds, so a branch that has fallen behind still lands on the right
+number. A branch already at or past that version is skipped with a notice, which
+also makes re-running the workflow harmless. `workflow_dispatch` takes a `tag`
+input for re-running a failed bump:
+
+```bash
+gh workflow run bump-version.yml -f tag=v1.0.1
+```
+
+Two consequences worth knowing. The bot pushes with `GITHUB_TOKEN`, and a
+`GITHUB_TOKEN` push does not fire `push` workflows — that is what stops a
+trigger loop, but it also means `ci.yml` does not run on the bump commit (the
+workflow runs Prettier itself so `format:check` stays green). And the push is
+direct, so if branch protection is ever enabled on `main` the workflow will need
+a PAT or GitHub App token instead.
 
 ### App icons
 
