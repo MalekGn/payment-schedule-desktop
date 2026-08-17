@@ -7,14 +7,14 @@ name: Bump version
 # package.json, both sites in package-lock.json, src-tauri/Cargo.toml and
 # src-tauri/Cargo.lock, and every one of them has to move together.
 #
-# So: once a Release is *published*, open the next patch version on the branches
-# that develop it. `build.yml` opens the Release as a draft from two matrix
-# runners, and a draft does not fire `published` — only a human clicking publish
-# does, exactly once. Triggering on `created` instead would fire while the assets
-# were still unreviewed, and twice.
+# So: once a Release is *published*, open the next patch version on `main`.
+# `build.yml` opens the Release as a draft from two matrix runners, and a draft
+# does not fire `published` — only a human clicking publish does, exactly once.
+# Triggering on `created` instead would fire while the assets were still
+# unreviewed, and twice.
 #
-# The target version comes from the released tag, never from what a branch
-# happens to hold, so the result is the same no matter which branch is behind.
+# The target version comes from the released tag, never from what the branch
+# happens to hold, so the result is the same however far behind `main` is.
 on:
   release:
     types: [published]
@@ -28,7 +28,7 @@ on:
         type: string
 
 # Two Releases published back to back must not race each other to the same
-# branches; queue them instead of cancelling, since a cancelled bump is a lost one.
+# branch; queue them instead of cancelling, since a cancelled bump is a lost one.
 concurrency:
   group: bump-version
   cancel-in-progress: false
@@ -40,23 +40,22 @@ permissions:
 # version in a trailing comment) so a moved tag can't silently swap the code we
 # run. Dependabot keeps the pins current.
 jobs:
-  # `main` and `dev` are bumped as two independent matrix legs rather than by
-  # cherry-picking one branch's commit onto the other. Re-deriving "set the
-  # version to N" per branch cannot conflict and is idempotent, whereas a
-  # cherry-pick conflicts the moment the branches disagree — which they already
-  # do (main 1.0.0, dev 1.0.1).
+  # `main` is the only branch bumped here. Tags are cut from it, so it is the
+  # branch whose version has to move on; `dev` picks the bump up the next time
+  # `main` is merged down, like any other commit on `main`.
+  #
+  # This job used to bump `main` and `dev` as two matrix legs, each checked out
+  # by name. That turned an ordinary state — no `dev` branch, because it was
+  # deleted after a merge or never existed in this clone — into `couldn't find
+  # remote ref refs/heads/dev` and a red run on every published Release. A
+  # hard-coded branch list is only ever as correct as its least certain entry.
   bump:
-    name: Bump ${{ matrix.branch }}
+    name: Bump main
     runs-on: ubuntu-22.04
-    strategy:
-      # A failure on one branch is a real result about that branch; still try the other.
-      fail-fast: false
-      matrix:
-        branch: [main, dev]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.branch }}
+          ref: main
 
       # The tag is interpolated into the environment rather than into the script
       # body, so its contents can never be parsed as shell.
@@ -85,19 +84,20 @@ jobs:
           cache: npm
 
       # Makes a re-run harmless and lets a branch that is already ahead sit it
-      # out: on a v1.0.0 Release, dev (already 1.0.1) has nothing to do.
+      # out: dispatching this workflow for an old tag once a later one has
+      # shipped finds `main` past the target and does nothing.
       #
       # The branch's version is taken as the *lowest* of its manifests, not
       # package.json alone. `834040a` moved package.json and left the lockfile
       # on 0.1.0; reading one file would call a branch in that state up to date
       # and leave the laggard behind for good. Taking the minimum means any file
       # that has fallen behind re-runs the bump and re-syncs all four.
-      - name: Skip if ${{ matrix.branch }} is already at or past that version
+      - name: Skip if main is already at or past that version
         id: guard
         shell: bash
         env:
           NEXT: ${{ steps.next.outputs.next }}
-          BRANCH: ${{ matrix.branch }}
+          BRANCH: main
         run: |
           set -euo pipefail
           NPM_VER="$(node -p "require('./package.json').version")"
@@ -165,12 +165,12 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         run: npx prettier --write package.json package-lock.json
 
-      - name: Commit and push to ${{ matrix.branch }}
+      - name: Commit and push to main
         if: steps.guard.outputs.skip != 'true'
         shell: bash
         env:
           NEXT: ${{ steps.next.outputs.next }}
-          BRANCH: ${{ matrix.branch }}
+          BRANCH: main
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
@@ -200,7 +200,7 @@ jobs:
           package-lock.json once.
           EOF
 
-          # dev takes ordinary pushes and can move underneath this job.
+          # A PR can merge while this job runs, moving the branch underneath it.
           for attempt in 1 2 3; do
             if git push origin "HEAD:$BRANCH"; then
               echo "Pushed $NEXT to $BRANCH."
