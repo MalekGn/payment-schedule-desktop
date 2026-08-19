@@ -97,6 +97,7 @@ const MIGRATIONS: &[fn(&Connection) -> DbResult<()>] = &[
     m0001_initial_schema,
     m0002_client_archive,
     m0003_purchase_archive,
+    m0004_payment_date_index,
 ];
 
 /// Bring the database up to the latest schema version.
@@ -318,6 +319,18 @@ fn m0003_purchase_archive(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
+/// v4 — index `payment.payment_date`.
+///
+/// Every report aggregate filters or groups on this column, and the payment
+/// ledger has always ordered by it, but nothing indexed it: both were full
+/// scans. Index-only, so it is additive and replay-safe by construction — there
+/// is no `add_column_if_missing` dance because `CREATE INDEX IF NOT EXISTS` is
+/// already idempotent.
+fn m0004_payment_date_index(conn: &Connection) -> DbResult<()> {
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_payment_date ON payment(payment_date);")?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Date + status helpers (shared by commands and seed)
 // ---------------------------------------------------------------------------
@@ -413,6 +426,47 @@ pub const DATE_FORMATS: [&str; 4] = ["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "
 /// the ways it can be configured into never firing.
 pub const BACKUP_FREQUENCIES: [&str; 3] = ["daily", "weekly", "monthly"];
 
+/// The period sizes a report may bucket its collections into. Mirrors
+/// `REPORT_GRANULARITIES` in `src/types/models.ts`. Each maps to an `strftime`
+/// pattern in `commands::period_format`, so bucketing and ordering agree by
+/// construction rather than by two implementations happening to match.
+pub const REPORT_GRANULARITIES: [&str; 3] = ["day", "month", "year"];
+
+/// Inclusive bounds on a report's span, in days.
+///
+/// The upper bound is what stops a hostile — or merely mistyped — range from
+/// materializing one zero-filled bucket per day across a century. `day`
+/// granularity is only ever auto-selected below [`REPORT_DAY_MAX_SPAN`], but a
+/// caller may ask for it explicitly, so the bucket count has to be bounded here
+/// rather than left to the granularity heuristic.
+pub const REPORT_SPAN_DAYS_RANGE: std::ops::RangeInclusive<i64> = 1..=36_525;
+
+/// Longest span still bucketed by day, and by month, when the caller does not
+/// choose. Beyond the second, a report falls back to yearly buckets.
+pub const REPORT_DAY_MAX_SPAN: i64 = 62;
+pub const REPORT_MONTH_MAX_SPAN: i64 = 730;
+
+/// Most buckets one collections series may carry.
+///
+/// [`REPORT_SPAN_DAYS_RANGE`] already bounds the *allocation*, but not the size
+/// of the response: an explicit `day` granularity across a century is a legal
+/// request that would serialize 36 525 points across IPC and ask the renderer to
+/// draw as many bars. The auto-selected granularity never comes close — a
+/// century resolves to 100 yearly buckets — so this only ever refuses a request
+/// the UI does not make, in the same spirit as [`PAYMENT_LIMIT_RANGE`].
+pub const REPORT_MAX_BUCKETS: usize = 1_000;
+
+/// How many rows the "top clients" and "top products" tables carry. A report is
+/// a page someone reads, not a data export; the CSV carries the same ten.
+pub const REPORT_TOP_N: i64 = 10;
+
+/// Largest CSV the renderer may ask to have written to disk, in bytes.
+///
+/// A report or an overdue list is a few hundred kilobytes at worst. The cap is
+/// here because `export_csv` takes its payload straight from the renderer, so
+/// without one a hostile WebView could ask the backend to fill a disk.
+pub const EXPORT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// Time of day the automatic backup runs, when the shop has not chosen one.
 /// Late enough to catch a full trading day, early enough that someone is still
 /// there to see a failure.
@@ -458,6 +512,9 @@ pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
 pub const BACKUP_FAILED: &str = "BACKUP_FAILED";
+pub const EXPORT_FAILED: &str = "EXPORT_FAILED";
+pub const INVALID_GRANULARITY: &str = "INVALID_GRANULARITY";
+pub const REPORT_RANGE_TOO_LONG: &str = "REPORT_RANGE_TOO_LONG";
 pub const LICENSE_REQUIRED: &str = "LICENSE_REQUIRED";
 pub const INVALID_LICENSE: &str = "INVALID_LICENSE";
 

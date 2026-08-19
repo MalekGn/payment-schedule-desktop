@@ -10,6 +10,7 @@ import LoadError from "@/components/ui/LoadError.vue";
 import { buildImpayesCsv } from "@/lib/csv";
 import { todayIso } from "@/lib/finance";
 import { useFormat } from "@/composables/useFormat";
+import { useCsvExport } from "@/composables/useCsvExport";
 import { useLoader } from "@/composables/useLoader";
 import { useSortState, sortRows } from "@/composables/useSort";
 import { useContactActions } from "@/composables/useContactActions";
@@ -20,6 +21,7 @@ const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const fmt = useFormat();
+const { saveCsv } = useCsvExport();
 
 const impayes = ref<ImpayeClient[]>([]);
 
@@ -97,7 +99,7 @@ const contact = useContactActions();
  * above — the file used to be hard-coded French, so an Arabic or English user
  * got a localized UI and a French export.
  */
-function exportCsv() {
+async function exportCsv() {
   const csv = buildImpayesCsv(filtered.value, {
     client: t("impayes.columns.client"),
     phone: t("clients.columns.phone"),
@@ -108,14 +110,8 @@ function exportCsv() {
     daysLate: t("impaye.since"),
   });
 
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
   // Dated so successive exports don't silently overwrite one another.
-  a.download = `impayes-${todayIso()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  await saveCsv(`impayes-${todayIso()}.csv`, csv);
 }
 </script>
 

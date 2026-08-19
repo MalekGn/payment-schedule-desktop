@@ -25,6 +25,7 @@ const CODE_PARAMS: Record<string, readonly string[]> = {
   SUM_MISMATCH: ["sum", "total"],
   INSTALLMENT_COUNT_MISMATCH: ["sent", "declared"],
   TEXT_TOO_LONG: ["max"],
+  REPORT_RANGE_TOO_LONG: ["max"],
   OVERPAYMENT: ["remaining"],
   PREVIOUS_UNPAID: ["index"],
   BELOW_PAID: ["paidAmount"],

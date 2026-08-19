@@ -19,6 +19,8 @@ import type {
   PurchaseInput,
   PurchaseScope,
   PurchaseSummary,
+  Report,
+  ReportInput,
   ScheduleRow,
   Settings,
   SettingsPatch,
@@ -36,6 +38,30 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 async function openWithOs(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   return openUrl(url);
+}
+
+/**
+ * Ask for a destination, then have the backend write the CSV there.
+ *
+ * The desktop half of {@link api.saveCsv}. A `Blob` and an `<a download>` — what
+ * the export buttons used to do — is a browser mechanism with no counterpart in
+ * the WebView, so the click did nothing at all in the shipped app. The renderer
+ * cannot write the file itself either: there is deliberately no `fs` plugin. So
+ * this mirrors the backup flow — the dialog yields a path, `export_csv` writes
+ * it.
+ *
+ * Resolves `false` when the user dismisses the dialog, which is a cancellation
+ * and not a failure; the caller should stay quiet about it.
+ */
+async function writeCsvToChosenPath(suggestedName: string, contents: string): Promise<boolean> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const dest = await save({
+    defaultPath: suggestedName,
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (typeof dest !== "string") return false;
+  await invoke<void>("export_csv", { dest, contents });
+  return true;
 }
 
 /**
@@ -194,6 +220,18 @@ export const api = {
       ? invoke("get_dashboard", { upcomingDays })
       : Promise.resolve(mockDb.getDashboard(upcomingDays)),
 
+  // -- rapports --
+  /**
+   * Aggregated figures over a date range.
+   *
+   * Aggregation happens in the Rust core rather than here for a reason worth
+   * not undoing: `listAllPayments` caps at 500 rows, so totalling it in the
+   * renderer would under-report revenue on any shop past its five-hundredth
+   * payment, and do it silently.
+   */
+  getReport: (input: ReportInput): Promise<Report> =>
+    isTauri() ? invoke("get_report", { input }) : Promise.resolve(mockDb.getReport(input)),
+
   // -- settings --
   getSettings: (): Promise<Settings> =>
     isTauri() ? invoke("get_settings") : Promise.resolve(mockDb.getSettings()),
@@ -228,6 +266,18 @@ export const api = {
    */
   openExternal: (url: string): Promise<void> =>
     isTauri() ? openWithOs(url) : Promise.resolve(mockDb.openExternal(url)),
+
+  /**
+   * Save a CSV the caller has already rendered.
+   *
+   * Resolves `true` when a file was written and `false` when the user cancelled
+   * the save dialog — so a caller can tell "done" from "never mind" without
+   * catching anything. A genuine failure still rejects, with `EXPORT_FAILED`.
+   */
+  saveCsv: (suggestedName: string, contents: string): Promise<boolean> =>
+    isTauri()
+      ? writeCsvToChosenPath(suggestedName, contents)
+      : Promise.resolve(mockDb.saveCsv(suggestedName, contents)),
 
   // -- licence --
   /**

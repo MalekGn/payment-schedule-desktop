@@ -67,6 +67,9 @@
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |
 //! | `BACKUP_FAILED`               | Database snapshot could not be written         |
+//! | `EXPORT_FAILED`               | CSV export could not be written to the path    |
+//! | `INVALID_GRANULARITY`         | Report bucket size outside day/month/year      |
+//! | `REPORT_RANGE_TOO_LONG:{max}` | Report span wider than `max` days              |
 //! | `LICENSE_REQUIRED`            | The command is licensed and no valid licence   |
 //! | `INVALID_LICENSE:{status}`    | Import rejected the file; `status` is the tag  |
 //! | `INTERNAL`                    | Anything else; the detail is in the log only   |

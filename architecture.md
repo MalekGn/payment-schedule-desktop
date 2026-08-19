@@ -75,8 +75,8 @@ direct database or filesystem access.
   access" rule. The asset protocol is scoped to `$APPDATA/logo.*` — the single
   file the renderer is allowed to read.
 - **`commands.rs`** — the full API surface (`#[tauri::command]`): clients,
-  purchases, installments, payments, impayés, schedule, dashboard, settings,
-  logo, backup. Every command is `async` so Tauri runs it on the async runtime
+  purchases, installments, payments, impayés, schedule, dashboard, reports,
+  settings, logo, backup. Every command is `async` so Tauri runs it on the async runtime
   instead of inline on the IPC/main event-loop thread; none of them `await`, so
   the connection guard never spans a suspension point. Each validates its
   arguments, locks the shared connection, and — for the mutating commands —
@@ -428,6 +428,81 @@ two agree, and deleting the Rust half would leave it checking nothing.
   `amount - paid_amount` is summed directly into the outstanding and overdue
   aggregates, so a negative row would cancel out another client's real debt.
 
+### Reports: aggregate in SQL, and label the two clocks
+
+`get_report` is the one read model that does **not** go through
+`build_purchase_detail`. It runs eight `GROUP BY` aggregates against a date range
+and returns totals, a collections series, ageing buckets, client risk and product
+sales in one payload.
+
+Two things about it are load-bearing.
+
+**It has to aggregate in the backend.** The frontend's widest window onto the
+ledger is `list_all_payments`, clamped by `PAYMENT_LIMIT_RANGE` — 500 rows as the
+UI calls it. Summing that in the renderer would under-report revenue for any shop
+past its five-hundredth payment, and do it silently: every screen would still
+look right. The per-row read models are also the wrong shape, at three queries
+per purchase.
+
+**It reports against two different clocks, and says which is which.**
+
+- _Period_ figures — sales, collected, payment count, new clients, and every
+  point in the collections series — come from `payment.payment_date`,
+  `purchase.purchase_date` and `client.created_at`. These are genuinely
+  historical: "collected in July" stays true forever.
+- _Balance_ figures — outstanding, overdue, the ageing buckets and the client
+  risk table — are a snapshot taken as of **today**, not reconstructed for a past
+  date. `ReportRange::as_of` is echoed back precisely so the screen and the CSV
+  can label them separately.
+
+Reconstructing balances at a past date is possible — the ledger sums to
+`installment.paid_amount`, because `update_installment` records corrections as
+signed `payment` rows rather than overwriting — but it is deliberately not
+attempted. Presenting the two groups as one consistent statement is the failure
+mode this split exists to prevent.
+
+Two bounds guard the response. `REPORT_SPAN_DAYS_RANGE` caps the range itself,
+and `REPORT_MAX_BUCKETS` caps how many periods the collections series may carry —
+an explicit `day` granularity across a century is a legal request that would put
+36 525 points on the wire. The auto-selected granularity never approaches either
+(a century resolves to 100 yearly buckets), so both only ever refuse a request
+the UI does not make. Same reasoning as `PAYMENT_LIMIT_RANGE`.
+
+One aggregate is deliberately unjoined: `collected` does not filter archived
+purchases, because `archive_purchase` refuses once a payment exists and
+`record_payment` refuses an archived purchase, so there is nothing to exclude.
+Everything else filters `archived_at IS NULL`, matching `list_schedule_rows`.
+`client.created_at` is narrowed with `date()` before comparing — it is a
+`datetime('now')` stamp, so a bare comparison drops everyone created on the
+closing day of the range.
+
+### Writing a file the user picked
+
+Two commands write outside the database: `backup_database` and `export_csv`.
+Both exist because the renderer cannot write files at all — no `fs` plugin, no
+`fs:*` permission — and both follow the same shape: the renderer picks a
+destination with the dialog plugin and hands the path over, the write happens in
+Rust.
+
+`export_csv` replaced a `Blob` + `<a download>` in the two export buttons. That
+is a browser mechanism with no counterpart in the WebView, so those buttons
+silently did nothing in a shipped build while working perfectly in the dev
+preview and the E2E suite, both of which run in Chromium.
+
+The destination is untrusted in both commands — normally the save dialog's
+answer, but the renderer can pass any path. `backup_database` guards it with an
+extension check _and_ a SQLite magic-header check on any existing file.
+`export_csv` only has the first: CSV has no magic bytes, so any text file is a
+plausible one. The bound that remains is still real — it can only overwrite files
+the user named `.csv` — but it is weaker, and deliberately so rather than by
+oversight.
+
+They differ on durability for the same reason they differ on guards. A backup is
+staged in app data and renamed into place, because a truncated backup is
+discovered at restore time when it is the only copy. An export is written
+directly, because a truncated export is discovered immediately and fixed by
+pressing the button again.
+
 ### Schema versioning
 
 `db.rs` holds an **append-only** `MIGRATIONS` slice; the index in it is the
@@ -449,6 +524,11 @@ previous installer does not merely misread a rebuilt schema — it will not
 launch. A destructive step therefore makes "reinstall the old version" stop
 being a recovery option for every user who has already upgraded. Nothing in CI
 enforces this; it is a review rule.
+
+`m0004_payment_date_index` is index-only: every report aggregate filters or
+groups on `payment.payment_date`, and the payment ledger has always ordered by
+it, but nothing indexed it. It needs no `add_column_if_missing` guard because
+`CREATE INDEX IF NOT EXISTS` is already idempotent.
 
 **Every step must be replay-safe, not just `m0001`.** `m0002_client_archive` was
 the first appended step, and it has to check `pragma_table_info` before its

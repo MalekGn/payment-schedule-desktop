@@ -14,24 +14,30 @@
 //! `src/lib/errors.ts` maps to a localized message. Internal detail is logged,
 //! never sent.
 
+use std::collections::HashMap;
+
+use chrono::{Datelike, NaiveDate};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use tauri::State;
 
 use crate::db::{
     add_interval, installment_status, parse_date, purchase_status, split_amounts, today, AppError,
     Db, DbResult, BACKUP_FREQUENCIES, CURRENCY_CODES, DATE_FORMATS, DEFAULT_BACKUP_TIME,
-    INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, LANGUAGES, LONG_TEXT_MAX,
-    MONEY_RANGE, PAYMENT_LIMIT_RANGE, SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
+    EXPORT_MAX_BYTES, INSTALLMENT_COUNT_RANGE, INTERVAL_DAYS_RANGE, INTERVAL_KINDS, LANGUAGES,
+    LONG_TEXT_MAX, MONEY_RANGE, PAYMENT_LIMIT_RANGE, REPORT_DAY_MAX_SPAN, REPORT_GRANULARITIES,
+    REPORT_MAX_BUCKETS, REPORT_MONTH_MAX_SPAN, REPORT_SPAN_DAYS_RANGE, REPORT_TOP_N,
+    SHORT_TEXT_MAX, UPCOMING_DAYS_RANGE,
 };
 use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
-    CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER,
+    CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER, EXPORT_FAILED,
     FUTURE_PAID_DATE, INSTALLMENT_COUNT_MISMATCH, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
-    INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE,
-    INVALID_LOGO_TYPE, INVALID_SETTING_VALUE, INVALID_TOTAL_PRICE, LICENSE_REQUIRED,
-    LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT, PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED,
-    PREVIOUS_UNPAID, PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED,
-    PURCHASE_NOT_FOUND, SCHEDULE_VIA_PURCHASE, SUM_MISMATCH, TEXT_REQUIRED, TEXT_TOO_LONG,
+    INVALID_DATE, INVALID_GRANULARITY, INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS,
+    INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE, INVALID_SETTING_VALUE,
+    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT,
+    PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
+    PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, REPORT_RANGE_TOO_LONG,
+    SCHEDULE_VIA_PURCHASE, SUM_MISMATCH, TEXT_REQUIRED, TEXT_TOO_LONG,
 };
 use crate::license::{self, LicenseInfo, LicenseState, LicenseStatus};
 use crate::models::*;
@@ -1898,6 +1904,396 @@ pub async fn get_dashboard(
 }
 
 // ===========================================================================
+// Rapports (reports)
+// ===========================================================================
+//
+// Why this aggregates in SQL rather than in the renderer: the frontend's widest
+// window onto the ledger is `list_all_payments`, which clamps at
+// `PAYMENT_LIMIT_RANGE` — 500 rows as the UI calls it. Summing that client-side
+// would under-report revenue for any shop past its five-hundredth payment, and
+// under-report it *silently*. The per-row read models are the wrong shape too:
+// `list_purchases`, `get_client_detail` and `get_dashboard` all go through
+// `build_purchase_detail` at three queries per purchase, which is fine for a
+// page of rows and quadratic nonsense for a year of them.
+//
+// See the module comment on `models::Report` for the period-versus-as-of split
+// that governs which figures here are historical and which are a snapshot.
+
+/// The `strftime` pattern that turns a date into a bucket key for `granularity`.
+///
+/// Bucketing and ordering both come from this one pattern, so they cannot
+/// disagree: every key is fixed-width and zero-padded, which makes
+/// lexicographic order chronological order.
+fn period_format(granularity: &str) -> &'static str {
+    match granularity {
+        "day" => "%Y-%m-%d",
+        "year" => "%Y",
+        // `month` and anything else; the caller has already validated the value
+        // against `REPORT_GRANULARITIES`, so this arm is only reached for
+        // "month".
+        _ => "%Y-%m",
+    }
+}
+
+/// Pick a bucket size for a span the caller did not choose one for.
+///
+/// Thresholds rather than a formula because the answer is about legibility, not
+/// arithmetic: two months of daily bars is readable, two years of them is a
+/// smear.
+fn default_granularity(span_days: i64) -> &'static str {
+    if span_days <= REPORT_DAY_MAX_SPAN {
+        "day"
+    } else if span_days <= REPORT_MONTH_MAX_SPAN {
+        "month"
+    } else {
+        "year"
+    }
+}
+
+/// Every bucket key the range covers, in order, including the empty ones.
+///
+/// The gaps are the reason this exists. Grouping in SQL only returns periods
+/// that have rows, so a month with no takings would vanish from the series and
+/// the chart would draw a continuous line over a hole. Enumerating the calendar
+/// here and letting the query fill it in keeps the axis honest.
+fn period_keys(from: NaiveDate, to: NaiveDate, granularity: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    match granularity {
+        "day" => {
+            let mut d = from;
+            while d <= to {
+                keys.push(d.to_string());
+                match d.succ_opt() {
+                    Some(next) => d = next,
+                    // Unreachable for any validated range; saturating beats
+                    // panicking under `panic = "abort"`.
+                    None => break,
+                }
+            }
+        }
+        "year" => {
+            for y in from.year()..=to.year() {
+                keys.push(format!("{y:04}"));
+            }
+        }
+        _ => {
+            let (mut y, mut m) = (from.year(), from.month());
+            let (end_y, end_m) = (to.year(), to.month());
+            while (y, m) <= (end_y, end_m) {
+                keys.push(format!("{y:04}-{m:02}"));
+                if m == 12 {
+                    y += 1;
+                    m = 1;
+                } else {
+                    m += 1;
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Sum a dated money column into bucket keys.
+///
+/// `date_expr` is interpolated into the SQL, so it is never caller-controlled —
+/// every call site below passes a literal column name.
+fn sum_by_period(
+    conn: &Connection,
+    table_and_join: &str,
+    date_expr: &str,
+    amount_expr: &str,
+    fmt: &str,
+    from: &str,
+    to: &str,
+) -> DbResult<HashMap<String, i64>> {
+    let sql = format!(
+        "SELECT strftime(?1, {date_expr}) AS period, COALESCE(SUM({amount_expr}),0) AS total
+           FROM {table_and_join}
+          WHERE {date_expr} BETWEEN ?2 AND ?3
+          GROUP BY period"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![fmt, from, to], |r| {
+        Ok((r.get::<_, String>("period")?, r.get::<_, i64>("total")?))
+    })?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (period, total) = row?;
+        out.insert(period, total);
+    }
+    Ok(out)
+}
+
+/// Aggregated figures over a date range, for the Rapports screen.
+#[tauri::command]
+pub async fn get_report(
+    db: State<'_, Db>,
+    lic: State<'_, LicenseState>,
+    input: ReportInput,
+) -> DbResult<Report> {
+    require_license(&lic)?;
+    get_report_impl(&db.lock(), &input)
+}
+
+/// Split out from the command so the whole aggregation is reachable from
+/// `cargo test` without a Tauri `State`, like every other non-trivial command in
+/// this module.
+pub(crate) fn get_report_impl(conn: &Connection, input: &ReportInput) -> DbResult<Report> {
+    let from = parse_date(&input.date_from)?;
+    let to = parse_date(&input.date_to)?;
+    if from > to {
+        return Err(AppError::validation(INVALID_DATE));
+    }
+    // Inclusive of both ends, which is what a shop means by "1 to 31 January".
+    let span_days = (to - from).num_days() + 1;
+    if !REPORT_SPAN_DAYS_RANGE.contains(&span_days) {
+        return Err(AppError::conflict(
+            REPORT_RANGE_TOO_LONG,
+            REPORT_SPAN_DAYS_RANGE.end(),
+        ));
+    }
+
+    let granularity = match input.granularity.as_deref() {
+        None => default_granularity(span_days).to_string(),
+        Some(g) if REPORT_GRANULARITIES.contains(&g) => g.to_string(),
+        Some(_) => return Err(AppError::validation(INVALID_GRANULARITY)),
+    };
+    let fmt = period_format(&granularity);
+
+    // Resolved before any query runs, so an over-wide request is refused rather
+    // than served after eight aggregates have already been computed.
+    let periods = period_keys(from, to, &granularity);
+    if periods.len() > REPORT_MAX_BUCKETS {
+        return Err(AppError::conflict(
+            REPORT_RANGE_TOO_LONG,
+            REPORT_MAX_BUCKETS,
+        ));
+    }
+
+    let from_s = from.to_string();
+    let to_s = to.to_string();
+    let as_of = today();
+    let as_of_s = as_of.to_string();
+
+    // --- period figures: genuinely historical ------------------------------
+    //
+    // Archived purchases are excluded, matching `list_schedule_rows` and the
+    // dashboard: an archived purchase has been taken off the books, so it was
+    // never sold as far as any total is concerned.
+    let (sales_count, sales_amount): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(total_price),0) FROM purchase
+          WHERE archived_at IS NULL AND purchase_date BETWEEN ?1 AND ?2",
+        params![&from_s, &to_s],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    // Deliberately unjoined, for the reason spelled out in `get_dashboard`:
+    // `archive_purchase` refuses once a payment exists and `record_payment`
+    // refuses an archived purchase, so an archived purchase has no payments to
+    // exclude. `payment_count` counts ledger *entries*, which includes the
+    // signed correction rows `update_installment` writes — that is the honest
+    // number for a ledger, and `collected` nets them out on its own.
+    let (payment_count, collected): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payment
+          WHERE payment_date BETWEEN ?1 AND ?2",
+        params![&from_s, &to_s],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    // `created_at` is a `datetime('now')` stamp, not a plain date, so it must be
+    // narrowed before comparing: `'2026-08-19 10:04:11' BETWEEN '2026-08-01' AND
+    // '2026-08-19'` is false, and the last day of every range would go missing.
+    let new_clients: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM client WHERE date(created_at) BETWEEN ?1 AND ?2",
+        params![&from_s, &to_s],
+        |r| r.get(0),
+    )?;
+
+    // --- balance figures: a snapshot as of today ---------------------------
+    let outstanding_now: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(i.amount - i.paid_amount),0) FROM installment i
+          WHERE EXISTS (SELECT 1 FROM purchase pu
+                         WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
+        [],
+        |r| r.get(0),
+    )?;
+    let overdue_now: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(i.amount - i.paid_amount),0) FROM installment i
+          WHERE i.due_date < ?1 AND i.amount > i.paid_amount
+            AND EXISTS (SELECT 1 FROM purchase pu
+                         WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)",
+        [&as_of_s],
+        |r| r.get(0),
+    )?;
+
+    let totals = ReportTotals {
+        sales_count,
+        sales_amount,
+        collected,
+        payment_count,
+        outstanding_now,
+        overdue_now,
+        new_clients,
+    };
+
+    // --- collections series ------------------------------------------------
+    let collected_by = sum_by_period(
+        conn,
+        "payment",
+        "payment_date",
+        "amount",
+        fmt,
+        &from_s,
+        &to_s,
+    )?;
+    let due_by = sum_by_period(
+        conn,
+        "installment i JOIN purchase pu ON pu.id = i.purchase_id AND pu.archived_at IS NULL",
+        "i.due_date",
+        "i.amount",
+        fmt,
+        &from_s,
+        &to_s,
+    )?;
+    let collections = periods
+        .into_iter()
+        .map(|period| PeriodPoint {
+            collected: collected_by.get(&period).copied().unwrap_or(0),
+            due: due_by.get(&period).copied().unwrap_or(0),
+            period,
+        })
+        .collect();
+
+    // --- aging of what is still owed, as of today --------------------------
+    //
+    // Bucketed in SQL so the boundaries live in one place. `days_late` is
+    // `as_of - due_date`: due today is 0 and lands in `current`, so the first
+    // late bucket genuinely starts at one day.
+    let mut aging_by: HashMap<String, (i64, i64)> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT CASE
+                      WHEN i.due_date >= ?1 THEN 'current'
+                      WHEN julianday(?1) - julianday(i.due_date) <= 30 THEN '1-30'
+                      WHEN julianday(?1) - julianday(i.due_date) <= 60 THEN '31-60'
+                      WHEN julianday(?1) - julianday(i.due_date) <= 90 THEN '61-90'
+                      ELSE '90+'
+                    END AS bucket,
+                    COUNT(*) AS n,
+                    COALESCE(SUM(i.amount - i.paid_amount),0) AS amount
+               FROM installment i
+              WHERE i.amount > i.paid_amount
+                AND EXISTS (SELECT 1 FROM purchase pu
+                             WHERE pu.id = i.purchase_id AND pu.archived_at IS NULL)
+              GROUP BY bucket",
+        )?;
+        let rows = stmt.query_map([&as_of_s], |r| {
+            Ok((
+                r.get::<_, String>("bucket")?,
+                r.get::<_, i64>("n")?,
+                r.get::<_, i64>("amount")?,
+            ))
+        })?;
+        for row in rows {
+            let (bucket, n, amount) = row?;
+            aging_by.insert(bucket, (n, amount));
+        }
+    }
+    // All five emitted in a fixed order, present or not, so the UI renders a
+    // stable table instead of one whose rows appear and disappear with the data.
+    let aging = AGING_BUCKETS
+        .iter()
+        .map(|&bucket| {
+            let (count, amount) = aging_by.get(bucket).copied().unwrap_or((0, 0));
+            AgingBucket {
+                bucket: bucket.to_string(),
+                count,
+                amount,
+            }
+        })
+        .collect();
+
+    // --- who owes the most, as of today ------------------------------------
+    let mut top_clients = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.first_name, c.last_name,
+                    COALESCE(SUM(i.amount - i.paid_amount),0) AS outstanding,
+                    COALESCE(SUM(CASE WHEN i.due_date < ?1
+                                      THEN i.amount - i.paid_amount ELSE 0 END),0) AS overdue,
+                    COUNT(CASE WHEN i.due_date < ?1 THEN 1 END) AS overdue_count
+               FROM client c
+               JOIN purchase pu ON pu.client_id = c.id AND pu.archived_at IS NULL
+               JOIN installment i ON i.purchase_id = pu.id AND i.amount > i.paid_amount
+              GROUP BY c.id
+              ORDER BY outstanding DESC, c.last_name COLLATE NOCASE, c.first_name COLLATE NOCASE
+              LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![&as_of_s, REPORT_TOP_N], |r| {
+            let first: String = r.get("first_name")?;
+            let last: String = r.get("last_name")?;
+            Ok(ClientRisk {
+                client_id: r.get("id")?,
+                client_name: format!("{first} {last}"),
+                outstanding: r.get("outstanding")?,
+                overdue: r.get("overdue")?,
+                overdue_count: r.get("overdue_count")?,
+            })
+        })?;
+        for row in rows {
+            top_clients.push(row?);
+        }
+    }
+
+    // --- what sold in the range --------------------------------------------
+    //
+    // Period-scoped, unlike `top_clients` directly above: this answers "what did
+    // we sell in January", not "what is owed on right now".
+    let mut top_products = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT product_label,
+                    COUNT(*) AS purchase_count,
+                    COALESCE(SUM(total_price),0) AS total_amount
+               FROM purchase
+              WHERE archived_at IS NULL AND purchase_date BETWEEN ?1 AND ?2
+              GROUP BY product_label
+              ORDER BY total_amount DESC, purchase_count DESC, product_label COLLATE NOCASE
+              LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![&from_s, &to_s, REPORT_TOP_N], |r| {
+            Ok(ProductLine {
+                product_label: r.get("product_label")?,
+                purchase_count: r.get("purchase_count")?,
+                total_amount: r.get("total_amount")?,
+            })
+        })?;
+        for row in rows {
+            top_products.push(row?);
+        }
+    }
+
+    Ok(Report {
+        range: ReportRange {
+            from: from_s,
+            to: to_s,
+            as_of: as_of_s,
+            granularity,
+        },
+        totals,
+        collections,
+        aging,
+        top_clients,
+        top_products,
+    })
+}
+
+/// The aging buckets, in the order they are reported. Mirrored by
+/// `AGING_BUCKETS` in `src/types/models.ts` and by the `rapports.aging.*` keys
+/// in every locale file.
+pub(crate) const AGING_BUCKETS: [&str; 5] = ["current", "1-30", "31-60", "61-90", "90+"];
+
+// ===========================================================================
 // Settings
 // ===========================================================================
 
@@ -2455,6 +2851,70 @@ fn discard(staged: &std::path::Path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => log::warn!("could not remove the backup staging file: {e}"),
     }
+}
+
+// ===========================================================================
+// CSV export
+// ===========================================================================
+
+/// Write a CSV the renderer built to a path the user picked.
+///
+/// # Why this is a command at all
+///
+/// The renderer used to do this itself, with a `Blob` and an `<a download>`.
+/// That is a *browser* mechanism: it works in the dev preview and in the E2E
+/// suite, and does nothing at all inside the WebView, which has no download
+/// manager. The click was silently inert in the shipped app — for the Impayés
+/// export as well as for Rapports.
+///
+/// Writing it from the frontend instead is not an option: there is deliberately
+/// no `fs` plugin and no `fs:*` permission (see `lib.rs`). So this follows the
+/// same shape as `backup_database` — the renderer picks a destination with the
+/// dialog plugin and hands the path over, and the write happens here.
+#[tauri::command]
+pub async fn export_csv(
+    lic: State<'_, LicenseState>,
+    dest: String,
+    contents: String,
+) -> DbResult<()> {
+    require_license(&lic)?;
+    export_csv_impl(std::path::Path::new(&dest), &contents)
+}
+
+/// Split out from the command so the guards are reachable from `cargo test`.
+pub(crate) fn export_csv_impl(dest: &std::path::Path, contents: &str) -> DbResult<()> {
+    // `dest` is untrusted. It normally comes from the native save dialog, but
+    // the renderer can call this command with any path at all.
+    //
+    // The extension check is the guard, and it is weaker than the one
+    // `backup_database` gets to use: a SQLite file announces itself with a magic
+    // header, so a backup can refuse to clobber anything that is not already a
+    // database. CSV has no such marker — any text file is a plausible CSV — so
+    // there is nothing to sniff. What remains is still a real bound: the only
+    // files this can overwrite are ones the user named `.csv`.
+    if dest.extension().and_then(|e| e.to_str()) != Some("csv") {
+        log::warn!("rejected a CSV export destination without a .csv extension");
+        return Err(AppError::validation(EXPORT_FAILED));
+    }
+    if contents.len() > EXPORT_MAX_BYTES {
+        log::warn!(
+            "rejected a CSV export of {} bytes, over the {EXPORT_MAX_BYTES} cap",
+            contents.len()
+        );
+        return Err(AppError::validation(EXPORT_FAILED));
+    }
+
+    // Written in place rather than staged-then-renamed, unlike `backup_database`.
+    // The difference is what a half-written file costs: a truncated backup is
+    // discovered at restore time, when it is the only copy and it is too late.
+    // A truncated export is discovered immediately and fixed by pressing the
+    // button again, because the data it came from is still in the database.
+    if let Err(e) = std::fs::write(dest, contents) {
+        log::error!("could not write the CSV export: {e}");
+        return Err(AppError::validation(EXPORT_FAILED));
+    }
+    log::info!("wrote a CSV export of {} bytes", contents.len());
+    Ok(())
 }
 
 // ===========================================================================
@@ -5717,6 +6177,417 @@ mod tests {
         assert!(
             !json.contains("watermark") && !json.contains("2026-07-28"),
             "the watermark must not reach the renderer: {json}"
+        );
+    }
+    // --- rapports ----------------------------------------------------------
+
+    /// A purchase with one unpaid installment due on `due`. Built with raw SQL
+    /// rather than `create_purchase_impl` because these tests are about the
+    /// aging boundaries, which need a due date placed an exact number of days
+    /// from today — something the schedule generator will not do on request.
+    fn owed_on(f: &Fixture, due: NaiveDate, amount: i64) -> i64 {
+        let conn = f.db.lock();
+        conn.execute(
+            "INSERT INTO purchase (reference, client_id, product_label, total_price,
+                                   installment_count, interval_kind, purchase_date)
+             VALUES ('A-TEST', ?1, 'Test', ?2, 1, 'monthly', ?3)",
+            params![f.client_id, amount, due.to_string()],
+        )
+        .unwrap();
+        let purchase_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO installment (purchase_id, idx, amount, due_date, paid_amount)
+             VALUES (?1, 1, ?2, ?3, 0)",
+            params![purchase_id, amount, due.to_string()],
+        )
+        .unwrap();
+        purchase_id
+    }
+
+    fn report_between(f: &Fixture, from: &str, to: &str) -> Report {
+        get_report_impl(
+            &f.db.lock(),
+            &ReportInput {
+                date_from: from.into(),
+                date_to: to.into(),
+                granularity: None,
+            },
+        )
+        .unwrap()
+    }
+
+    fn days_ago(n: i64) -> NaiveDate {
+        today() - chrono::Duration::days(n)
+    }
+
+    fn bucket<'a>(report: &'a Report, name: &str) -> &'a AgingBucket {
+        report
+            .aging
+            .iter()
+            .find(|b| b.bucket == name)
+            .unwrap_or_else(|| panic!("bucket {name} must always be present"))
+    }
+
+    /// Both ends of the range belong to it. A shop asking for "1 to 31 January"
+    /// means the whole month, and an exclusive end would drop the last day's
+    /// takings from every report anyone ever runs.
+    #[test]
+    fn report_range_ends_are_inclusive() {
+        let f = Fixture::new("report_bounds");
+        let detail = seeded_purchase(&f);
+        let inst = detail.installments[0].id;
+
+        {
+            let conn = f.db.lock();
+            for (date, amount) in [
+                ("2024-05-31", 10), // the day before
+                ("2024-06-01", 20), // first day of the range
+                ("2024-06-30", 40), // last day of the range
+                ("2024-07-01", 80), // the day after
+            ] {
+                conn.execute(
+                    "INSERT INTO payment (installment_id, amount, payment_date)
+                     VALUES (?1, ?2, ?3)",
+                    params![inst, amount, date],
+                )
+                .unwrap();
+            }
+        }
+
+        let r = report_between(&f, "2024-06-01", "2024-06-30");
+        assert_eq!(
+            r.totals.collected, 60,
+            "only the two payments inside the range count"
+        );
+        assert_eq!(r.totals.payment_count, 2);
+    }
+
+    /// `client.created_at` is a `datetime('now')` stamp, so comparing it against
+    /// a bare date silently drops everyone created on the final day of the
+    /// range — the whole reason the query narrows it with `date()`.
+    #[test]
+    fn new_clients_counts_someone_created_on_the_last_day() {
+        let f = Fixture::new("report_new_clients");
+        {
+            let conn = f.db.lock();
+            conn.execute(
+                "INSERT INTO client (first_name, last_name, phone, created_at)
+                 VALUES ('Late', 'Arrival', '', '2024-06-30 23:14:02')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let r = report_between(&f, "2024-06-01", "2024-06-30");
+        assert_eq!(
+            r.totals.new_clients, 1,
+            "a client stamped late on the closing day is still inside the range"
+        );
+    }
+
+    /// An archived purchase has been taken off the books, so it must not appear
+    /// as a sale, in the amount owed, or in the aging — the same rule every
+    /// other money read model follows.
+    #[test]
+    fn report_excludes_archived_purchases() {
+        let f = Fixture::new("report_archived");
+        let purchase_id = owed_on(&f, days_ago(45), 500);
+
+        let before = report_between(&f, "2000-01-01", "2049-12-31");
+        assert_eq!(before.totals.sales_amount, 500);
+        assert_eq!(before.totals.outstanding_now, 500);
+        assert_eq!(bucket(&before, "31-60").amount, 500);
+
+        archive_purchase_impl(&mut f.db.lock(), purchase_id).unwrap();
+
+        let after = report_between(&f, "2000-01-01", "2049-12-31");
+        assert_eq!(after.totals.sales_amount, 0, "archived is not sold");
+        assert_eq!(after.totals.outstanding_now, 0, "archived is not owed");
+        assert_eq!(after.totals.overdue_now, 0);
+        assert_eq!(bucket(&after, "31-60").amount, 0, "and not aged either");
+        assert!(after.top_clients.is_empty());
+        assert!(after.top_products.is_empty());
+    }
+
+    /// The aging boundaries, pinned at every edge. `days_late` is
+    /// `today - due_date`, so due-today is 0 and belongs to `current`; the ranges
+    /// are inclusive of their upper bound.
+    #[test]
+    fn aging_buckets_split_at_their_documented_edges() {
+        let f = Fixture::new("report_aging");
+        // One installment per boundary, each worth a distinguishable amount.
+        for (days, amount) in [
+            (-1, 1),  // due tomorrow
+            (0, 2),   // due today
+            (1, 4),   // one day late
+            (30, 8),  // last day of 1-30
+            (31, 16), // first day of 31-60
+            (60, 32), // last day of 31-60
+            (61, 64), // first day of 61-90
+            (90, 128),
+            (91, 256),
+        ] {
+            owed_on(&f, days_ago(days), amount);
+        }
+
+        let r = report_between(&f, "2000-01-01", "2049-12-31");
+        assert_eq!(bucket(&r, "current").amount, 1 + 2, "not yet late");
+        assert_eq!(bucket(&r, "1-30").amount, 4 + 8);
+        assert_eq!(bucket(&r, "31-60").amount, 16 + 32);
+        assert_eq!(bucket(&r, "61-90").amount, 64 + 128);
+        assert_eq!(bucket(&r, "90+").amount, 256);
+
+        assert_eq!(
+            r.aging.len(),
+            AGING_BUCKETS.len(),
+            "all five buckets are always reported"
+        );
+        let owed: i64 = r.aging.iter().map(|b| b.amount).sum();
+        assert_eq!(
+            owed, r.totals.outstanding_now,
+            "the buckets must partition what is owed, losing nothing"
+        );
+        assert_eq!(
+            r.totals.overdue_now,
+            owed - bucket(&r, "current").amount,
+            "overdue is everything except what is not yet due"
+        );
+    }
+
+    /// Corrections are written to the ledger as signed rows rather than by
+    /// overwriting, so `collected` has to net them out — otherwise a corrected
+    /// figure would be counted twice in every report covering it.
+    #[test]
+    fn collected_nets_out_a_signed_correction() {
+        let f = Fixture::new("report_correction");
+        let detail = seeded_purchase(&f);
+        let inst = detail.installments[0].id;
+
+        {
+            let mut conn = f.db.lock();
+            record_payment_impl(
+                &mut conn,
+                PaymentInput {
+                    installment_id: inst,
+                    amount: 200,
+                    payment_date: "2024-02-10".into(),
+                    note: None,
+                },
+            )
+            .unwrap();
+            // Correct it down to 150; the editor records the -50 difference.
+            update_installment_impl(
+                &mut conn,
+                inst,
+                InstallmentEdit {
+                    paid_amount: Some(150),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let r = report_between(&f, "2000-01-01", "2049-12-31");
+        let ledger: i64 = f.count("SELECT COALESCE(SUM(amount),0) FROM payment");
+        assert_eq!(
+            ledger, 150,
+            "the ledger itself must net to the corrected sum"
+        );
+        assert_eq!(
+            r.totals.collected, ledger,
+            "the report must agree with the ledger it reads"
+        );
+    }
+
+    /// Grouping in SQL only returns periods that have rows, which would let a
+    /// month with no takings vanish and the chart draw straight over the hole.
+    #[test]
+    fn the_series_carries_every_period_including_the_empty_ones() {
+        let f = Fixture::new("report_series");
+        let detail = seeded_purchase(&f);
+        let inst = detail.installments[0].id;
+        {
+            let conn = f.db.lock();
+            conn.execute(
+                "INSERT INTO payment (installment_id, amount, payment_date)
+                 VALUES (?1, 300, '2024-03-15')",
+                [inst],
+            )
+            .unwrap();
+        }
+
+        // A quarter, which resolves to monthly buckets.
+        let r = report_between(&f, "2024-01-01", "2024-03-31");
+        assert_eq!(r.range.granularity, "month");
+        let periods: Vec<&str> = r.collections.iter().map(|p| p.period.as_str()).collect();
+        assert_eq!(periods, ["2024-01", "2024-02", "2024-03"]);
+        assert_eq!(r.collections[0].collected, 0);
+        assert_eq!(r.collections[1].collected, 0);
+        assert_eq!(r.collections[2].collected, 300);
+    }
+
+    /// The thresholds are asserted against the constants rather than against
+    /// hardcoded dates, so moving a constant cannot leave this passing by
+    /// accident.
+    #[test]
+    fn granularity_is_chosen_from_the_span() {
+        let f = Fixture::new("report_granularity");
+        let from = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+
+        let at = |span: i64| {
+            let to = from + chrono::Duration::days(span - 1);
+            report_between(&f, &from.to_string(), &to.to_string())
+                .range
+                .granularity
+        };
+
+        assert_eq!(at(REPORT_DAY_MAX_SPAN), "day");
+        assert_eq!(at(REPORT_DAY_MAX_SPAN + 1), "month");
+        assert_eq!(at(REPORT_MONTH_MAX_SPAN), "month");
+        assert_eq!(at(REPORT_MONTH_MAX_SPAN + 1), "year");
+
+        // An explicit choice overrides the heuristic.
+        let explicit = get_report_impl(
+            &f.db.lock(),
+            &ReportInput {
+                date_from: "2024-01-01".into(),
+                date_to: "2024-01-31".into(),
+                granularity: Some("year".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(explicit.range.granularity, "year");
+        assert_eq!(explicit.collections.len(), 1);
+    }
+
+    /// Every rejection carries an actionable code, never `INTERNAL` — the
+    /// frontend maps these to a localized sentence.
+    #[test]
+    fn report_refuses_a_range_it_cannot_serve() {
+        let f = Fixture::new("report_reject");
+
+        let call = |from: &str, to: &str, g: Option<&str>| {
+            get_report_impl(
+                &f.db.lock(),
+                &ReportInput {
+                    date_from: from.into(),
+                    date_to: to.into(),
+                    granularity: g.map(str::to_string),
+                },
+            )
+            .unwrap_err()
+            .code()
+        };
+
+        assert_eq!(call("2024-06-30", "2024-06-01", None), INVALID_DATE);
+        assert_eq!(call("not-a-date", "2024-06-01", None), INVALID_DATE);
+        assert_eq!(
+            call("2024-01-01", "2024-01-31", Some("fortnight")),
+            INVALID_GRANULARITY
+        );
+
+        // Wide enough to blow the bucket cap, which is what the span bound is
+        // there to stop.
+        let from = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+        let to = from + chrono::Duration::days(*REPORT_SPAN_DAYS_RANGE.end());
+        let code = call(&from.to_string(), &to.to_string(), None);
+        assert!(
+            code.starts_with(REPORT_RANGE_TOO_LONG),
+            "expected a range-too-long refusal, got {code}"
+        );
+
+        // Legal as a range, but daily buckets across two decades would put
+        // thousands of points on the wire for a chart to draw. Auto-granularity
+        // never approaches the cap, so only an explicit choice trips it.
+        let code = call("2000-01-01", "2019-12-31", Some("day"));
+        assert!(
+            code.starts_with(REPORT_RANGE_TOO_LONG),
+            "expected a bucket-count refusal, got {code}"
+        );
+        assert_eq!(
+            report_between(&f, "2000-01-01", "2019-12-31")
+                .collections
+                .len(),
+            20,
+            "the same span is fine at the granularity the UI actually sends"
+        );
+    }
+
+    /// The licence gate lives in Rust, not only in the router: hiding the
+    /// sidebar entry is a statement of intent, this is the control.
+    #[test]
+    fn get_report_is_licensed() {
+        assert_eq!(
+            require_license(&LicenseState::new(LicenseStatus::Missing))
+                .unwrap_err()
+                .code(),
+            LICENSE_REQUIRED
+        );
+        require_license(&licensed()).expect("a valid licence must pass the gate");
+    }
+    // --- csv export --------------------------------------------------------
+
+    /// `dest` reaches this command straight from the renderer, so the guards are
+    /// the only thing between it and an arbitrary write.
+    #[test]
+    fn export_csv_refuses_a_destination_it_should_not_write() {
+        let dir = std::env::temp_dir().join(format!("ps_export_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Not named like a CSV: the only structural guard available, since CSV
+        // has no magic header to sniff the way a SQLite backup does.
+        for name in ["notes.txt", "profile", "script.sh", "archive.csv.gz"] {
+            let target = dir.join(name);
+            assert_eq!(
+                export_csv_impl(&target, "a,b\r\n").unwrap_err().code(),
+                EXPORT_FAILED,
+                "{name} must be refused"
+            );
+            assert!(!target.exists(), "{name} must not have been created");
+        }
+
+        // Over the payload cap.
+        let big = "x".repeat(EXPORT_MAX_BYTES + 1);
+        let target = dir.join("huge.csv");
+        assert_eq!(
+            export_csv_impl(&target, &big).unwrap_err().code(),
+            EXPORT_FAILED
+        );
+        assert!(!target.exists(), "an over-cap export must write nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The happy path, including that the bytes land verbatim — the BOM the
+    /// export opens with is what makes Excel read it as UTF-8, so a lossy write
+    /// would show the French and Arabic headers as mojibake.
+    #[test]
+    fn export_csv_writes_the_bytes_it_was_given() {
+        let dir = std::env::temp_dir().join(format!("ps_export_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("rapport.csv");
+
+        let csv = "\u{feff}\"Client\",\"Montant\"\r\n\"Ali Ben Salah\",250\r\n";
+        export_csv_impl(&target, csv).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), csv);
+
+        // A second export to the same path replaces it, which is what the save
+        // dialog's own overwrite prompt has already agreed to.
+        let shorter = "\u{feff}\"Client\"\r\n";
+        export_csv_impl(&target, shorter).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), shorter);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Exporting is a licensed action, like every other derived view.
+    #[test]
+    fn export_csv_is_licensed() {
+        assert_eq!(
+            require_license(&LicenseState::new(LicenseStatus::Missing))
+                .unwrap_err()
+                .code(),
+            LICENSE_REQUIRED
         );
     }
 }

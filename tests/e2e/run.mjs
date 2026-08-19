@@ -1564,6 +1564,82 @@ test("every list page keeps its table inside the card at a narrow width", async 
   }
 });
 
+test("rapports renders its KPIs, chart and tables for the default period", async (page) => {
+  await open(page, "/rapports");
+  await page.locator(".kpi").first().waitFor({ timeout: 10000 });
+
+  // Five period/balance figures, in the order the view declares them.
+  assertEqual(await page.locator(".kpi").count(), 5, "rapports should show 5 KPI cards");
+
+  // The balance cards must say what date they were taken at, so they are never
+  // read as period figures. The seed's licence pins the locale to French.
+  const subs = await page.locator(".kpi-sub").allInnerTexts();
+  assert(
+    subs.some((s) => /Arrêté au/i.test(s)),
+    `a balance KPI should carry its as-of date, got: ${subs.join(" | ")}`,
+  );
+
+  // Aging always reports all five buckets, however empty the data.
+  const buckets = await page.locator("table.table tbody tr td:first-child").allInnerTexts();
+  assert(buckets.length >= 5, `expected at least the five aging buckets, got ${buckets.length}`);
+
+  // A chart or the localized empty state — never a blank card.
+  const drawn = await page.locator(".chart-bars, .empty").count();
+  assert(drawn >= 1, "collections should render either bars or an empty state");
+});
+
+test("rapports switches period when a preset is chosen", async (page) => {
+  await open(page, "/rapports");
+  await page.locator(".kpi").first().waitFor({ timeout: 10000 });
+
+  const chartSubtitle = () => page.locator(".card .subtitle").nth(1).innerText();
+  const before = await chartSubtitle();
+
+  await page.getByRole("button", { name: "Cette année" }).click();
+  // The subtitle carries the resolved range, so it changes with the preset.
+  await page.waitForFunction(
+    (previous) => {
+      const nodes = document.querySelectorAll(".card .subtitle");
+      return nodes[1] && nodes[1].textContent.trim() !== previous;
+    },
+    before.trim(),
+    { timeout: 10000 },
+  );
+
+  const after = await chartSubtitle();
+  assert(after !== before, `the chart range should follow the preset, still: ${after}`);
+  assert(/01\/01/.test(after), `"this year" should start on 1 January, got: ${after}`);
+});
+
+test("rapports: the export writes a CSV with its sections and as-of date", async (page) => {
+  await open(page, "/rapports");
+  await page.locator(".kpi").first().waitFor({ timeout: 10000 });
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 10000 }),
+    page.getByRole("button", { name: "Exporter en CSV" }).click(),
+  ]);
+
+  assert(
+    /^rapport-\d{4}-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}\.csv$/.test(download.suggestedFilename()),
+    `filename should carry the range, got: ${download.suggestedFilename()}`,
+  );
+
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString("utf8");
+
+  assert(text.charCodeAt(0) === 0xfeff, "CSV must start with a UTF-8 BOM");
+
+  // Localized section headings, not hard-coded strings.
+  for (const heading of ["Synthèse", "Encaissements", "Ancienneté des impayés"]) {
+    assert(text.includes(`"${heading}"`), `export should carry the ${heading} section`);
+  }
+  // The as-of row is what stops a balance being read as a period figure.
+  assert(/"Arrêté au","\d{4}-\d{2}-\d{2}"/.test(text), "export must state its as-of date");
+});
+
 // --- runner ------------------------------------------------------------------
 
 async function main() {

@@ -6,6 +6,222 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-19 — Bug: CSV export writes nothing in the desktop app
+
+### Summary
+
+Reported against the new Rapports export: the button does nothing in the
+WebView. Confirmed, and **the same defect was already shipping on Impayés** —
+the Rapports export had copied its pattern.
+
+Both buttons built a `Blob`, pointed a detached `<a download>` at it and clicked
+it. That is a browser mechanism. Tauri's WebView has no download manager wired
+up, so the click was silently inert: no file, no error, no toast. It worked in
+the dev preview and in the E2E suite because both run in real Chromium — which
+is exactly why nothing caught it. The Impayés export has therefore never worked
+in a shipped build.
+
+The renderer cannot write the file itself either: there is deliberately no `fs`
+plugin and no `fs:*` permission. The fix follows the shape `backup_database`
+already established — the renderer picks a destination through the dialog
+plugin, and a new licensed `export_csv` command does the write.
+
+Also fixed on the browser path, which stays in use for the preview and E2E: the
+anchor is now attached before the click and the object URL revoked on the next
+task. A detached anchor is ignored by some engines, and revoking in the same tick
+can cancel the download the click just started.
+
+### Test cases run
+
+Unit, Rust (`cargo test`, 175 passed — 3 new):
+
+1. `export_csv` refuses `notes.txt`, `profile`, `script.sh` and `archive.csv.gz`,
+   and creates nothing in the process.
+2. It refuses a payload over `EXPORT_MAX_BYTES`, again writing nothing.
+3. Bytes land verbatim, BOM included — a lossy write would render the French and
+   Arabic headers as mojibake in Excel. A second export replaces the file.
+4. The command is licence-gated.
+
+Integration (`npm run test:integration`, 261 passed — 1 new): the export is
+observable through the gateway rather than the DOM, and `EXPORT_FAILED` reads as
+prose in all three locales.
+
+E2E (`npm run test:e2e`, 52/53): the Rapports export now asserts a real download
+— filename carrying the range, BOM, localized section headings, and the as-of
+row — matching the Impayés export test rather than only checking the button is
+enabled. That earlier assertion was too weak to have caught this bug, which is
+the point.
+
+### Issues found
+
+1. **`<a download>` is inert in the WebView** (blocker, **fixed**). Root cause
+   above. Fixed for both Rapports and Impayés by routing through
+   `api.saveCsv` → `export_csv`.
+2. **The old E2E assertion could not have caught it** (**fixed**). It checked
+   only that the button was enabled. Replaced with a download assertion.
+3. **Cancelling the save dialog used to be indistinguishable from success**
+   (**fixed**). `api.saveCsv` resolves `false` on cancel and `true` on write, so
+   `useCsvExport` stays silent when the user backs out and confirms only when a
+   file was actually written.
+
+### Recommendations
+
+1. **The overwrite guard here is weaker than the backup one, by necessity.** A
+   SQLite file announces itself with a magic header, so `backup_database` can
+   refuse to clobber anything that is not already a database. CSV has no such
+   marker, so the extension check is the whole structural guard: the only files
+   this can overwrite are ones the user named `.csv`. Documented at the call
+   site; worth revisiting if `export_csv` is ever generalized beyond CSV.
+2. **Verify by hand in the real app before shipping** — this class of bug is
+   invisible to a Chromium-based suite by construction. `npm run tauri dev`,
+   export from both Impayés and Rapports, and confirm the file lands and opens.
+3. **Audit for other browser-only APIs.** This was reached by assuming the
+   WebView behaves like a browser. A sweep for `window.open`, `<a download>`,
+   `navigator.clipboard` and `localStorage` would be cheap insurance; the
+   clipboard copy in Settings (machine fingerprint) is the obvious next
+   candidate to check.
+
+---
+
+## 2026-08-19 — Feature QA: Rapports (reporting over the ledger)
+
+### Summary
+
+`/rapports` was a 48-line "coming soon" stub with no backend behind it — the last
+🟡 in `features.md`. It is now a date-ranged reporting screen backed by a new
+`get_report` Tauri command: five KPI tiles, a collected-vs-due bar chart, overdue
+ageing in five buckets, the ten most-exposed clients, the ten best-selling
+products, and a CSV export.
+
+The decision that shaped the work: **the aggregation had to live in Rust.** The
+renderer's widest window onto the ledger is `list_all_payments`, capped at 500
+rows, so a report built client-side would under-report revenue for any shop past
+its five-hundredth payment — and nothing on screen would look wrong. Eight
+`GROUP BY` aggregates replace that.
+
+The second is a labelling rule rather than a mechanism. The screen carries two
+populations of figure against two different clocks: sales and collections are
+historical (dated columns), while outstanding, overdue, ageing and client risk
+are a snapshot as of today. `ReportRange::as_of` is echoed back so the KPI cards
+and the CSV can say which is which, instead of presenting them as one statement.
+
+No new dependency. The chart is inline SVG, matching how `DatePicker.vue` and
+`AppIcon.vue` already solve this class of problem in this codebase.
+
+### Test cases — RUN
+
+Unit, Rust (`cargo test`, 172 passed — 9 new over a temp database):
+
+1. Range ends are inclusive — payments on the first and last day count, the days
+   either side do not.
+2. `new_clients` counts a client stamped late on the closing day (the
+   `date(created_at)` narrowing; without it the last day of every range is lost).
+3. An archived purchase leaves sales, outstanding, overdue, ageing, top clients
+   and top products together.
+4. Ageing boundaries at every edge — due tomorrow, due today, and 1/30/31/60/61/
+   90/91 days late. Also asserts the buckets partition what is owed exactly, and
+   that overdue equals everything except `current`.
+5. `collected` nets out a signed correction row written by `update_installment`,
+   and equals the ledger.
+6. The collections series carries every period, including empty ones.
+7. Granularity is chosen from the span, asserted against the constants
+   (62 → day, 63 → month, 730 → month, 731 → year); an explicit choice wins.
+8. Rejections: inverted range, unparseable date, unknown granularity, span over
+   the cap, and a bucket count over the cap — each an actionable code.
+9. The command is licence-gated.
+
+Unit, TypeScript (`npm test`, 256 passed across 20 files — 19 new):
+
+10. `mockDb.getReport` mirrors all of the above, because the mock is what the
+    integration and E2E suites actually execute — a divergence there would leave
+    both suites green while the desktop app behaved differently.
+11. Money figures are whole units throughout; no float reaches a total, a bucket
+    or a series point.
+12. `buildReportCsv`: section headings, the BOM, bare numerics, the as-of row,
+    empty collection buckets preserved, and a missing bucket label falling back
+    to its raw key.
+13. Formula injection — a client named `=cmd|'/c calc'!A1` and a product named
+    `+Réfrigérateur` are neutralized, while a name merely containing a quote is
+    escaped rather than prefixed.
+
+Gates: `npm run lint` clean (includes `eslint-plugin-security` and
+`no-unsanitized`), `npm run build` clean (`vue-tsc`), `cargo fmt --check` clean,
+`cargo clippy --all-targets -- -D warnings` clean.
+
+Also run, outside the usual rule: `tests/integration/error-contract.integration.test.ts`
+(149 passed), to confirm the two new error codes read as prose in all three
+locales rather than echoing a key path. Noted here because integration suites are
+normally opt-in.
+
+### Test cases — WRITTEN, NOT RUN
+
+`tests/integration/reports.integration.test.ts` (9 cases):
+
+- report totals reconcile with `getDashboard` (outstanding, collected, sales);
+- `collected` matches the full payment ledger, not a capped page of it;
+- ageing sums to exactly what `listSchedule` still shows as owed, and the late
+  portion matches the overdue rows;
+- all five buckets present even for a range with no activity;
+- the as-of snapshot holds steady while the period window narrows — the property
+  the screen's labelling depends on;
+- recording a payment moves `collected` up and `outstandingNow` down in the same
+  report;
+- inverted range and over-wide range reject with codes, not raw messages.
+
+`tests/e2e/run.mjs` (3 cases): the KPI row, ageing table and chart render on load;
+a preset switch moves the resolved range; the export control is enabled once
+loaded.
+
+Run them with `npm run test:integration` and `npm run test:e2e` — say the word.
+
+### Issues found
+
+1. **Response size was bounded only by the date range** (should-fix, **fixed**).
+   `REPORT_SPAN_DAYS_RANGE` capped the span at 36 525 days, which bounds the
+   allocation but not the payload: an explicit `day` granularity across a century
+   is a legal request that would serialize 36 525 series points and ask the chart
+   to draw as many bars. Added `REPORT_MAX_BUCKETS` (1 000), checked before any
+   query runs, and mirrored in the mock with a test on each side. The
+   auto-selected granularity never approaches it — a century resolves to 100
+   yearly buckets — so this only refuses a request the UI does not make. Same
+   reasoning as the existing `PAYMENT_LIMIT_RANGE`.
+2. **`client.created_at` is a datetime, not a date** (blocker, **fixed before
+   review**). `created_at BETWEEN '2026-08-01' AND '2026-08-31'` is false for
+   `'2026-08-31 14:02:11'`, so every range silently lost the clients acquired on
+   its closing day. Narrowed with `date()`; test 2 above pins it.
+
+Nothing else surfaced. Reviewed and clean: IPC error handling (every rejection is
+an actionable code with a localized sentence in all three locales; no SQL text or
+path crosses the boundary), data integrity (read-only command, one lock, no
+partial states), resource cleanup (no listeners, timers or caches added),
+security (`sum_by_period` interpolates only literal column names from two
+in-module call sites, never caller input; CSV reuses the proven injection guard),
+integer money end to end, api/mock parity (`getReport` present in both, with the
+mock tested against the same behaviours), and all three locale files at identical
+key sets (439 each).
+
+### Recommendations
+
+1. **Run the integration and E2E suites before shipping.** They are written and
+   deliberately unexecuted per the project workflow.
+2. **Verify in the real app on both platforms.** `npm run tauri dev`, then check
+   the Arabic layout specifically — the chart axis, gridline labels and numeric
+   column alignment all rely on logical properties (`inset-inline`,
+   `text-align: end`) that this pass verified by construction, not by eye.
+3. **Printing is the natural next step** and was deliberately excluded here. It
+   is Tier 1 item #2 of the functionality review: a report you cannot hand to an
+   accountant is half a report, and the letterhead plus print stylesheet it needs
+   are the same ones receipts and contracts will use.
+4. **Consider point-in-time balances** if anyone asks "what did we have out at
+   the end of March". It is reachable — the ledger sums to `paid_amount` because
+   corrections are signed rows — but it is a real piece of work and was scoped
+   out deliberately.
+5. **Watch the `day`-granularity bucket count** if the presets ever grow a
+   multi-year custom range with daily bars; 1 000 is generous for a chart but not
+   for a spreadsheet, and the CSV shares the same series.
+
+---
+
 ## 2026-08-16 — Automated version bump on release publish (`bump-version.yml`)
 
 ### Summary

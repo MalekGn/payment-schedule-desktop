@@ -17,7 +17,7 @@
 //     the one place in this app where operator-entered text leaves the sandbox
 //     and lands in another program's execution context.
 
-import type { ImpayeClient } from "@/types/models";
+import type { ImpayeClient, Report } from "@/types/models";
 
 /**
  * A leading character that makes a spreadsheet treat the cell as a formula.
@@ -119,4 +119,107 @@ export function buildImpayesCsv(
     }
   }
   return toCsv(header, rows);
+}
+
+/** Column and section labels for the report export, already localized. */
+export interface ReportCsvLabels {
+  /** Section headings. */
+  section: {
+    totals: string;
+    collections: string;
+    aging: string;
+    clients: string;
+    products: string;
+  };
+  /** The two-column layout the totals block uses. */
+  figure: string;
+  value: string;
+  /** Totals rows, in the order they are written. */
+  totals: {
+    range: string;
+    asOf: string;
+    salesCount: string;
+    salesAmount: string;
+    collected: string;
+    paymentCount: string;
+    outstandingNow: string;
+    overdueNow: string;
+    newClients: string;
+  };
+  period: string;
+  collected: string;
+  due: string;
+  bucket: string;
+  count: string;
+  amount: string;
+  client: string;
+  outstanding: string;
+  overdue: string;
+  overdueCount: string;
+  product: string;
+  purchaseCount: string;
+  /** Localized name for each aging bucket, keyed by its backend key. */
+  agingBucket: Record<string, string>;
+}
+
+/**
+ * Flatten a report into one spreadsheet.
+ *
+ * Written as stacked sections rather than one wide table because the five
+ * blocks have genuinely different shapes; a single table would need a sparse
+ * row per block and read worse in every spreadsheet. Blank lines separate them,
+ * which is what Excel and LibreOffice both treat as a section break.
+ *
+ * Every field goes through {@link csvField}, so the formula-injection guard
+ * covers client names and product labels here exactly as it does the Impayés
+ * export — these are the same operator-entered strings.
+ */
+export function buildReportCsv(report: Report, labels: ReportCsvLabels): string {
+  const { range, totals } = report;
+  const lines: string[] = [];
+  const section = (title: string, header: readonly string[]) => {
+    if (lines.length > 0) lines.push("");
+    lines.push(csvRow([title]));
+    lines.push(csvRow(header));
+  };
+
+  section(labels.section.totals, [labels.figure, labels.value]);
+  for (const [label, value] of [
+    [labels.totals.range, `${range.from} — ${range.to}`],
+    [labels.totals.asOf, range.asOf],
+    [labels.totals.salesCount, totals.salesCount],
+    [labels.totals.salesAmount, totals.salesAmount],
+    [labels.totals.collected, totals.collected],
+    [labels.totals.paymentCount, totals.paymentCount],
+    [labels.totals.outstandingNow, totals.outstandingNow],
+    [labels.totals.overdueNow, totals.overdueNow],
+    [labels.totals.newClients, totals.newClients],
+  ] as [string, string | number][]) {
+    lines.push(csvRow([label, value]));
+  }
+
+  section(labels.section.collections, [labels.period, labels.collected, labels.due]);
+  for (const p of report.collections) lines.push(csvRow([p.period, p.collected, p.due]));
+
+  section(labels.section.aging, [labels.bucket, labels.count, labels.amount]);
+  for (const b of report.aging) {
+    lines.push(csvRow([labels.agingBucket[b.bucket] ?? b.bucket, b.count, b.amount]));
+  }
+
+  section(labels.section.clients, [
+    labels.client,
+    labels.outstanding,
+    labels.overdue,
+    labels.overdueCount,
+  ]);
+  for (const c of report.topClients) {
+    lines.push(csvRow([c.clientName, c.outstanding, c.overdue, c.overdueCount]));
+  }
+
+  section(labels.section.products, [labels.product, labels.purchaseCount, labels.amount]);
+  for (const p of report.topProducts) {
+    lines.push(csvRow([p.productLabel, p.purchaseCount, p.totalAmount]));
+  }
+
+  return CSV_BOM + lines.join("\r\n") + "\r\n";
 }

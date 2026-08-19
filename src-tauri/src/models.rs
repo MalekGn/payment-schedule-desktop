@@ -337,6 +337,113 @@ pub struct Dashboard {
 }
 
 // ---------------------------------------------------------------------------
+// Rapports (reports)
+// ---------------------------------------------------------------------------
+//
+// Two populations of figure live in one [`Report`], and conflating them is the
+// mistake this comment exists to prevent:
+//
+// * **Period figures** — `sales_*`, `collected`, `payment_count`, `new_clients`
+//   and every [`PeriodPoint`] — are genuinely historical. They come from
+//   `payment.payment_date`, `purchase.purchase_date` and `client.created_at`,
+//   all real dated columns, so "collected in July" stays true forever.
+// * **Balance figures** — `outstanding_now`, `overdue_now` and every
+//   [`AgingBucket`] and [`ClientRisk`] — are a snapshot taken as of
+//   [`ReportRange::as_of`], not reconstructed for a past date.
+//
+// Reconstructing balances at a past date is possible — the ledger sums to
+// `installment.paid_amount`, because `update_installment` records corrections as
+// signed `payment` rows rather than overwriting — but it is not attempted here.
+// [`ReportRange::as_of`] is echoed back so the UI can label the two groups
+// differently instead of presenting them as one consistent statement.
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportInput {
+    pub date_from: String,
+    pub date_to: String,
+    /// `"day" | "month" | "year"`; absent means "pick one from the span".
+    pub granularity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportRange {
+    pub from: String,
+    pub to: String,
+    /// The date the balance figures were taken at. Always today: a report cannot
+    /// show what was owed last March.
+    pub as_of: String,
+    /// The granularity actually used, resolved when the caller sent none.
+    pub granularity: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportTotals {
+    pub sales_count: i64,
+    pub sales_amount: i64,
+    pub collected: i64,
+    pub payment_count: i64,
+    pub outstanding_now: i64,
+    pub overdue_now: i64,
+    pub new_clients: i64,
+}
+
+/// One bucket of the collections series. `period` is an `strftime` key —
+/// `YYYY-MM-DD`, `YYYY-MM` or `YYYY` — so it sorts lexicographically.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeriodPoint {
+    pub period: String,
+    /// Cash actually taken in this period.
+    pub collected: i64,
+    /// What fell due in this period, whether or not it was paid. Charting the
+    /// two together is the point: collected alone cannot show a shortfall.
+    pub due: i64,
+}
+
+/// How overdue the unpaid money is, as of [`ReportRange::as_of`]. `bucket` is one
+/// of `"current" | "1-30" | "31-60" | "61-90" | "90+"`, and all five are always
+/// present so the UI never has to invent a missing row.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgingBucket {
+    pub bucket: String,
+    pub count: i64,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientRisk {
+    pub client_id: i64,
+    pub client_name: String,
+    pub outstanding: i64,
+    pub overdue: i64,
+    pub overdue_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductLine {
+    pub product_label: String,
+    pub purchase_count: i64,
+    pub total_amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Report {
+    pub range: ReportRange,
+    pub totals: ReportTotals,
+    pub collections: Vec<PeriodPoint>,
+    pub aging: Vec<AgingBucket>,
+    pub top_clients: Vec<ClientRisk>,
+    pub top_products: Vec<ProductLine>,
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 

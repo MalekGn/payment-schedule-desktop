@@ -211,6 +211,9 @@ describe("every code maps to a localized sentence", () => {
     "PAYMENT_DATE_LOCKED",
     "SCHEDULE_VIA_PURCHASE",
     "NO_REBALANCE_ROOM",
+    "INVALID_GRANULARITY",
+    "EXPORT_FAILED",
+    "REPORT_RANGE_TOO_LONG:1000",
     "INVALID_DATE",
     "INVALID_TOTAL_PRICE",
     "INVALID_INSTALLMENT_COUNT",
@@ -263,6 +266,7 @@ describe("every code maps to a localized sentence", () => {
     expect(toUserMessage("INSTALLMENT_COUNT_MISMATCH:5:1", t)).toContain("1");
     expect(toUserMessage("OVERPAYMENT:200", t)).toContain("200");
     expect(toUserMessage("CLIENT_HAS_PURCHASES:3", t)).toContain("3");
+    expect(toUserMessage("REPORT_RANGE_TOO_LONG:1000", t)).toContain("1000");
     expect(toUserMessage("ARCHIVE_HAS_OUTSTANDING:750", t)).toContain("750");
     expect(toUserMessage("PREVIOUS_UNPAID:2", t)).toContain("2");
     expect(toUserMessage("BELOW_PAID:100", t)).toContain("100");

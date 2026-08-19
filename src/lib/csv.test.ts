@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildImpayesCsv, csvField, csvRow, toCsv, CSV_BOM } from "./csv";
-import type { ImpayeClient } from "@/types/models";
+import { buildImpayesCsv, buildReportCsv, csvField, csvRow, toCsv, CSV_BOM } from "./csv";
+import type { ImpayeClient, Report } from "@/types/models";
 
 describe("csvField", () => {
   it("quotes plain strings", () => {
@@ -177,5 +177,128 @@ describe("buildImpayesCsv", () => {
   it("renders an empty list as a header-only file", () => {
     const csv = buildImpayesCsv([], LABELS);
     expect(csv.replace(CSV_BOM, "").trimEnd().split("\r\n")).toHaveLength(1);
+  });
+});
+
+describe("buildReportCsv", () => {
+  const REPORT: Report = {
+    range: { from: "2026-01-01", to: "2026-01-31", asOf: "2026-02-02", granularity: "day" },
+    totals: {
+      salesCount: 2,
+      salesAmount: 3000,
+      collected: 1200,
+      paymentCount: 3,
+      outstandingNow: 1800,
+      overdueNow: 400,
+      newClients: 1,
+    },
+    collections: [
+      { period: "2026-01-01", collected: 700, due: 900 },
+      { period: "2026-01-02", collected: 0, due: 0 },
+    ],
+    aging: [
+      { bucket: "current", count: 2, amount: 1400 },
+      { bucket: "1-30", count: 1, amount: 400 },
+      { bucket: "31-60", count: 0, amount: 0 },
+      { bucket: "61-90", count: 0, amount: 0 },
+      { bucket: "90+", count: 0, amount: 0 },
+    ],
+    // A client name that is a live formula in Excel, and one carrying a quote.
+    topClients: [
+      {
+        clientId: 1,
+        clientName: "=cmd|'/c calc'!A1",
+        outstanding: 1400,
+        overdue: 0,
+        overdueCount: 0,
+      },
+      {
+        clientId: 2,
+        clientName: 'Ali "Bibi" Ben Salah',
+        outstanding: 400,
+        overdue: 400,
+        overdueCount: 1,
+      },
+    ],
+    topProducts: [{ productLabel: "+Réfrigérateur", purchaseCount: 2, totalAmount: 3000 }],
+  };
+
+  const LABELS = {
+    section: {
+      totals: "Synthèse",
+      collections: "Encaissements",
+      aging: "Ancienneté",
+      clients: "Clients",
+      products: "Produits",
+    },
+    figure: "Indicateur",
+    value: "Valeur",
+    totals: {
+      range: "Période",
+      asOf: "Arrêté au",
+      salesCount: "Nombre de ventes",
+      salesAmount: "Ventes",
+      collected: "Encaissé",
+      paymentCount: "Nombre de paiements",
+      outstandingNow: "Reste à recouvrer",
+      overdueNow: "En retard",
+      newClients: "Nouveaux clients",
+    },
+    period: "Période",
+    collected: "Encaissé",
+    due: "Échu",
+    bucket: "Ancienneté",
+    count: "Tranches",
+    amount: "Montant",
+    client: "Client",
+    outstanding: "Reste à payer",
+    overdue: "En retard",
+    overdueCount: "Tranches en retard",
+    product: "Produit",
+    purchaseCount: "Ventes",
+    agingBucket: { current: "Pas encore échu", "1-30": "1 à 30 jours" },
+  };
+
+  const lines = () => buildReportCsv(REPORT, LABELS).replace(CSV_BOM, "").split("\r\n");
+
+  it("starts with the BOM Excel needs to read UTF-8", () => {
+    expect(buildReportCsv(REPORT, LABELS).startsWith(CSV_BOM)).toBe(true);
+  });
+
+  it("writes each section under its localized heading", () => {
+    const out = lines();
+    for (const heading of Object.values(LABELS.section)) {
+      expect(out).toContain(`"${heading}"`);
+    }
+  });
+
+  it("neutralizes a client name that would execute as a formula", () => {
+    // The whole reason this export is guarded: these names come from the client
+    // form, which stores what the shopkeeper typed with only a trim applied.
+    const out = lines();
+    expect(out.some((l) => l.startsWith(`"'=cmd|'/c calc'!A1"`))).toBe(true);
+    expect(out.some((l) => l.includes(`"'+Réfrigérateur"`))).toBe(true);
+    // The guard must not have fired on a name that merely contains a quote.
+    expect(out.some((l) => l.includes(`"Ali ""Bibi"" Ben Salah"`))).toBe(true);
+  });
+
+  it("emits money bare so spreadsheets treat it as numeric", () => {
+    expect(lines()).toContain('"Ventes",3000');
+  });
+
+  it("carries the as-of date, so a balance is never read as a period figure", () => {
+    expect(lines()).toContain('"Arrêté au","2026-02-02"');
+    expect(lines()).toContain('"Période","2026-01-01 — 2026-01-31"');
+  });
+
+  it("keeps every collections bucket, including the empty ones", () => {
+    const out = lines();
+    expect(out).toContain('"2026-01-01",700,900');
+    expect(out).toContain('"2026-01-02",0,0');
+  });
+
+  it("falls back to the raw bucket key when a label is missing", () => {
+    // `agingBucket` above deliberately omits three of the five.
+    expect(lines().some((l) => l.startsWith('"90+"'))).toBe(true);
   });
 });

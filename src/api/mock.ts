@@ -6,12 +6,16 @@
 import {
   addInterval,
   dayDiff,
+  isoDate,
+  parseIso,
   installmentStatus,
   purchaseStatus,
   splitAmounts,
   todayIso,
 } from "@/lib/finance";
 import type {
+  AgingBucket,
+  AgingBucketKey,
   Client,
   ClientDetail,
   ClientInput,
@@ -31,10 +35,14 @@ import type {
   PurchaseInput,
   PurchaseScope,
   PurchaseSummary,
+  Report,
+  ReportGranularity,
+  ReportInput,
   ScheduleRow,
   Settings,
   SettingsPatch,
 } from "@/types/models";
+import { AGING_BUCKETS, REPORT_GRANULARITIES } from "@/types/models";
 
 // --- validation, mirroring src-tauri/src/commands.rs -----------------------
 //
@@ -100,6 +108,13 @@ function validateClientInput(input: ClientInput): void {
   assertBounded(input.address.trim(), LONG_TEXT_MAX);
   if (input.email != null) assertBounded(input.email.trim(), SHORT_TEXT_MAX);
 }
+
+// Report bounds, mirroring `REPORT_*` in src-tauri/src/db.rs.
+const REPORT_SPAN_DAYS_MAX = 36_525;
+const REPORT_DAY_MAX_SPAN = 62;
+const REPORT_MONTH_MAX_SPAN = 730;
+const REPORT_TOP_N = 10;
+const REPORT_MAX_BUCKETS = 1_000;
 
 /** Throw `INVALID_DATE` unless `value` is a real `YYYY-MM-DD` calendar date. */
 function assertIsoDate(value: string): void {
@@ -167,6 +182,58 @@ interface PaymentRow {
   createdAt: string;
 }
 
+/**
+ * Which aging bucket an unpaid installment falls in, as of `asOf`.
+ *
+ * `daysLate` is `asOf - dueDate`, so an installment due today is 0 days late and
+ * counts as `current`; the first late bucket genuinely starts at one day. The
+ * boundaries mirror the `CASE` in `get_report_impl`.
+ */
+function agingBucket(dueDate: string, asOf: string): AgingBucketKey {
+  const daysLate = dayDiff(asOf, dueDate);
+  if (daysLate <= 0) return "current";
+  if (daysLate <= 30) return "1-30";
+  if (daysLate <= 60) return "31-60";
+  if (daysLate <= 90) return "61-90";
+  return "90+";
+}
+
+/**
+ * Every bucket key the range covers, in order, including the empty ones.
+ *
+ * Mirrors `period_keys` in commands.rs. Grouping alone would drop a period with
+ * no rows, and the chart would draw straight over the gap.
+ */
+export function periodKeys(from: string, to: string, granularity: ReportGranularity): string[] {
+  const keys: string[] = [];
+  if (granularity === "year") {
+    for (let y = Number(from.slice(0, 4)); y <= Number(to.slice(0, 4)); y++) {
+      keys.push(String(y).padStart(4, "0"));
+    }
+    return keys;
+  }
+  if (granularity === "month") {
+    let y = Number(from.slice(0, 4));
+    let m = Number(from.slice(5, 7));
+    const endY = Number(to.slice(0, 4));
+    const endM = Number(to.slice(5, 7));
+    while (y < endY || (y === endY && m <= endM)) {
+      keys.push(`${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}`);
+      if (m === 12) {
+        y += 1;
+        m = 1;
+      } else {
+        m += 1;
+      }
+    }
+    return keys;
+  }
+  for (let d = from; d <= to; d = isoDate(new Date(parseIso(d).getTime() + 86_400_000))) {
+    keys.push(d);
+  }
+  return keys;
+}
+
 class MockDb {
   clients: ClientRow[] = [];
   purchases: PurchaseRow[] = [];
@@ -175,6 +242,8 @@ class MockDb {
   settings: Record<string, string> = {};
   /** Last URI passed to `openExternal`, for assertions in tests. */
   lastExternalUrl: string | null = null;
+  /** Last CSV passed to `saveCsv`, for assertions in tests. */
+  lastCsvExport: { name: string; contents: string } | null = null;
   lastBackupPath: string | null = null;
   /** See `getLicenseStatus` for why this starts valid. */
   private license: LicenseInfo = {
@@ -1092,6 +1161,157 @@ class MockDb {
     };
   }
 
+  /**
+   * Aggregated figures over a date range — the mock twin of `get_report` in
+   * src-tauri/src/commands.rs.
+   *
+   * The two populations of figure are kept apart here exactly as they are in
+   * Rust: period figures come from dated columns and are historical, balance
+   * figures (`outstandingNow`, `overdueNow`, aging, top clients) are a snapshot
+   * as of today.
+   */
+  getReport(input: ReportInput): Report {
+    assertIsoDate(input.dateFrom);
+    assertIsoDate(input.dateTo);
+    if (input.dateFrom > input.dateTo) throw new Error("INVALID_DATE");
+
+    // Inclusive of both ends, matching the backend and what a shop means by
+    // "1 to 31 January".
+    const spanDays = dayDiff(input.dateTo, input.dateFrom) + 1;
+    if (spanDays > REPORT_SPAN_DAYS_MAX) {
+      throw new Error(`REPORT_RANGE_TOO_LONG:${REPORT_SPAN_DAYS_MAX}`);
+    }
+
+    let granularity: ReportGranularity;
+    if (input.granularity == null) {
+      granularity =
+        spanDays <= REPORT_DAY_MAX_SPAN
+          ? "day"
+          : spanDays <= REPORT_MONTH_MAX_SPAN
+            ? "month"
+            : "year";
+    } else if (REPORT_GRANULARITIES.includes(input.granularity)) {
+      granularity = input.granularity;
+    } else {
+      throw new Error("INVALID_GRANULARITY");
+    }
+
+    const from = input.dateFrom;
+    const to = input.dateTo;
+    // Resolved up front so an over-wide request is refused before any work.
+    const periods = periodKeys(from, to, granularity);
+    if (periods.length > REPORT_MAX_BUCKETS) {
+      throw new Error(`REPORT_RANGE_TOO_LONG:${REPORT_MAX_BUCKETS}`);
+    }
+    const asOf = todayIso();
+    const inRange = (d: string) => d >= from && d <= to;
+
+    // --- period figures ---------------------------------------------------
+    const soldInRange = this.livePurchases().filter((p) => inRange(p.purchaseDate));
+    // Unfiltered, for the reason getDashboard states: an archived purchase can
+    // never have carried a payment, so there is nothing to exclude.
+    const paidInRange = this.payments.filter((p) => inRange(p.paymentDate));
+
+    const totals = {
+      salesCount: soldInRange.length,
+      salesAmount: soldInRange.reduce((s, p) => s + p.totalPrice, 0),
+      collected: paidInRange.reduce((s, p) => s + p.amount, 0),
+      paymentCount: paidInRange.length,
+      outstandingNow: this.installments
+        .filter((i) => this.isLive(i))
+        .reduce((s, i) => s + (i.amount - i.paidAmount), 0),
+      overdueNow: this.installments
+        .filter((i) => this.isLive(i) && i.dueDate < asOf && i.amount > i.paidAmount)
+        .reduce((s, i) => s + (i.amount - i.paidAmount), 0),
+      // `createdAt` carries a time in the Rust schema, so it is narrowed to a
+      // date before comparing — otherwise everyone created on the closing day
+      // of the range falls outside it.
+      newClients: this.clients.filter((c) => inRange(c.createdAt.slice(0, 10))).length,
+    };
+
+    // --- collections series, zero-filled ----------------------------------
+    const key = (date: string) =>
+      granularity === "day" ? date : granularity === "month" ? date.slice(0, 7) : date.slice(0, 4);
+
+    const collectedBy = new Map<string, number>();
+    for (const p of paidInRange) {
+      collectedBy.set(key(p.paymentDate), (collectedBy.get(key(p.paymentDate)) ?? 0) + p.amount);
+    }
+    const dueBy = new Map<string, number>();
+    for (const i of this.installments.filter((i) => this.isLive(i) && inRange(i.dueDate))) {
+      dueBy.set(key(i.dueDate), (dueBy.get(key(i.dueDate)) ?? 0) + i.amount);
+    }
+    const collections = periods.map((period) => ({
+      period,
+      collected: collectedBy.get(period) ?? 0,
+      due: dueBy.get(period) ?? 0,
+    }));
+
+    // --- aging, as of today ------------------------------------------------
+    const owed = this.installments.filter((i) => this.isLive(i) && i.amount > i.paidAmount);
+    const agingBy = new Map<AgingBucketKey, { count: number; amount: number }>();
+    for (const i of owed) {
+      const bucket = agingBucket(i.dueDate, asOf);
+      const cell = agingBy.get(bucket) ?? { count: 0, amount: 0 };
+      cell.count += 1;
+      cell.amount += i.amount - i.paidAmount;
+      agingBy.set(bucket, cell);
+    }
+    // All five, always, so the table never gains or loses rows with the data.
+    const aging: AgingBucket[] = AGING_BUCKETS.map((bucket) => ({
+      bucket,
+      count: agingBy.get(bucket)?.count ?? 0,
+      amount: agingBy.get(bucket)?.amount ?? 0,
+    }));
+
+    // --- who owes the most, as of today -----------------------------------
+    const topClients = this.clients
+      .map((c) => {
+        const ids = this.livePurchases()
+          .filter((p) => p.clientId === c.id)
+          .map((p) => p.id);
+        const rows = owed.filter((i) => ids.includes(i.purchaseId));
+        const late = rows.filter((i) => i.dueDate < asOf);
+        return {
+          clientId: c.id,
+          clientName: `${c.firstName} ${c.lastName}`,
+          outstanding: rows.reduce((s, i) => s + (i.amount - i.paidAmount), 0),
+          overdue: late.reduce((s, i) => s + (i.amount - i.paidAmount), 0),
+          overdueCount: late.length,
+        };
+      })
+      .filter((r) => r.outstanding > 0)
+      .sort((a, b) => b.outstanding - a.outstanding || a.clientName.localeCompare(b.clientName))
+      .slice(0, REPORT_TOP_N);
+
+    // --- what sold in the range, unlike topClients which is as-of-now ------
+    const byProduct = new Map<string, { purchaseCount: number; totalAmount: number }>();
+    for (const p of soldInRange) {
+      const cell = byProduct.get(p.productLabel) ?? { purchaseCount: 0, totalAmount: 0 };
+      cell.purchaseCount += 1;
+      cell.totalAmount += p.totalPrice;
+      byProduct.set(p.productLabel, cell);
+    }
+    const topProducts = [...byProduct.entries()]
+      .map(([productLabel, v]) => ({ productLabel, ...v }))
+      .sort(
+        (a, b) =>
+          b.totalAmount - a.totalAmount ||
+          b.purchaseCount - a.purchaseCount ||
+          a.productLabel.localeCompare(b.productLabel),
+      )
+      .slice(0, REPORT_TOP_N);
+
+    return {
+      range: { from, to, asOf, granularity },
+      totals,
+      collections,
+      aging,
+      topClients,
+      topProducts,
+    };
+  }
+
   getSettings(): Settings {
     const s = this.settings;
     return {
@@ -1203,6 +1423,38 @@ class MockDb {
    */
   openExternal(url: string): void {
     this.lastExternalUrl = url;
+  }
+
+  /**
+   * Browser twin of the `export_csv` command: hand the file to the browser's own
+   * download machinery, which is the only thing here that can write to disk.
+   *
+   * This is the path the dev preview and the E2E suite take, and it is the one
+   * that always worked — the desktop build is what had no download manager
+   * behind `<a download>`.
+   *
+   * Recorded either way so the integration suite, which has no DOM, can still
+   * assert what would have been written.
+   */
+  saveCsv(suggestedName: string, contents: string): boolean {
+    this.lastCsvExport = { name: suggestedName, contents };
+    // Absent under Vitest's node environment; the recording above is the whole
+    // observable effect there.
+    if (typeof document === "undefined") return true;
+
+    const url = URL.createObjectURL(new Blob([contents], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = suggestedName;
+    // Attached before clicking and revoked on the next task: a detached anchor
+    // is ignored by some engines, and revoking the URL in the same tick can
+    // cancel the download that click just started.
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return true;
   }
 
   // -- licence --

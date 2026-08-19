@@ -23,7 +23,7 @@ network or cloud dependency.
 ## Screens
 
 Dashboard (Tableau de bord), Achats, Clients, Paiements, Échéances, Impayés,
-Paramètres, plus Alertes/Rapports placeholders. The Dashboard is a
+Paramètres, Alertes and Rapports. The Dashboard is a
 pixel-accurate implementation of `docs/intsallment.png`.
 
 ---

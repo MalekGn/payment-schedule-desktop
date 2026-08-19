@@ -56,7 +56,8 @@
     "all": "Tous",
     "currency": "{amount} {code}",
     "none": "—",
-    "retry": "Réessayer"
+    "retry": "Réessayer",
+    "exported": "Export terminé."
   },
   "dashboard": {
     "title": "Tableau de bord",
@@ -347,8 +348,69 @@
   },
   "rapports": {
     "title": "Rapports",
-    "comingSoon": "Les rapports détaillés arrivent bientôt.",
-    "description": "Cette page proposera des synthèses de ventes, d'encaissements et d'impayés exportables."
+    "subtitle": "Ventes, encaissements et impayés sur une période.",
+    "export": "Exporter en CSV",
+    "asOf": "Arrêté au",
+    "asOfDate": "Arrêté au {date}",
+    "preset": {
+      "thisMonth": "Ce mois",
+      "lastMonth": "Mois dernier",
+      "thisQuarter": "Ce trimestre",
+      "thisYear": "Cette année"
+    },
+    "section": {
+      "totals": "Synthèse",
+      "collections": "Encaissements",
+      "aging": "Ancienneté des impayés",
+      "clients": "Clients les plus exposés",
+      "products": "Produits les plus vendus"
+    },
+    "kpi": {
+      "sales": "Ventes",
+      "salesCount": "Nombre de ventes",
+      "salesSub": "{count} achat(s) sur la période",
+      "collected": "Encaissé",
+      "paymentCount": "Nombre de paiements",
+      "collectedSub": "{count} paiement(s) enregistré(s)",
+      "outstanding": "Reste à recouvrer",
+      "overdue": "En retard",
+      "newClients": "Nouveaux clients",
+      "inPeriod": "Sur la période"
+    },
+    "chart": {
+      "collected": "Encaissé",
+      "due": "Échu",
+      "subtitle": "Du {from} au {to}"
+    },
+    "columns": {
+      "period": "Période",
+      "bucket": "Ancienneté",
+      "count": "Tranches",
+      "share": "Part",
+      "outstanding": "Reste à payer",
+      "overdue": "En retard",
+      "overdueCount": "Tranches en retard",
+      "product": "Produit",
+      "purchaseCount": "Ventes"
+    },
+    "aging": {
+      "current": "Pas encore échu",
+      "1-30": "1 à 30 jours",
+      "31-60": "31 à 60 jours",
+      "61-90": "61 à 90 jours",
+      "90+": "Plus de 90 jours"
+    },
+    "empty": {
+      "title": "Aucun mouvement sur cette période",
+      "text": "Choisissez une autre période ou enregistrez un premier achat.",
+      "clients": "Aucun client n'a de solde à cette date.",
+      "products": "Aucune vente sur cette période."
+    },
+    "csv": {
+      "figure": "Indicateur",
+      "value": "Valeur",
+      "range": "Période"
+    }
   },
   "settings": {
     "title": "Paramètres",
@@ -465,7 +527,10 @@
     "licenseRequired": "Cette fonctionnalité nécessite une licence active.",
     "invalidLicense": "Fichier de licence refusé ({status}). La licence actuelle est conservée.",
     "scheduleViaPurchase": "Le montant et l'échéance d'une tranche se modifient depuis la fiche achat, pas ici.",
-    "paymentDateLocked": "La date de ce paiement est déjà enregistrée : elle ne peut plus être modifiée."
+    "paymentDateLocked": "La date de ce paiement est déjà enregistrée : elle ne peut plus être modifiée.",
+    "invalidGranularity": "Découpage de période non reconnu.",
+    "reportRangeTooLong": "La période demandée est trop longue (maximum {max} jours).",
+    "exportFailed": "L'export n'a pas pu être enregistré. Vérifiez l'emplacement choisi et réessayez."
   },
   "filters": {
     "date": "Filtrer par date",

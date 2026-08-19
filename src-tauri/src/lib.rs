@@ -211,12 +211,15 @@ pub fn run() {
             commands::list_impayes,
             commands::list_schedule,
             commands::get_dashboard,
+            // rapports
+            commands::get_report,
             // settings
             commands::get_settings,
             commands::update_settings,
             commands::set_logo,
             commands::clear_logo,
             commands::backup_database,
+            commands::export_csv,
             // licence
             commands::get_license_status,
             commands::import_license,

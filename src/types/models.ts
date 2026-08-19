@@ -244,6 +244,89 @@ export interface Dashboard {
   impayes: ImpayeClient[];
 }
 
+/**
+ * Report period sizes. Mirrors `REPORT_GRANULARITIES` in `src-tauri/src/db.rs`.
+ */
+export const REPORT_GRANULARITIES = ["day", "month", "year"] as const;
+export type ReportGranularity = (typeof REPORT_GRANULARITIES)[number];
+
+/**
+ * Aging buckets, in the order the backend reports them. Mirrors
+ * `AGING_BUCKETS` in `src-tauri/src/commands.rs`; each has a
+ * `rapports.aging.<key>` label in every locale file.
+ */
+export const AGING_BUCKETS = ["current", "1-30", "31-60", "61-90", "90+"] as const;
+export type AgingBucketKey = (typeof AGING_BUCKETS)[number];
+
+export interface ReportInput {
+  dateFrom: string;
+  dateTo: string;
+  /** Absent means "let the backend pick one from the span". */
+  granularity?: ReportGranularity;
+}
+
+export interface ReportRange {
+  from: string;
+  to: string;
+  /**
+   * The date the balance figures were taken at — always today. Echoed back so
+   * the UI can label them separately from the period figures, which are
+   * genuinely historical. See the `Rapports` comment in `src-tauri/src/models.rs`.
+   */
+  asOf: string;
+  /** The granularity actually used, resolved when none was sent. */
+  granularity: ReportGranularity;
+}
+
+/** Period figures (historical) and balance figures (as of `asOf`), together. */
+export interface ReportTotals {
+  salesCount: number;
+  salesAmount: number;
+  collected: number;
+  /** Ledger entries, which includes signed correction rows. */
+  paymentCount: number;
+  outstandingNow: number;
+  overdueNow: number;
+  newClients: number;
+}
+
+export interface PeriodPoint {
+  /** `YYYY-MM-DD`, `YYYY-MM` or `YYYY` — fixed width, so it sorts. */
+  period: string;
+  collected: number;
+  /** What fell due in the period, paid or not. */
+  due: number;
+}
+
+export interface AgingBucket {
+  bucket: AgingBucketKey;
+  count: number;
+  amount: number;
+}
+
+export interface ClientRisk {
+  clientId: number;
+  clientName: string;
+  outstanding: number;
+  overdue: number;
+  overdueCount: number;
+}
+
+export interface ProductLine {
+  productLabel: string;
+  purchaseCount: number;
+  totalAmount: number;
+}
+
+export interface Report {
+  range: ReportRange;
+  totals: ReportTotals;
+  collections: PeriodPoint[];
+  aging: AgingBucket[];
+  topClients: ClientRisk[];
+  topProducts: ProductLine[];
+}
+
 export interface Settings {
   language: string;
   currencyCode: string;

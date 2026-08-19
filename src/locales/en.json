@@ -56,7 +56,8 @@
     "all": "All",
     "currency": "{amount} {code}",
     "none": "—",
-    "retry": "Retry"
+    "retry": "Retry",
+    "exported": "Export complete."
   },
   "dashboard": {
     "title": "Dashboard",
@@ -347,8 +348,69 @@
   },
   "rapports": {
     "title": "Reports",
-    "comingSoon": "Detailed reports are coming soon.",
-    "description": "This page will offer exportable sales, collection and overdue summaries."
+    "subtitle": "Sales, collections and overdue balances over a period.",
+    "export": "Export to CSV",
+    "asOf": "As of",
+    "asOfDate": "As of {date}",
+    "preset": {
+      "thisMonth": "This month",
+      "lastMonth": "Last month",
+      "thisQuarter": "This quarter",
+      "thisYear": "This year"
+    },
+    "section": {
+      "totals": "Summary",
+      "collections": "Collections",
+      "aging": "Overdue ageing",
+      "clients": "Most exposed clients",
+      "products": "Best-selling products"
+    },
+    "kpi": {
+      "sales": "Sales",
+      "salesCount": "Number of sales",
+      "salesSub": "{count} purchase(s) in the period",
+      "collected": "Collected",
+      "paymentCount": "Number of payments",
+      "collectedSub": "{count} payment(s) recorded",
+      "outstanding": "Still owed",
+      "overdue": "Overdue",
+      "newClients": "New clients",
+      "inPeriod": "In the period"
+    },
+    "chart": {
+      "collected": "Collected",
+      "due": "Fell due",
+      "subtitle": "From {from} to {to}"
+    },
+    "columns": {
+      "period": "Period",
+      "bucket": "Age",
+      "count": "Installments",
+      "share": "Share",
+      "outstanding": "Still owed",
+      "overdue": "Overdue",
+      "overdueCount": "Overdue installments",
+      "product": "Product",
+      "purchaseCount": "Sales"
+    },
+    "aging": {
+      "current": "Not yet due",
+      "1-30": "1 to 30 days",
+      "31-60": "31 to 60 days",
+      "61-90": "61 to 90 days",
+      "90+": "Over 90 days"
+    },
+    "empty": {
+      "title": "Nothing happened in this period",
+      "text": "Pick another period, or record a first purchase.",
+      "clients": "No client has a balance on this date.",
+      "products": "No sales in this period."
+    },
+    "csv": {
+      "figure": "Figure",
+      "value": "Value",
+      "range": "Period"
+    }
   },
   "settings": {
     "title": "Settings",
@@ -465,7 +527,10 @@
     "licenseRequired": "This feature requires an active licence.",
     "invalidLicense": "Licence file refused ({status}). Your current licence is unchanged.",
     "scheduleViaPurchase": "An installment's amount and due date are changed from the purchase, not here.",
-    "paymentDateLocked": "This payment's date is already on record and can no longer be changed."
+    "paymentDateLocked": "This payment's date is already on record and can no longer be changed.",
+    "invalidGranularity": "Unrecognized period grouping.",
+    "reportRangeTooLong": "That period is too long (maximum {max} days).",
+    "exportFailed": "The export could not be saved. Check the location you chose and try again."
   },
   "filters": {
     "date": "Filter by date",
