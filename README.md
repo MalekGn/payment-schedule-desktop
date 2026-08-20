@@ -316,10 +316,10 @@ Everything is stored locally in the OS **app-data directory**:
   (`payment_schedule.pre-v<n>.db`) and one on a schedule (`auto-<date>.db`),
   kept to the last 2 and 5 respectively. The schedule defaults to **17:00 every
   day** and is editable in Settings → Backup (frequency and time). If the app is
-  closed at that hour the copy is taken the next time it opens. They are ordinary
-  SQLite files — restore one exactly as described below. They live on the same
-  disk as the database, so they are a safety net for a bad update or a mistaken
-  delete, **not** a replacement for a backup you keep elsewhere.
+  closed at that hour the copy is taken the next time it opens. They are offered
+  directly in Settings → Restauration. They live on the same disk as the
+  database, so they are a safety net for a bad update or a mistaken delete,
+  **not** a replacement for a backup you keep elsewhere.
 - **`logs/`** — backend log files (also echoed to stdout). Written by
   `tauri-plugin-log` at `Info` level in release builds, `Debug` in dev. They
   record command failures with ids and error codes only, never client names,
@@ -347,25 +347,31 @@ money, so a client with unpaid installments can be neither deleted nor archived.
 
 ### Restoring a backup
 
-Settings → **Backup database** writes a snapshot; restoring one is a file
-operation, because the app has no in-app restore. Do it in this order:
+**Settings → Restauration.** No file swapping, and no restart — the app closes
+its own connection, replaces the database and reloads itself.
 
-1. **Quit the app completely.** Restoring under a running app means writing the
-   file out from under an open connection, which corrupts it.
-2. Open the app-data directory for your platform (see the table above). Your own
-   backup is wherever you saved it; the automatic ones are in `backups/`.
-3. Copy your backup over `payment_schedule.db`, replacing it. Keep the old file
-   somewhere else first if there is any chance you want it back — this step is
-   not reversible.
-4. Delete `payment_schedule.db-wal` and `payment_schedule.db-shm` if they are
-   there. They belong to the database you just replaced, and leaving them
-   beside a different file can undo part of the restore.
-5. Start the app. The data is the data as of the moment that backup was taken;
-   anything entered since is not in it.
+Two ways in:
 
-A backup taken by an older version of the app restores into a newer one — the
-schema migrates forward on launch. The reverse does not work: an older build
-refuses to open a database that a newer one has already migrated.
+- **A copy on this computer.** The automatic snapshots are listed by date, with
+  what each one was taken for (routine, before a database update, before an
+  earlier restore) and how big it is. Pick one and confirm.
+- **Restaurer depuis un fichier…** for a backup you keep off the machine — a USB
+  stick, a network share, anything the file picker can reach. This is the one
+  that matters if the computer itself is lost.
+
+Before anything is replaced, the file is checked: it has to be a real, uncorrupt
+SQLite database, it has to be a _paymentSchedule_ database, and it cannot come
+from a newer version of the app than the one you are running. If any of that
+fails you get "this file is not a valid backup" and your data is untouched.
+
+A **safety copy of the current database** is taken first, into `backups/` as
+`pre-restore-<date>-….db`, so restoring the wrong file is itself recoverable.
+The last two are kept.
+
+The data is the data as of the moment that backup was taken; anything entered
+since is not in it. A backup from an older version restores into a newer one —
+the schema migrates forward as the app reopens it. The reverse is refused up
+front rather than half-done.
 
 To reset the app to a fresh state instead — **this destroys the data, it is not
 a restore** — delete `payment_schedule.db` and restart. In a development build

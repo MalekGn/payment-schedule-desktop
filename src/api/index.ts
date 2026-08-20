@@ -3,6 +3,7 @@
 // it delegates to the in-memory mock so every screen stays functional.
 
 import type {
+  BackupEntry,
   Client,
   ClientDetail,
   ClientInput,
@@ -259,6 +260,38 @@ export const api = {
    */
   backupDatabase: (dest: string): Promise<Settings> =>
     isTauri() ? invoke("backup_database", { dest }) : Promise.resolve(mockDb.backupDatabase(dest)),
+
+  /**
+   * Every snapshot the app has taken, newest first.
+   *
+   * Never rejects on an unreadable `backups/` — the Rust side answers with an
+   * empty list — because the Settings page must still render the file picker,
+   * which does not need that directory at all.
+   */
+  listBackups: (): Promise<BackupEntry[]> =>
+    isTauri() ? invoke("list_backups") : Promise.resolve(mockDb.listBackups()),
+
+  /**
+   * Replace the working database with the snapshot at `source`.
+   *
+   * The counterpart to {@link api.backupDatabase}, and the reason it was worth
+   * writing: until this existed the app could produce verified snapshots and
+   * never read one back.
+   *
+   * Rejects with `INVALID_BACKUP_FILE` when the file is not a usable
+   * paymentSchedule database — checked *before* anything is replaced — and with
+   * `RESTORE_FAILED` when the swap itself could not complete, in which case the
+   * current data is untouched.
+   *
+   * **The caller must reload the WebView on success.** Every store, route and
+   * computed in the app is derived from a database that no longer exists; the
+   * returned {@link Settings} are the restored ones (the snapshot may carry a
+   * different language or currency) and are only good for the reload.
+   */
+  restoreDatabase: (source: string): Promise<Settings> =>
+    isTauri()
+      ? invoke("restore_database", { source })
+      : Promise.resolve(mockDb.restoreDatabase(source)),
 
   // -- system --
   /**

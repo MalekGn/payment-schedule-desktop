@@ -16,6 +16,7 @@ import {
 import type {
   AgingBucket,
   AgingBucketKey,
+  BackupEntry,
   Client,
   ClientDetail,
   ClientInput,
@@ -247,6 +248,8 @@ class MockDb {
   /** Last title passed to `setWindowTitle`, for assertions in tests. */
   lastWindowTitle: string | null = null;
   lastBackupPath: string | null = null;
+  /** Last source passed to `restoreDatabase`, for assertions in tests. */
+  lastRestoreSource: string | null = null;
   /** See `getLicenseStatus` for why this starts valid. */
   private license: LicenseInfo = {
     status: "valid",
@@ -1413,6 +1416,65 @@ class MockDb {
   backupDatabase(dest: string): Settings {
     this.lastBackupPath = dest;
     this.settings.last_backup_at = todayIso();
+    return this.getSettings();
+  }
+
+  /**
+   * Browser stand-in for the `backups/` listing.
+   *
+   * There is no filesystem here, so the entries are synthetic — but they cover
+   * all three kinds and the newest-first ordering the real command guarantees,
+   * which is what the picker renders and what the integration suite pins.
+   */
+  listBackups(): BackupEntry[] {
+    const days = (n: number) => isoDate(new Date(parseIso(todayIso()).getTime() - n * 86_400_000));
+    return [
+      {
+        path: `/mock/backups/auto-${days(0)}.db`,
+        fileName: `auto-${days(0)}.db`,
+        kind: "auto",
+        takenAt: days(0),
+        sizeBytes: 262_144,
+      },
+      {
+        path: `/mock/backups/pre-restore-${days(2)}-1750000000000000000.db`,
+        fileName: `pre-restore-${days(2)}-1750000000000000000.db`,
+        kind: "preRestore",
+        takenAt: days(2),
+        sizeBytes: 258_048,
+      },
+      {
+        path: `/mock/backups/payment_schedule.pre-v4.db`,
+        fileName: "payment_schedule.pre-v4.db",
+        kind: "preMigration",
+        takenAt: days(9),
+        sizeBytes: 249_856,
+      },
+    ];
+  }
+
+  /**
+   * Browser stand-in for the restore.
+   *
+   * Reproduces the guard that matters to the frontend — a source that is not a
+   * database rejects with `INVALID_BACKUP_FILE` *before* anything is replaced —
+   * and then does the one thing that makes the E2E flow observable: resets the
+   * in-memory store to its seeded state, as restoring a snapshot would.
+   *
+   * The real command replaces the file and the caller reloads the WebView; here
+   * the reload is what re-reads this object.
+   */
+  restoreDatabase(source: string): Settings {
+    if (!source.endsWith(".db")) throw new Error("INVALID_BACKUP_FILE");
+    this.lastRestoreSource = source;
+
+    this.clients = [];
+    this.purchases = [];
+    this.installments = [];
+    this.payments = [];
+    this.seq = { client: 0, purchase: 0, installment: 0, payment: 0 };
+    this.seed();
+
     return this.getSettings();
   }
 

@@ -621,8 +621,61 @@ Three things follow from it being the _only_ recovery path:
   backup happened and nudge after `BACKUP_STALE_DAYS`. Nothing schedules a
   backup, so that nudge is the only thing that ever raises the subject.
 
-Restoring is a manual file operation, documented in `README.md` — there is no
-`restore_database` command.
+### Restore
+
+`restore_database` is the way back in. Until it existed every snapshot above was
+a file the app could write and never read, and recovery meant quitting the app
+and swapping files by hand — the one procedure a shop reaches for in a hurry,
+under stress, having never rehearsed it.
+
+The order of operations is the design, and each step is there because the next
+one cannot be undone:
+
+1. **Validate before touching anything.** `validate_restore_source` runs the
+   same `integrity_check`/`foreign_key_check` a snapshot passes on the way out,
+   then two checks that only matter inbound: the file must carry a `client`
+   table (a sound SQLite database from some other application would otherwise
+   restore cleanly and leave the app pointed at an empty ledger), and its
+   `user_version` must not exceed `db::latest_schema_version()`. `migrate`
+   already refuses a schema from a newer build — but by the time it runs, the
+   database the user was working in is gone. Refusals are `INVALID_BACKUP_FILE`.
+2. **Snapshot the current database**, into `backups/pre-restore-{date}-{nanos}.db`
+   through `backup_database_impl` like every other snapshot. Its own prune pool,
+   so a run of daily copies cannot evict it. A failure here aborts the restore,
+   on `snapshot_before_migration`'s reasoning.
+3. **Stage, verify, rename.** The source is copied into app data, the _copy_ is
+   verified (a copy can truncate on a full disk or a USB stick pulled mid-read),
+   and only then renamed over `payment_schedule.db`. Staging inside app data is
+   what makes the last step a same-filesystem rename, so there is no window in
+   which the database is half a file. Any failure is `RESTORE_FAILED` with the
+   original untouched — the same guarantee, and the same staging reasoning, as
+   the outbound path above.
+
+The swap happens inside `Db::replace_file`, which holds the connection mutex for
+the whole operation: the live connection is closed (a rusqlite handle keeps the
+old inode, and its `-wal`/`-shm` would then be read against a database they do
+not describe), `swap` runs with the file free, and the connection is reopened
+through `open_connection` — the same function `Db::open` uses, so a restored
+database comes up with the same pragmas and the same migration ladder as any
+other launch. Commands queue on `Db::lock` as they always do and find a working
+connection when they get it; **no restart is needed**.
+
+The one thread that does not queue is the automatic-backup scheduler, which
+opens its own connection on the database path precisely so a scheduled
+`VACUUM INTO` does not block the shop typing. A `Db::restoring` flag is what
+stands it down instead. It narrows the window rather than closing it, and the
+residual cost is bounded: on Unix a snapshot already in flight is of the
+pre-restore database (stale, not corrupt); on Windows the open handle makes the
+rename fail, so the restore is refused with the user's data untouched.
+
+Like `backup_database`, `restore_database` and `list_backups` carry **no licence
+gate**: recovery must not depend on the state of a licence, least of all at the
+moment a shop is trying to get their ledger back.
+
+On the frontend the caller **must reload the WebView** — `SettingsView` does,
+after the success toast. Every store, route and computed in the app is derived
+from a database that no longer exists, and there is no honest way to reconcile
+them in place.
 
 ### Automatic snapshots
 

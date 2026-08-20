@@ -6,6 +6,135 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-20 — Feature: restore from backup
+
+### Summary
+
+Closes Tier 1 item #4 of the `paymentSchedule Recommendations` review: the app
+wrote verified `VACUUM INTO` snapshots and pruned `backups/`, but nothing ever
+read one back — restore was a manual file swap documented in the README.
+
+Two entry points now exist in **Paramètres → Restauration**: the `backups/`
+listing (dated, labelled by kind, newest first) and a native file picker for a
+copy kept off the machine. Both funnel into one `restore_database` command that
+validates the source _before_ touching anything, takes a `pre-restore-*.db`
+safety copy, then stages the incoming file in app data and renames it into
+place. The connection is hot-swapped under the existing `Mutex<Connection>`, so
+no restart is needed; the WebView reloads once. `list_backups` and
+`restore_database` are ungated, like `backup_database`.
+
+### Test cases
+
+**Unit — run, all passing.** `cargo test` 186 passed; `npm test` 281 passed
+(24 files); `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
+`npm run lint` and `npm run build` (vue-tsc) all clean.
+
+`src-tauri/src/commands.rs`
+
+- `restore_refuses_anything_that_is_not_our_database` — rejects a non-`.db`
+  extension, a file that is not SQLite, a sound SQLite database belonging to
+  another application (no `client` table), and one whose `user_version` is
+  ahead of this build. Accepts a snapshot this app wrote, including one a
+  schema version behind.
+- `restore_brings_back_a_purchase_that_was_deleted` — snapshot → cascading
+  `DELETE FROM purchase` → restore; the purchase and its four installments are
+  back on the _live_ connection with no reopen by the caller, and staging is
+  left clean.
+- `a_failed_restore_leaves_the_working_database_intact` — an absent source
+  yields `RESTORE_FAILED`, the connection still serves the original data, and
+  no staging litter remains.
+
+`src-tauri/src/db.rs`
+
+- `replace_file_reopens_the_original_when_the_swap_fails` — a refused swap must
+  not take the running app's connection with it; the `restoring` flag is
+  cleared on the way out.
+
+`src-tauri/src/autobackup.rs`
+
+- `the_pre_restore_pool_prunes_without_touching_the_others` — pruned to
+  `KEEP_PRE_RESTORE`, and cannot evict an `auto-` or `pre-v` snapshot.
+- `the_snapshot_listing_is_scoped_classified_and_newest_first` — a file the
+  user dropped into `backups/` and a non-`.db` are both excluded; the three
+  kinds are classified and dated correctly.
+- `the_scheduler_stands_down_while_a_restore_is_swapping_the_file`.
+
+`src/stores/settings-restore.test.ts` — listing order, settings adoption,
+ledger replacement, a refused source changing nothing, and both new error codes
+resolving to a real sentence in `fr`/`en`/`ar`.
+
+**Integration — run at the user's request, all passing.** `npm run test:integration`:
+11 files, 276 tests. The new `tests/integration/backup-restore.integration.test.ts`
+contributes 8: listing order and completeness, every kind named in every
+language, `INVALID_BACKUP_FILE` on a bad source, a refused restore leaving
+clients and purchases byte-identical, the two failure codes resolving to
+distinct real sentences in all three locales, and an accepted restore replacing
+rather than merging the ledger.
+
+**E2E — run at the user's request. 59/60 passing; the single failure is
+pre-existing on `dev` and unrelated to this work.** `npm run test:e2e`. The new
+_"settings hides the restore card outside the Tauri runtime"_ passes. See
+issue 4 below.
+
+Playwright's browser was not present on this machine — `npx playwright install
+chromium` was needed before the suite could run at all.
+
+### Issues found
+
+None in the product. Four points worth recording:
+
+1. **The interactive restore flow is not E2E-testable in this harness, by
+   design.** The restore card is `v-if="isTauri()"` — it needs a real database
+   file to swap — and the Playwright suite drives the browser build against the
+   mock, exactly as the existing backup card already is. The E2E test therefore
+   asserts the guard holds, and the flow itself is covered by the Rust
+   round-trip test plus the gateway contract suite. Weakening the `isTauri()`
+   guard to make the flow drivable was rejected: it would put a control in front
+   of browser users that cannot work.
+2. **The scheduler stand-down narrows a race rather than closing it.** The
+   automatic-backup thread deliberately opens its own connection outside the
+   mutex so a scheduled `VACUUM INTO` does not block the shop typing, so a
+   `Db::restoring` flag is what serializes it against a restore. A snapshot
+   already in flight when a restore begins keeps its handle on the old inode.
+   The residual cost is bounded and was accepted: on Unix that snapshot is of
+   the pre-restore database (stale, not corrupt); on Windows the open handle
+   makes the rename fail, so the restore is refused with the user's data
+   untouched. Documented on the flag and in `architecture.md`.
+3. **`stage_and_swap` copies the source with no size cap.** A user who points
+   the picker at a very large file fills their own disk before validation
+   completes. Not fixed: a ledger has no natural size ceiling, the path comes
+   from the user's own file dialog, and the failure is a full disk on their own
+   machine rather than a data-integrity problem.
+4. **Pre-existing E2E failure, unrelated to this change:** _"rescheduling an
+   unpaid tranche from the purchase editor holds the total"_
+   (`tests/e2e/run.mjs:316`). Tranche 2 is expected to take the new amount 600
+   and reads 400. Confirmed pre-existing by stashing this branch's changes and
+   re-running the suite on the baseline: **58/59, same single failure**, so this
+   work neither caused nor fixed it. A pointer for whoever picks it up: the test
+   edits the purchase matched by the text "Samsung" but then asserts against the
+   hard-coded route `/achats/1`, so it may be the test rather than the product.
+   Left untouched — out of scope, and guessing at a fix inside an unrelated
+   change is how a real regression gets buried.
+
+### Recommendations
+
+1. Triage the pre-existing reschedule failure (issue 4) on its own branch. It is
+   the only red left in the suite and it predates this work.
+2. Verify manually under `npm run tauri dev`, which is the only place the flow
+   actually runs: back up, delete a purchase, restore from the listed
+   `auto-*.db`, confirm the reload brings the purchase back and that a
+   `pre-restore-*.db` has appeared in `backups/`. Then point the picker at a
+   `.txt` and at a non-ledger `.db` and confirm both produce the _invalid
+   backup file_ toast with the current data untouched.
+3. Check the mirrored layout of the snapshot rows with the UI in Arabic. The
+   rows are flex with logical alignment and were not visually verified under
+   RTL.
+4. Worth a follow-up on Windows specifically: point 2 above predicts a refused
+   restore rather than corruption if a scheduled backup is in flight, but that
+   has been reasoned about, not observed.
+
+---
+
 ## 2026-08-20 — Bug: `output.pdf` persisted in the WebView (Linux follow-up)
 
 ### Summary

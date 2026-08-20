@@ -375,6 +375,36 @@ export interface SettingsPatch {
 }
 
 // ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+/**
+ * Which pool a snapshot in `backups/` came from. Mirrors `BackupKind` in
+ * `src-tauri/src/models.rs`.
+ *
+ * Surfaced to the user rather than kept internal: "taken before a schema
+ * update" and "taken before the last restore" say something about how far back
+ * a file reaches that a date alone does not, and choosing wrongly here costs
+ * the shop its ledger.
+ */
+export type BackupKind = "auto" | "preMigration" | "preRestore";
+
+/** One snapshot the restore picker can offer. */
+export interface BackupEntry {
+  /**
+   * Absolute path, handed straight back to {@link api.restoreDatabase}. The
+   * renderer never opens it — there is deliberately no `fs` plugin — it only
+   * echoes it.
+   */
+  path: string;
+  fileName: string;
+  kind: BackupKind;
+  /** ISO `YYYY-MM-DD`. */
+  takenAt: string;
+  sizeBytes: number;
+}
+
+// ---------------------------------------------------------------------------
 // Licence
 // ---------------------------------------------------------------------------
 

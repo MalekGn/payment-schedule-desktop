@@ -1476,6 +1476,27 @@ test("settings exposes a database backup action", async (page) => {
   );
 });
 
+test("settings hides the restore card outside the Tauri runtime", async (page) => {
+  await open(page, "/parametres");
+  await page.locator(".set-card").first().waitFor({ timeout: 10000 });
+
+  // Same guard as the backup card above, and asserted the same way round: the
+  // restore flow needs a real database file to swap, so it is hidden in the
+  // browser build this suite drives. That is also why the flow itself is not
+  // exercised here — it is pinned by the Rust round-trip test in `commands.rs`
+  // and the gateway contract in `tests/integration/backup-restore`.
+  assertEqual(
+    await page.locator(".set-card", { hasText: "Restauration" }).count(),
+    0,
+    "restore card must be hidden outside the Tauri runtime",
+  );
+  assertEqual(
+    await page.locator(".snap-list").count(),
+    0,
+    "and with it the snapshot list it would render",
+  );
+});
+
 test("the shop name is licence-owned: no input for it in settings", async (page) => {
   await open(page, "/parametres");
   await page.locator(".set-card").first().waitFor({ timeout: 10000 });

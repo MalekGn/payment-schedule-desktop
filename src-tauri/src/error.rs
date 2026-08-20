@@ -67,6 +67,8 @@
 //! | `INVALID_LOGO_TYPE`           | Logo is not a supported image                  |
 //! | `LOGO_TOO_LARGE`              | Logo exceeds the size cap                      |
 //! | `BACKUP_FAILED`               | Database snapshot could not be written         |
+//! | `INVALID_BACKUP_FILE`         | Restore source is not a usable database        |
+//! | `RESTORE_FAILED`              | Restore could not complete; data left as-is    |
 //! | `EXPORT_FAILED`               | CSV export could not be written to the path    |
 //! | `INVALID_GRANULARITY`         | Report bucket size outside day/month/year      |
 //! | `REPORT_RANGE_TOO_LONG:{max}` | Report span wider than `max` days              |

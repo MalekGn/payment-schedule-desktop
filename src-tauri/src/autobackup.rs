@@ -1,4 +1,4 @@
-//! Automatic database snapshots, taken at launch.
+//! Automatic database snapshots, and the pool they are restored from.
 //!
 //! Backup in this app is otherwise entirely manual — one button in Settings —
 //! which leaves the two moments that actually destroy data unprotected: a schema
@@ -17,6 +17,12 @@
 //! or a stolen machine takes both. That is why they are recorded under their own
 //! setting key and deliberately do not clear the Settings staleness nudge, which
 //! asks for a copy that leaves the machine.
+//!
+//! This module also owns the *inbound* direction: the prefixes below are the
+//! only naming scheme that knows which files in `backups/` are ours, so listing
+//! them for the restore picker ([`list_snapshots`]) and taking the safety copy a
+//! restore makes first ([`snapshot_before_restore`]) both belong here rather
+//! than in `commands.rs`.
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +31,7 @@ use rusqlite::Connection;
 
 use crate::commands::{backup_database_impl, put_setting};
 use crate::db::{today, Db, DbResult};
-use crate::models::Settings;
+use crate::models::{BackupEntry, BackupKind, Settings};
 
 /// `setting` key holding the ISO date of the last automatic snapshot. Separate
 /// from `last_backup_at` on purpose — see the module docs.
@@ -35,6 +41,9 @@ pub(crate) const LAST_AUTO_BACKUP_KEY: &str = "last_auto_backup_at";
 const AUTO_PREFIX: &str = "auto-";
 /// Filename prefix for the snapshots taken before a schema migration.
 const PRE_PREFIX: &str = "payment_schedule.pre-v";
+/// Filename prefix for the snapshot taken before a restore overwrites the
+/// database the user is working in.
+const PRE_RESTORE_PREFIX: &str = "pre-restore-";
 
 /// How many routine snapshots to keep. Five gives roughly a working week of
 /// history at one launch a day, for a few MB a copy.
@@ -43,6 +52,10 @@ const KEEP_AUTO: usize = 5;
 /// they are rarer and worth more, and a run of daily snapshots must never be
 /// able to evict the copy taken before a schema change.
 const KEEP_PRE: usize = 2;
+/// How many pre-restore snapshots to keep. Its own pool for the same reason as
+/// [`KEEP_PRE`], and small on purpose: this is the undo for "I restored the
+/// wrong file", which the user either reaches for immediately or not at all.
+const KEEP_PRE_RESTORE: usize = 2;
 
 /// The directory holding every automatic snapshot, created if absent.
 pub fn backups_dir(data_dir: &Path) -> DbResult<PathBuf> {
@@ -71,6 +84,125 @@ pub fn snapshot_before_migration(db_path: &Path, dir: &Path, target: usize) -> D
     log::info!("took a pre-migration snapshot for schema version {target}");
     prune(dir, PRE_PREFIX, KEEP_PRE);
     Ok(dest)
+}
+
+/// Snapshot the database before a restore overwrites it.
+///
+/// The fallback for the fallback. Restoring is the one action in the app that
+/// discards *everything* the user has, and it is routinely reached for in a
+/// hurry — from the wrong file, or from a snapshot older than the one they
+/// meant. Its caller treats a failure here as fatal to the restore, on the same
+/// reasoning as [`snapshot_before_migration`]: never take the irreversible step
+/// against the only copy with nothing to fall back to.
+///
+/// Opens its own connection because it runs inside [`crate::db::Db::replace_file`],
+/// with the shared one already closed so the file can be swapped.
+///
+/// The `{ISO date}-{nanos}` suffix keeps two restores on one day from colliding
+/// while staying sortable as a plain string, which is what [`prune`] relies on.
+pub fn snapshot_before_restore(db_path: &Path, dir: &Path) -> DbResult<PathBuf> {
+    let conn = Connection::open(db_path)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{PRE_RESTORE_PREFIX}{}-{stamp}.db", today()));
+    backup_database_impl(&conn, &dest, dir)?;
+    drop(conn);
+
+    log::info!("took a pre-restore snapshot");
+    prune(dir, PRE_RESTORE_PREFIX, KEEP_PRE_RESTORE);
+    Ok(dest)
+}
+
+/// Every snapshot in `dir` this app wrote, newest first.
+///
+/// Scoped to the three prefixes above, so a file the user dropped into
+/// `backups/` is not offered as if the app had verified it — a restore from an
+/// unknown file is the picker's job, and it validates what it is handed.
+///
+/// Unreadable entries are skipped rather than failed on: a restore list that
+/// refuses to render because one file has odd permissions is worse than a
+/// restore list missing that file.
+pub fn list_snapshots(dir: &Path) -> Vec<BackupEntry> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!("could not list the backups directory: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut found: Vec<BackupEntry> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?.to_string();
+            if !name.ends_with(".db") {
+                return None;
+            }
+            let kind = classify(&name)?;
+            let size_bytes = e.metadata().ok().map(|m| m.len()).unwrap_or(0);
+            Some(BackupEntry {
+                taken_at: taken_at(&name, &path),
+                path: path.to_string_lossy().into_owned(),
+                file_name: name,
+                kind,
+                size_bytes,
+            })
+        })
+        .collect();
+
+    // By date first — what the user is choosing on — then by name, which
+    // disambiguates two snapshots of the same day deterministically.
+    found.sort_by(|a, b| {
+        b.taken_at
+            .cmp(&a.taken_at)
+            .then_with(|| b.file_name.cmp(&a.file_name))
+    });
+    found
+}
+
+/// Which pool a filename belongs to, or `None` if it is not one of ours.
+fn classify(name: &str) -> Option<BackupKind> {
+    if name.starts_with(AUTO_PREFIX) {
+        Some(BackupKind::Auto)
+    } else if name.starts_with(PRE_PREFIX) {
+        Some(BackupKind::PreMigration)
+    } else if name.starts_with(PRE_RESTORE_PREFIX) {
+        Some(BackupKind::PreRestore)
+    } else {
+        None
+    }
+}
+
+/// The date a snapshot was taken, as an ISO string.
+///
+/// Read out of the filename where the naming scheme carries one, because that
+/// is the date the snapshot is *of*; an mtime can be a copy or a restore of the
+/// backups directory itself. Pre-migration snapshots carry a schema version
+/// instead, so they fall back to the mtime, and so does anything unparseable.
+fn taken_at(name: &str, path: &Path) -> String {
+    for prefix in [AUTO_PREFIX, PRE_RESTORE_PREFIX] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if rest.len() >= 10 && NaiveDate::parse_from_str(&rest[..10], "%Y-%m-%d").is_ok() {
+                return rest[..10].to_string();
+            }
+        }
+    }
+
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| {
+            chrono::DateTime::<Local>::from(t)
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// How often the routine backup runs, as an interval in days.
@@ -191,6 +323,16 @@ pub enum Outcome {
 /// behind this one, so failing loudly would cost the user their afternoon and
 /// protect nothing.
 pub fn snapshot_if_due(db: &Db, db_path: &Path, dir: &Path) -> Outcome {
+    // A restore is swapping the file out from under this path right now. The
+    // shared mutex would not stop us — this function deliberately opens its own
+    // connection so a scheduled backup does not block the shop typing — so the
+    // flag is what serializes the two. Reported as `NotDue` rather than
+    // `Failed`: nothing went wrong, and a backoff would be the wrong response to
+    // an operation that takes seconds.
+    if db.is_restoring() {
+        return Outcome::NotDue;
+    }
+
     let (schedule, last) = {
         let conn = db.lock();
         let settings = crate::commands::read_settings(&conn);
@@ -624,6 +766,115 @@ mod tests {
             ],
             "the newest five survive; the other pool and a stranger's file are untouched"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- restore side --------------------------------------------------------
+
+    /// The pre-restore pool is pruned on its own, and cannot evict either of the
+    /// pools it sits beside. Losing the copy taken before a schema change to a
+    /// run of restores would be the same failure `KEEP_PRE` exists to prevent.
+    #[test]
+    fn the_pre_restore_pool_prunes_without_touching_the_others() {
+        let dir = scratch("pre_restore_prune");
+        let db = seeded_db(&dir);
+        let db_path = dir.join("payment_schedule.db");
+        let backups = backups_dir(&dir).unwrap();
+
+        touch(&backups, "auto-2026-08-01.db");
+        touch(&backups, "payment_schedule.pre-v3.db");
+        drop(db);
+
+        // One more than the cap, so pruning has to choose.
+        for _ in 0..(KEEP_PRE_RESTORE + 1) {
+            snapshot_before_restore(&db_path, &backups).unwrap();
+        }
+
+        let kept = names(&backups);
+        let pre_restores = kept
+            .iter()
+            .filter(|n| n.starts_with(PRE_RESTORE_PREFIX))
+            .count();
+        assert_eq!(pre_restores, KEEP_PRE_RESTORE);
+        assert!(kept.iter().any(|n| n == "auto-2026-08-01.db"));
+        assert!(kept.iter().any(|n| n == "payment_schedule.pre-v3.db"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The picker gets newest first, classified, and nothing that is not ours —
+    /// a file a user dropped into `backups/` must not be offered as if the app
+    /// had written and verified it.
+    #[test]
+    fn the_snapshot_listing_is_scoped_classified_and_newest_first() {
+        let dir = scratch("list_snapshots");
+        let backups = backups_dir(&dir).unwrap();
+
+        touch(&backups, "auto-2026-08-01.db");
+        touch(&backups, "auto-2026-08-19.db");
+        touch(&backups, "pre-restore-2026-08-18-123456789.db");
+        touch(&backups, "payment_schedule.pre-v4.db");
+        touch(&backups, "holiday-photos.db");
+        touch(&backups, "auto-2026-08-02.txt");
+
+        let listed = list_snapshots(&backups);
+        let names: Vec<&str> = listed.iter().map(|e| e.file_name.as_str()).collect();
+
+        assert!(!names.contains(&"holiday-photos.db"), "not one of ours");
+        assert!(!names.contains(&"auto-2026-08-02.txt"), "not a database");
+        assert_eq!(names.len(), 4);
+
+        // Newest first. The pre-migration snapshot carries a schema version and
+        // not a date, so it dates from its mtime — today, hence first.
+        assert_eq!(names[0], "payment_schedule.pre-v4.db");
+        assert_eq!(names[1], "auto-2026-08-19.db");
+        assert_eq!(names[2], "pre-restore-2026-08-18-123456789.db");
+        assert_eq!(names[3], "auto-2026-08-01.db");
+
+        assert_eq!(listed[1].kind, BackupKind::Auto);
+        assert_eq!(listed[1].taken_at, "2026-08-19");
+        assert_eq!(listed[2].kind, BackupKind::PreRestore);
+        assert_eq!(listed[2].taken_at, "2026-08-18");
+        assert_eq!(listed[0].kind, BackupKind::PreMigration);
+        assert!(listed[0].size_bytes > 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The scheduler runs on its own connection, outside the mutex, so the flag
+    /// is the only thing that keeps it from reading the file mid-swap.
+    #[test]
+    fn the_scheduler_stands_down_while_a_restore_is_swapping_the_file() {
+        let dir = scratch("restore_standoff");
+        let db = seeded_db(&dir);
+        let db_path = dir.join("payment_schedule.db");
+        let backups = backups_dir(&dir).unwrap();
+
+        // A backup is owed — nothing has ever been taken — so `NotDue` here can
+        // only come from the stand-down.
+        // Read through the flag rather than calling `snapshot_if_due` inside
+        // the closure: it would take `Db::lock`, which `replace_file` holds.
+        // What the scheduler thread actually does is check the flag first.
+        let mut observed = Outcome::NotDue;
+        db.replace_file(&db_path, || {
+            observed = if db.is_restoring() {
+                Outcome::NotDue
+            } else {
+                Outcome::Failed
+            };
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(observed, Outcome::NotDue, "the flag must be set mid-swap");
+        assert!(!db.is_restoring(), "and cleared afterwards");
+        assert!(
+            names(&backups).is_empty(),
+            "nothing may be written while the file is being swapped"
+        );
+
+        // …and it is owed again the moment the restore is over.
+        assert_eq!(snapshot_if_due(&db, &db_path, &backups), Outcome::Taken);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

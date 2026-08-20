@@ -32,12 +32,13 @@ use crate::db::{
     AMOUNT_LOCKED, ARCHIVE_HAS_OUTSTANDING, BACKUP_FAILED, BELOW_PAID, CLIENT_ARCHIVED,
     CLIENT_HAS_PURCHASES, CLIENT_NOT_FOUND, DUE_DATE_LOCKED, DUE_DATE_OUT_OF_ORDER, EXPORT_FAILED,
     FUTURE_PAID_DATE, INSTALLMENT_COUNT_MISMATCH, INSTALLMENT_NOT_FOUND, INVALID_AMOUNT,
-    INVALID_DATE, INVALID_GRANULARITY, INVALID_INSTALLMENT_COUNT, INVALID_INTERVAL_DAYS,
-    INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE, INVALID_SETTING_VALUE,
-    INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE, NO_PAYMENT_TO_DATE, OVERPAYMENT,
-    PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID, PURCHASE_ARCHIVED,
-    PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND, REPORT_RANGE_TOO_LONG,
-    SCHEDULE_VIA_PURCHASE, SUM_MISMATCH, TEXT_REQUIRED, TEXT_TOO_LONG,
+    INVALID_BACKUP_FILE, INVALID_DATE, INVALID_GRANULARITY, INVALID_INSTALLMENT_COUNT,
+    INVALID_INTERVAL_DAYS, INVALID_INTERVAL_KIND, INVALID_LICENSE, INVALID_LOGO_TYPE,
+    INVALID_SETTING_VALUE, INVALID_TOTAL_PRICE, LICENSE_REQUIRED, LOGO_TOO_LARGE,
+    NO_PAYMENT_TO_DATE, OVERPAYMENT, PAID_ABOVE_AMOUNT, PAYMENT_DATE_LOCKED, PREVIOUS_UNPAID,
+    PURCHASE_ARCHIVED, PURCHASE_HAS_PAYMENTS, PURCHASE_NOT_ARCHIVED, PURCHASE_NOT_FOUND,
+    REPORT_RANGE_TOO_LONG, RESTORE_FAILED, SCHEDULE_VIA_PURCHASE, SUM_MISMATCH, TEXT_REQUIRED,
+    TEXT_TOO_LONG,
 };
 use crate::license::{self, LicenseInfo, LicenseState, LicenseStatus};
 use crate::models::*;
@@ -2854,6 +2855,225 @@ fn discard(staged: &std::path::Path) {
 }
 
 // ===========================================================================
+// Restore
+// ===========================================================================
+
+/// Every snapshot the app has taken, newest first, for the restore picker.
+///
+/// **Deliberately unlicensed**, for the same reason as [`backup_database`]:
+/// recovery must not depend on the state of a licence, least of all at the
+/// moment a shop is trying to get their ledger back.
+///
+/// An unreadable `backups/` yields an empty list rather than an error. The
+/// Settings page must still render — the file picker below is the path that
+/// does not need this directory at all.
+#[tauri::command]
+pub async fn list_backups(app: tauri::AppHandle) -> DbResult<Vec<BackupEntry>> {
+    use tauri::Manager;
+
+    let data_dir = app.path().app_data_dir()?;
+    let Ok(dir) = crate::autobackup::backups_dir(&data_dir) else {
+        log::warn!("no backups directory, the restore list is empty");
+        return Ok(Vec::new());
+    };
+    Ok(crate::autobackup::list_snapshots(&dir))
+}
+
+/// Replace the working database with a snapshot.
+///
+/// The counterpart to [`backup_database`], and the reason that command was
+/// worth writing: until this existed, every verified snapshot in `backups/` was
+/// a file the app could produce and never read, and restoring meant closing the
+/// app and swapping files by hand.
+///
+/// **Deliberately unlicensed**, matching [`backup_database`].
+///
+/// The order below is the whole design, and each step exists because the next
+/// one is irreversible:
+///
+/// 1. Validate `source` *before* touching anything. A file that is not a
+///    paymentSchedule database is refused while the user still has theirs.
+/// 2. Snapshot the current database, so "I restored the wrong file" is itself
+///    recoverable.
+/// 3. Stage a copy inside app data, verify *that*, and only then rename it into
+///    place — a rename within one filesystem is atomic, so there is no window
+///    where `payment_schedule.db` is half a database.
+///
+/// Returns the restored settings: the snapshot may carry a different language
+/// or currency, and the renderer reloads against them.
+#[tauri::command]
+pub async fn restore_database(
+    db: State<'_, Db>,
+    app: tauri::AppHandle,
+    source: String,
+) -> DbResult<Settings> {
+    use tauri::Manager;
+
+    let source = std::path::PathBuf::from(source);
+    // Refuse first, while the user's database is still the one on disk. Doing
+    // this after the swap would mean discovering the file was unusable at the
+    // point their own data had already been replaced by it.
+    validate_restore_source(&source)?;
+
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+    // The same expression `lib.rs` opens the database with. `Db` is handed to
+    // this command as a connection, not a path, so it has to be rebuilt.
+    let db_path = data_dir.join("payment_schedule.db");
+    let backups = crate::autobackup::backups_dir(&data_dir)?;
+
+    db.replace_file(&db_path, || {
+        // A fallback for the fallback, on `snapshot_before_migration`'s
+        // reasoning: never take the irreversible step against the only copy
+        // with nothing to fall back to. Fatal to the restore on purpose — the
+        // user can free disk space, they cannot un-restore.
+        if let Err(e) = crate::autobackup::snapshot_before_restore(&db_path, &backups) {
+            log::error!("refusing to restore without a pre-restore snapshot: {e}");
+            return Err(AppError::validation(RESTORE_FAILED));
+        }
+
+        stage_and_swap(&source, &db_path, &data_dir)?;
+
+        // The sidecars belong to the database just replaced. The shared
+        // connection was closed cleanly by `replace_file`, which checkpoints
+        // the -wal into the file it is leaving, so nothing here is unwritten —
+        // but left behind they would be read against a database they do not
+        // describe.
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = db_path.with_file_name(format!(
+                "{}{suffix}",
+                db_path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            match std::fs::remove_file(&sidecar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("could not remove a stale WAL sidecar: {e}"),
+            }
+        }
+
+        Ok(())
+    })?;
+
+    // No path, no filename: the log carries ids and codes, never filesystem
+    // detail the user might paste into a bug report.
+    log::info!("database restored from a snapshot");
+
+    Ok(read_settings(&db.lock()))
+}
+
+/// Copy `source` into app data, verify the copy, then rename it over `db_path`.
+///
+/// Staged rather than copied straight onto `db_path` because a copy is not
+/// atomic: a failure part-way through would leave a truncated file where the
+/// shop's ledger used to be, and by then the pre-restore snapshot is the only
+/// thing between them and starting over. Staging inside app data — the one
+/// directory the app owns outright, and the same filesystem as `db_path` —
+/// makes the last step a rename.
+///
+/// The staged copy is verified even though `source` already was: `copy` can
+/// stop short on a full disk or a USB stick pulled mid-read, and the whole
+/// point of doing this in two steps is that the file which lands is the file
+/// that was checked.
+fn stage_and_swap(
+    source: &std::path::Path,
+    db_path: &std::path::Path,
+    staging_dir: &std::path::Path,
+) -> DbResult<()> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staged = staging_dir.join(format!("restore-{}-{stamp}.part", std::process::id()));
+
+    if let Err(e) = std::fs::copy(source, &staged) {
+        log::error!("could not stage the snapshot to restore: {e}");
+        discard(&staged);
+        return Err(AppError::validation(RESTORE_FAILED));
+    }
+
+    if let Err(e) = verify_snapshot(&staged) {
+        log::error!("the staged copy of the snapshot did not verify: {e}");
+        discard(&staged);
+        return Err(AppError::validation(RESTORE_FAILED));
+    }
+
+    if let Err(e) = std::fs::rename(&staged, db_path) {
+        log::error!("could not move the restored database into place: {e}");
+        discard(&staged);
+        return Err(AppError::validation(RESTORE_FAILED));
+    }
+
+    Ok(())
+}
+
+/// Prove a file is a paymentSchedule database this build can adopt.
+///
+/// `source` is untrusted in the same sense as `dest` in
+/// [`backup_database_impl`]: it normally comes from the restore list or the
+/// native open dialog, but the renderer can pass any path. Reading an arbitrary
+/// file is far less dangerous than writing one, so the guards here are about
+/// *correctness* rather than containment — every one of them is a way the user
+/// ends up with a database that opens and is wrong.
+///
+/// Rejections are `INVALID_BACKUP_FILE`, which tells the user to pick a
+/// different file; the reason goes to the log only.
+fn validate_restore_source(source: &std::path::Path) -> DbResult<()> {
+    if source.extension().and_then(|e| e.to_str()) != Some("db") {
+        log::warn!("rejected a restore source without a .db extension");
+        return Err(AppError::validation(INVALID_BACKUP_FILE));
+    }
+
+    // `integrity_check` and `foreign_key_check`, exactly as every snapshot this
+    // app writes is checked on the way out. A backup that was sound when
+    // written can still have rotted on the medium it was carried on.
+    if let Err(e) = verify_snapshot(source) {
+        log::warn!("rejected a restore source that did not verify: {e}");
+        return Err(AppError::validation(INVALID_BACKUP_FILE));
+    }
+
+    let conn =
+        Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+            log::warn!("cannot open the restore source: {e}");
+            AppError::validation(INVALID_BACKUP_FILE)
+        })?;
+
+    // A sound SQLite file is not necessarily *ours*. Without this, a database
+    // from some other application restores cleanly and leaves the app pointed
+    // at an empty ledger.
+    let has_client: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'client')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| {
+            log::warn!("cannot inspect the restore source: {e}");
+            AppError::validation(INVALID_BACKUP_FILE)
+        })?;
+    if !has_client {
+        log::warn!("rejected a restore source with no client table");
+        return Err(AppError::validation(INVALID_BACKUP_FILE));
+    }
+
+    // Refused here rather than after the swap. `migrate` already refuses a
+    // schema newer than this build understands, but by the time it runs the
+    // database the user was working in is gone, and they are looking at an app
+    // that will not open.
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| {
+            log::warn!("cannot read the restore source schema version: {e}");
+            AppError::validation(INVALID_BACKUP_FILE)
+        })?;
+    if version.max(0) as usize > crate::db::latest_schema_version() {
+        log::warn!("rejected a restore source written by a newer build");
+        return Err(AppError::validation(INVALID_BACKUP_FILE));
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
 // CSV export
 // ===========================================================================
 
@@ -5631,6 +5851,157 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    // --- restore -----------------------------------------------------------
+
+    /// The source guards. Every one of these is a way the user ends up looking
+    /// at a database that opens and is wrong — which is worse than a refusal,
+    /// because by then their own data is gone.
+    #[test]
+    fn restore_refuses_anything_that_is_not_our_database() {
+        let f = Fixture::new("restore_guard");
+        seeded_purchase(&f);
+        let staging = staging_dir("restore_guard_stage");
+
+        // Wrong extension.
+        let not_db = temp_db_path("restore_guard_txt").with_extension("txt");
+        std::fs::write(&not_db, b"not a database").unwrap();
+        assert_eq!(
+            code_of(validate_restore_source(&not_db).unwrap_err()),
+            "INVALID_BACKUP_FILE"
+        );
+
+        // Named right, but not SQLite at all.
+        let garbage = temp_db_path("restore_guard_garbage");
+        std::fs::write(&garbage, b"still not a database").unwrap();
+        assert_eq!(
+            code_of(validate_restore_source(&garbage).unwrap_err()),
+            "INVALID_BACKUP_FILE"
+        );
+
+        // A perfectly sound SQLite file belonging to some other application.
+        let foreign = temp_db_path("restore_guard_foreign");
+        let conn = Connection::open(&foreign).unwrap();
+        conn.execute_batch("CREATE TABLE recipes (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            code_of(validate_restore_source(&foreign).unwrap_err()),
+            "INVALID_BACKUP_FILE"
+        );
+
+        // Ours, but from a build further along the migration ladder. Refused
+        // here rather than by `migrate` after the swap, when the database the
+        // user was working in would already be gone.
+        let future = temp_db_path("restore_guard_future");
+        backup_database_impl(&f.db.lock(), &future, &staging).unwrap();
+        let conn = Connection::open(&future).unwrap();
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = {}",
+            crate::db::latest_schema_version() + 1
+        ))
+        .unwrap();
+        drop(conn);
+        assert_eq!(
+            code_of(validate_restore_source(&future).unwrap_err()),
+            "INVALID_BACKUP_FILE"
+        );
+
+        // A snapshot this app wrote is accepted, including one a version behind.
+        let good = temp_db_path("restore_guard_good");
+        backup_database_impl(&f.db.lock(), &good, &staging).unwrap();
+        validate_restore_source(&good).unwrap();
+        let conn = Connection::open(&good).unwrap();
+        conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        drop(conn);
+        validate_restore_source(&good).unwrap();
+
+        for p in [&not_db, &garbage, &foreign, &future, &good] {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// The round trip this feature exists for: snapshot, destroy, restore.
+    ///
+    /// Exercises the pieces `restore_database` composes rather than the command
+    /// itself, which needs an `AppHandle` — the same `*_impl` split the rest of
+    /// this module uses.
+    #[test]
+    fn restore_brings_back_a_purchase_that_was_deleted() {
+        let f = Fixture::new("restore_round_trip");
+        seeded_purchase(&f);
+        let staging = staging_dir("restore_round_trip_stage");
+
+        let snapshot = temp_db_path("restore_round_trip_snap");
+        backup_database_impl(&f.db.lock(), &snapshot, &staging).unwrap();
+
+        // The irreversible act this is the recovery path for.
+        f.db.lock()
+            .execute_batch("DELETE FROM purchase")
+            .expect("cascades through installments and payments");
+        let after_delete: i64 =
+            f.db.lock()
+                .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(after_delete, 0);
+
+        validate_restore_source(&snapshot).unwrap();
+        f.db.replace_file(&f.path, || stage_and_swap(&snapshot, &f.path, &staging))
+            .unwrap();
+
+        // The live connection is the restored database, with no reopen by the
+        // caller: that is the whole point of swapping under the mutex.
+        let purchases: i64 =
+            f.db.lock()
+                .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+                .unwrap();
+        let installments: i64 =
+            f.db.lock()
+                .query_row("SELECT COUNT(*) FROM installment", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(purchases, 1);
+        assert_eq!(installments, 4);
+
+        assert_eq!(
+            std::fs::read_dir(&staging).unwrap().count(),
+            0,
+            "staging must be left clean after a successful restore"
+        );
+
+        let _ = std::fs::remove_file(&snapshot);
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    /// A restore that fails part-way must cost the user nothing. The swap is
+    /// staged precisely so the working database is never the thing being
+    /// written to.
+    #[test]
+    fn a_failed_restore_leaves_the_working_database_intact() {
+        let f = Fixture::new("restore_failure");
+        seeded_purchase(&f);
+        let staging = staging_dir("restore_failure_stage");
+
+        let missing = temp_db_path("restore_failure_absent");
+        let err =
+            f.db.replace_file(&f.path, || stage_and_swap(&missing, &f.path, &staging))
+                .unwrap_err();
+        assert_eq!(code_of(err), "RESTORE_FAILED");
+
+        // Still open, still ours, still holding the data.
+        let purchases: i64 =
+            f.db.lock()
+                .query_row("SELECT COUNT(*) FROM purchase", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(purchases, 1);
+        assert_eq!(
+            std::fs::read_dir(&staging).unwrap().count(),
+            0,
+            "a failed restore must not leave staging litter"
+        );
+
         let _ = std::fs::remove_dir_all(&staging);
     }
 

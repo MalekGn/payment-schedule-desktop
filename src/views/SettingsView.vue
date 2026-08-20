@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import {
   useSettingsStore,
   DATE_FORMATS,
@@ -18,6 +19,7 @@ import { formatDatePattern, useFormat } from "@/composables/useFormat";
 import { isTauri } from "@/api";
 import { toUserMessage } from "@/lib/errors";
 import { todayIso } from "@/lib/finance";
+import type { BackupEntry } from "@/types/models";
 
 const { t } = useI18n();
 const settings = useSettingsStore();
@@ -198,6 +200,97 @@ const autoBackupStatus = computed(() =>
     ? t("settings.backupAutoLast", { date: fmt.date(settings.lastAutoBackupAt) })
     : t("settings.backupAutoNone"),
 );
+
+// -- restore ---------------------------------------------------------------
+
+/**
+ * The snapshots `backups/` holds, newest first. Empty on a browser preview and
+ * on an install whose backups directory cannot be read — the file picker below
+ * is the path that needs neither.
+ */
+const backups = ref<BackupEntry[]>([]);
+/** The chosen source, held while the confirmation is open. `null` when closed. */
+const pendingRestore = ref<{ source: string; label: string } | null>(null);
+/** Guards the confirm button: a restore swaps a file and must not be re-entered. */
+const restoring = ref(false);
+
+async function loadBackups() {
+  if (!isTauri()) return;
+  try {
+    backups.value = await settings.listBackups();
+  } catch (e) {
+    // Never a toast: an unreadable backups directory costs the user the list,
+    // not the feature, and the file picker still works.
+    console.error("could not list the backups:", e);
+  }
+}
+
+onMounted(loadBackups);
+
+/** How a listed snapshot is named back to the user in the confirmation. */
+function backupLabel(entry: BackupEntry): string {
+  return `${fmt.date(entry.takenAt)} · ${t(`settings.backupKind_${entry.kind}`)}`;
+}
+
+/**
+ * Size in kilobytes, rounded. Not `Intl` byte formatting: these files are all
+ * in the same order of magnitude, and one consistent unit compares at a glance
+ * where "0,25 Mo" against "980 Ko" does not.
+ */
+function backupSize(entry: BackupEntry): string {
+  return t("settings.backupSize", { size: Math.max(1, Math.round(entry.sizeBytes / 1024)) });
+}
+
+function askRestoreFromList(entry: BackupEntry) {
+  pendingRestore.value = { source: entry.path, label: backupLabel(entry) };
+}
+
+/**
+ * Restore from a copy the user keeps off this machine — the case the listing
+ * cannot serve, because a snapshot in `backups/` sits on the same disk as the
+ * database it protects.
+ */
+async function pickBackupFile() {
+  if (!isTauri()) return;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: "SQLite", extensions: ["db"] }],
+  });
+  if (typeof selected !== "string") return;
+  pendingRestore.value = {
+    source: selected,
+    label: selected.split(/[\\/]/).pop() ?? selected,
+  };
+}
+
+/**
+ * Swap the database, then reload the whole WebView.
+ *
+ * The reload is not belt-and-braces: every store, route and computed in the app
+ * is derived from a database that no longer exists, and there is no honest way
+ * to reconcile them in place. Only a success reloads — a rejection leaves the
+ * user exactly where they were, with their data untouched, which is the promise
+ * the backend makes.
+ */
+async function confirmRestore() {
+  const target = pendingRestore.value;
+  if (!target || restoring.value) return;
+  restoring.value = true;
+  try {
+    await settings.restoreDatabase(target.source);
+    ui.notify(t("settings.restoreDone"));
+    // Left armed deliberately, and the dialog left open: `reload()` only
+    // *schedules* the navigation, so clearing the guard here would leave a
+    // live Restaurer button in front of the user for the frames in between —
+    // on the one action in the app that cannot be taken twice by accident.
+    window.location.reload();
+  } catch (e) {
+    ui.notify(toUserMessage(e, t), "error");
+    pendingRestore.value = null;
+    restoring.value = false;
+  }
+}
 
 function dateSample(pattern: string): string {
   return formatDatePattern(todayIso(), pattern);
@@ -461,6 +554,54 @@ async function pickLicense() {
         </div>
       </div>
     </section>
+
+    <!-- Its own card rather than a block inside Sauvegarde: this is the one
+         destructive action on the page, and a header the user can scan for is
+         what makes it findable at the moment they need it. Desktop only, for
+         the same reason as the backup card. -->
+    <section v-if="isTauri()" class="card set-card">
+      <div class="card-header">
+        <h2>{{ t("settings.restore") }}</h2>
+      </div>
+      <div class="set-body">
+        <span class="hint">{{ t("settings.restoreHint") }}</span>
+
+        <!-- Ungated, like the backup button above: recovery must not depend on
+             the state of a licence. -->
+        <button class="btn btn--ghost" type="button" @click="pickBackupFile">
+          <AppIcon name="upload" :size="16" /> {{ t("settings.restoreFromFile") }}
+        </button>
+
+        <div class="field">
+          <span class="field-label">{{ t("settings.restoreFromList") }}</span>
+          <p v-if="backups.length === 0" class="hint">{{ t("settings.restoreEmpty") }}</p>
+          <ul v-else class="snap-list">
+            <li v-for="entry in backups" :key="entry.path" class="snap-row">
+              <span class="snap-desc">
+                <strong>{{ fmt.date(entry.takenAt) }}</strong>
+                <span class="hint">
+                  {{ t(`settings.backupKind_${entry.kind}`) }} · {{ backupSize(entry) }}
+                </span>
+              </span>
+              <button class="btn btn--ghost" type="button" @click="askRestoreFromList(entry)">
+                {{ t("settings.restoreAction") }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <ConfirmDialog
+      v-if="pendingRestore"
+      danger
+      :title="t('settings.restoreConfirmTitle')"
+      :message="t('settings.restoreConfirmBody', { source: pendingRestore.label })"
+      :confirm-label="t('settings.restoreAction')"
+      :confirm-disabled="restoring"
+      @close="pendingRestore = null"
+      @confirm="confirmRestore"
+    />
   </div>
 </template>
 
@@ -535,6 +676,32 @@ async function pickLicense() {
 }
 .textarea {
   resize: vertical;
+}
+
+/* -- restore -- */
+.snap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snap-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.snap-desc {
+  display: flex;
+  flex-direction: column;
+  /* Logical, not `text-align: left`: the rows mirror wholesale under RTL. */
+  align-items: flex-start;
+  gap: 2px;
 }
 
 /* -- licence -- */

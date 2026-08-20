@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { api, isTauri } from "@/api";
 import { applyLocale, isSupportedLocale, resolveOsLocale, type AppLocale } from "@/i18n";
 import { dayDiff, todayIso } from "@/lib/finance";
-import type { Settings, SettingsPatch } from "@/types/models";
+import type { BackupEntry, Settings, SettingsPatch } from "@/types/models";
 
 const DEFAULTS: Settings = {
   language: "fr",
@@ -121,6 +121,24 @@ export const useSettingsStore = defineStore("settings", () => {
     settings.value = await api.backupDatabase(dest);
   }
 
+  /** Every snapshot the app has taken, newest first, for the restore picker. */
+  function listBackups(): Promise<BackupEntry[]> {
+    return api.listBackups();
+  }
+
+  /**
+   * Replace the working database with the snapshot at `source`.
+   *
+   * Adopts the restored settings — the snapshot may carry a different language
+   * or currency — but that is a courtesy, not the mechanism: **the caller must
+   * reload the WebView**. Every other store in the app is still holding rows
+   * from a database that no longer exists, and this store cannot speak for
+   * them.
+   */
+  async function restoreDatabase(source: string) {
+    settings.value = await api.restoreDatabase(source);
+  }
+
   return {
     settings,
     loaded,
@@ -143,5 +161,7 @@ export const useSettingsStore = defineStore("settings", () => {
     setLogoFromPath,
     clearLogo,
     backupDatabase,
+    listBackups,
+    restoreDatabase,
   };
 });

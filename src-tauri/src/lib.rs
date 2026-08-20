@@ -226,6 +226,8 @@ pub fn run() {
             commands::set_logo,
             commands::clear_logo,
             commands::backup_database,
+            commands::list_backups,
+            commands::restore_database,
             commands::export_csv,
             // licence
             commands::get_license_status,

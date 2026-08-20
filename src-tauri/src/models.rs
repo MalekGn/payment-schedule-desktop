@@ -495,3 +495,39 @@ pub struct SettingsPatch {
     pub auto_backup_frequency: Option<String>,
     pub auto_backup_time: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+/// Which pool a snapshot in `backups/` came from.
+///
+/// Shown to the user rather than kept internal: "taken before a schema update"
+/// and "taken before the last restore" say something about *how far back* a
+/// file goes that a date alone does not, and choosing wrongly here costs the
+/// shop its ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupKind {
+    /// A routine snapshot from the scheduler.
+    Auto,
+    /// Taken before the schema ladder advanced.
+    PreMigration,
+    /// Taken before a restore overwrote the working database.
+    PreRestore,
+}
+
+/// One snapshot the restore picker can offer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupEntry {
+    /// Absolute path, handed straight back to `restore_database`. The renderer
+    /// never opens it — there is no `fs` plugin — it only echoes it.
+    pub path: String,
+    pub file_name: String,
+    pub kind: BackupKind,
+    /// ISO `YYYY-MM-DD`, from the filename where the naming scheme carries one
+    /// and the file mtime otherwise.
+    pub taken_at: String,
+    pub size_bytes: u64,
+}

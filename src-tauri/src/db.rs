@@ -2,7 +2,8 @@
 //! through the `Db` state, which the Tauri commands lock per call. The
 //! frontend never touches the file directly.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{Months, NaiveDate};
@@ -13,6 +14,21 @@ pub use crate::error::AppError;
 /// Managed Tauri state wrapping a single SQLite connection behind a mutex.
 pub struct Db {
     pub conn: Mutex<Connection>,
+    /// Set for the duration of [`Db::replace_file`].
+    ///
+    /// The connection mutex already serializes every *command*, but the
+    /// automatic-backup thread deliberately works outside it: `snapshot_if_due`
+    /// opens its own connection on the database path so a scheduled
+    /// `VACUUM INTO` does not block the shop typing. That is exactly the thread
+    /// that must not read the file while it is being swapped, and a lock it
+    /// never takes cannot stop it — hence a flag it can check.
+    ///
+    /// It narrows the window rather than closing it: a snapshot already in
+    /// flight when a restore starts keeps its open handle on the old inode. What
+    /// that costs is bounded — on Unix the snapshot is of the pre-restore
+    /// database (stale, not corrupt), and on Windows the open handle makes the
+    /// rename fail, so the restore is refused with the user's data untouched.
+    restoring: AtomicBool,
 }
 
 pub type DbResult<T> = Result<T, AppError>;
@@ -20,21 +36,10 @@ pub type DbResult<T> = Result<T, AppError>;
 impl Db {
     /// Open (creating if needed) the database at `path`, apply the schema, and
     /// seed demo data on a fresh database — development builds only.
-    pub fn open(path: &PathBuf) -> DbResult<Self> {
-        let conn = Connection::open(path)?;
-        // WAL lets readers proceed during a write and is the standard choice
-        // for a desktop app; `busy_timeout` makes contention retry for 5s
-        // instead of failing instantly with SQLITE_BUSY; `synchronous=NORMAL`
-        // is the documented safe pairing with WAL.
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA foreign_keys = ON;",
-        )?;
-        migrate(&conn)?;
+    pub fn open(path: &Path) -> DbResult<Self> {
         let db = Db {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(open_connection(path)?),
+            restoring: AtomicBool::new(false),
         };
         db.seed_if_empty()?;
         Ok(db)
@@ -53,6 +58,79 @@ impl Db {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether a restore is swapping the database file right now.
+    ///
+    /// Read by the automatic-backup thread, which is the one piece of the app
+    /// that touches the database path without going through [`Db::lock`].
+    pub fn is_restoring(&self) -> bool {
+        self.restoring.load(Ordering::Acquire)
+    }
+
+    /// Close the live connection, run `swap` with the database file free, then
+    /// reopen it.
+    ///
+    /// The connection mutex is held for the whole operation, so no command can
+    /// observe the gap — they queue on [`Db::lock`] as they always do and find a
+    /// working connection when they get it. `swap` runs with the file closed
+    /// because that is what makes replacing it safe: a live rusqlite handle
+    /// keeps the old inode, and its `-wal`/`-shm` sidecars would then be read
+    /// against a database they do not belong to.
+    ///
+    /// Reopening runs the migration ladder, which is deliberate: a snapshot
+    /// taken by an older build is brought forward on the way in.
+    ///
+    /// The connection is restored either way. A failing `swap` leaves `path`
+    /// untouched by contract (its caller stages elsewhere and only ever renames
+    /// on success), so reopening it is sound and is what keeps a refused restore
+    /// from bricking the running app.
+    pub fn replace_file<F>(&self, path: &Path, swap: F) -> DbResult<()>
+    where
+        F: FnOnce() -> DbResult<()>,
+    {
+        let mut guard = self.lock();
+        self.restoring.store(true, Ordering::Release);
+
+        // A scratch in-memory connection stands in while the file is closed:
+        // `Connection` is not `Option`al in the guard, and leaving a poisoned
+        // placeholder would be worse than a database nothing can reach.
+        let previous = std::mem::replace(&mut *guard, Connection::open_in_memory()?);
+        if let Err((_, e)) = previous.close() {
+            // Reopen before giving up, so the app keeps working — and clear the
+            // flag *before* the `?`, or a reopen that also fails would leave the
+            // automatic-backup thread standing down for the life of the process.
+            let reopened = open_connection(path);
+            self.restoring.store(false, Ordering::Release);
+            *guard = reopened?;
+            return Err(AppError::internal(e));
+        }
+
+        let swapped = swap();
+        let reopened = open_connection(path);
+        self.restoring.store(false, Ordering::Release);
+
+        // The swap's verdict wins: a reopen failure after a successful swap is
+        // still a broken app, but a swap failure is the one the caller can
+        // explain to the user.
+        match (swapped, reopened) {
+            (Ok(()), Ok(conn)) => {
+                *guard = conn;
+                Ok(())
+            }
+            (Err(e), Ok(conn)) => {
+                *guard = conn;
+                Err(e)
+            }
+            (swapped, Err(reopen)) => {
+                // The guard keeps the scratch in-memory connection, which has no
+                // schema — so every later command fails loudly rather than
+                // reporting an empty ledger, which is the one outcome worse than
+                // an error here.
+                log::error!("could not reopen the database after a file swap");
+                Err(swapped.err().unwrap_or(reopen))
+            }
+        }
+    }
+
     /// Seed first-run demo data, but only in development builds. Production
     /// bundles (AppImage/deb/MSI/NSIS — built in release mode) ship empty so
     /// end users start with a clean database. Setting `PAYMENT_SCHEDULE_SEED`
@@ -68,6 +146,29 @@ impl Db {
         }
         Ok(())
     }
+}
+
+/// Open the database at `path` with the app's pragmas and bring the schema up
+/// to date.
+///
+/// Split out of [`Db::open`] so a restore reopens through exactly the same
+/// path: a restored database that came up without WAL, without foreign keys, or
+/// without the migration ladder having run would be a subtly different database
+/// from the one every other launch produces.
+fn open_connection(path: &Path) -> DbResult<Connection> {
+    let conn = Connection::open(path)?;
+    // WAL lets readers proceed during a write and is the standard choice
+    // for a desktop app; `busy_timeout` makes contention retry for 5s
+    // instead of failing instantly with SQLITE_BUSY; `synchronous=NORMAL`
+    // is the documented safe pairing with WAL.
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    migrate(&conn)?;
+    Ok(conn)
 }
 
 /// Whether first-run demo seeding should run. Enabled in debug builds
@@ -148,6 +249,16 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         }
     }
     Ok(())
+}
+
+/// The schema version this build understands, i.e. the length of the ladder.
+///
+/// Exposed so a restore can refuse a snapshot written by a *newer* build up
+/// front, with a message the user can act on, rather than swapping the file in
+/// and letting [`migrate`] refuse it afterwards — by which point the database
+/// they were working in is already gone.
+pub fn latest_schema_version() -> usize {
+    MIGRATIONS.len()
 }
 
 /// What a launch needs to know about the database *before* opening it properly.
@@ -512,6 +623,8 @@ pub const NO_REBALANCE_ROOM: &str = "NO_REBALANCE_ROOM";
 pub const INVALID_LOGO_TYPE: &str = "INVALID_LOGO_TYPE";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";
 pub const BACKUP_FAILED: &str = "BACKUP_FAILED";
+pub const INVALID_BACKUP_FILE: &str = "INVALID_BACKUP_FILE";
+pub const RESTORE_FAILED: &str = "RESTORE_FAILED";
 pub const EXPORT_FAILED: &str = "EXPORT_FAILED";
 pub const INVALID_GRANULARITY: &str = "INVALID_GRANULARITY";
 pub const REPORT_RANGE_TOO_LONG: &str = "REPORT_RANGE_TOO_LONG";
@@ -889,6 +1002,50 @@ mod tests {
         );
     }
 
+    /// `replace_file` must leave a working connection behind whatever the swap
+    /// did — including nothing at all.
+    ///
+    /// The failure this guards is the one that would be hardest to recover
+    /// from: a refused restore that also takes the running app's connection
+    /// with it, leaving every subsequent command failing against a scratch
+    /// in-memory database with none of the user's data in it.
+    #[test]
+    fn replace_file_reopens_the_original_when_the_swap_fails() {
+        let path = temp_db_path("replace_file_failure");
+        let db = Db::open(&path).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO client (first_name, last_name) VALUES ('Swap', 'Sentinel')",
+                [],
+            )
+            .unwrap();
+
+        let err = db
+            .replace_file(&path, || Err(AppError::validation("RESTORE_FAILED")))
+            .unwrap_err();
+        assert_eq!(err.code(), "RESTORE_FAILED");
+        assert!(
+            !db.is_restoring(),
+            "the flag must be cleared on the way out"
+        );
+
+        // The connection is live and pointed at the real file, not the scratch
+        // in-memory stand-in the swap ran behind.
+        // Scoped to the sentinel: debug builds seed demo clients, so a bare
+        // `SELECT first_name FROM client` would pass on any open database.
+        let found: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM client WHERE last_name = 'Sentinel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// `migrate` is version-tracked and idempotent.
     ///
     /// The case that matters is the second one: databases already in the field
@@ -1134,7 +1291,7 @@ mod tests {
         }
     }
 
-    fn temp_db_path(tag: &str) -> PathBuf {
+    fn temp_db_path(tag: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
