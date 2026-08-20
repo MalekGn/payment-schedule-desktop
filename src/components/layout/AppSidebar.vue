@@ -4,16 +4,17 @@ import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import AppIcon from "@/components/ui/AppIcon.vue";
 import { useStatsStore } from "@/stores/stats";
-import { useSettingsStore } from "@/stores/settings";
 import { useLicenseStore } from "@/stores/license";
-import { resolveLogoSrc } from "@/lib/assets";
+import { useShopIdentity } from "@/composables/useShopIdentity";
 
 const { t } = useI18n();
 const router = useRouter();
 const route = useRoute();
 const stats = useStatsStore();
-const settings = useSettingsStore();
 const license = useLicenseStore();
+// Shared with the printed letterhead, so the sidebar and a contract handed to a
+// client can never disagree about the shop's name. See `useShopIdentity`.
+const { shopName, logoSrc } = useShopIdentity();
 
 interface NavItem {
   name: string;
@@ -55,20 +56,6 @@ const items: NavItem[] = [
 function isLocked(item: NavItem): boolean {
   return item.licensed === true && !license.isLicensed;
 }
-
-const logoSrc = computed(() => resolveLogoSrc(settings.logoPath));
-
-/**
- * The shop name shown beside the logo.
- *
- * The licence is the source of truth: `license.license` is populated only once
- * the signature has verified — including for an expired or wrong-machine
- * licence — so the name it carries is vendor-attested rather than user-typed.
- * The stored setting is the fallback for an install with no readable licence,
- * and an empty string falls back further to the generic app title in the
- * template.
- */
-const shopName = computed(() => license.license?.licensee.trim() || settings.shopName.trim());
 
 /**
  * The Achats page carries its own primary "new purchase" button, so the sidebar

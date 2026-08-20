@@ -77,6 +77,14 @@ async function onSaved(updated: PurchaseDetail) {
       <AppIcon name="archive" :size="18" />
       <span>{{ t("achats.archivedOn", { date: fmt.date(detail.purchase.archivedAt) }) }}</span>
     </div>
+    <!-- Printing is a licensed action, and the route refuses without one; the
+         button is hidden rather than shown-and-refused. -->
+    <div v-if="license.isLicensed" class="print-bar no-print">
+      <RouterLink class="btn btn--ghost" :to="`/imprimer/echeancier/${detail.purchase.id}`">
+        <AppIcon name="report" :size="16" /> {{ t("print.printSchedule") }}
+      </RouterLink>
+    </div>
+
     <PurchaseDetailCard :detail="detail" full-actions @update-installment="editTarget = $event" />
 
     <section class="card">
@@ -98,6 +106,7 @@ async function onSaved(updated: PurchaseDetail) {
               <SortHeader :sort="sort" field="tranche" :label="t('paiements.columns.tranche')" />
               <SortHeader :sort="sort" field="amount" :label="t('paiements.columns.amount')" />
               <SortHeader :sort="sort" field="note" :label="t('paiements.columns.note')" />
+              <th class="col-action no-print">{{ t("common.actions") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -108,6 +117,16 @@ async function onSaved(updated: PurchaseDetail) {
               </td>
               <td class="tabular strong">{{ fmt.money(pay.amount) }}</td>
               <td class="muted">{{ pay.note || "—" }}</td>
+              <td class="col-action no-print">
+                <RouterLink
+                  class="icon-action"
+                  :to="`/imprimer/recu/${detail.purchase.id}?payment=${pay.id}`"
+                  :title="t('print.printReceipt')"
+                  :aria-label="t('print.printReceipt')"
+                >
+                  <AppIcon name="report" :size="16" />
+                </RouterLink>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -127,6 +146,28 @@ async function onSaved(updated: PurchaseDetail) {
 </template>
 
 <style scoped>
+.print-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+.col-action {
+  text-align: end;
+  white-space: nowrap;
+  width: 1%;
+}
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.icon-action:hover {
+  background: var(--bg);
+  color: var(--primary);
+}
 .archived-banner {
   display: flex;
   align-items: center;

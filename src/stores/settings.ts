@@ -61,6 +61,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const dateFormat = computed(() => settings.value.dateFormat);
   const logoPath = computed(() => settings.value.logoPath);
   const shopName = computed(() => settings.value.shopName);
+  const shopInfo = computed(() => settings.value.shopInfo);
   const alertSoonDays = computed(() => settings.value.alertSoonDays);
   const lastBackupAt = computed(() => settings.value.lastBackupAt);
   const lastAutoBackupAt = computed(() => settings.value.lastAutoBackupAt);
@@ -128,6 +129,7 @@ export const useSettingsStore = defineStore("settings", () => {
     dateFormat,
     logoPath,
     shopName,
+    shopInfo,
     alertSoonDays,
     lastBackupAt,
     lastAutoBackupAt,

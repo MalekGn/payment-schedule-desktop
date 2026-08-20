@@ -94,6 +94,16 @@ async function open(page, route = "/") {
   await page.locator(".app-shell").waitFor({ state: "visible", timeout: 10000 });
 }
 
+/**
+ * Load a print route. Deliberately not `open()`: those routes render outside the
+ * app shell, so waiting for `.app-shell` would time out — which is itself the
+ * property the first test below asserts.
+ */
+async function openDocument(page, route) {
+  await page.goto(`${BASE}${route}`, { waitUntil: "networkidle" });
+  await page.locator(".sheet").waitFor({ state: "visible", timeout: 10000 });
+}
+
 // --- scenarios ---------------------------------------------------------------
 
 test("app shell + sidebar render on first load", async (page) => {
@@ -1638,6 +1648,166 @@ test("rapports: the export writes a CSV with its sections and as-of date", async
   }
   // The as-of row is what stops a balance being read as a period figure.
   assert(/"Arrêté au","\d{4}-\d{2}-\d{2}"/.test(text), "export must state its as-of date");
+});
+
+test("print: the échéancier renders on letterhead, with no app chrome", async (page) => {
+  await openDocument(page, "/imprimer/echeancier/1");
+
+  // The whole point of a separate route: no sidebar, no page title, nothing
+  // whose height/overflow rules would clip the printed output to one page.
+  assertEqual(await page.locator(".app-shell").count(), 0, "no app shell on a print route");
+  assertEqual(await page.locator("h1.page-title").count(), 0, "no header title either");
+
+  assertEqual(
+    await page.locator(".shop-name").innerText(),
+    "Boutique de démonstration",
+    "letterhead names the licence holder",
+  );
+  assertEqual(await page.locator(".letterhead-doc h1").innerText(), "Échéancier", "document title");
+  assertEqual(await page.locator(".doc-ref").innerText(), "A-000001", "document reference");
+
+  // Seed A-000001: 2400 over 6 tranches of 400.
+  assertEqual(await page.locator(".doc-table tbody tr").count(), 6, "one row per tranche");
+  const footer = await page.locator(".doc-table tfoot td").allInnerTexts();
+  assert(
+    footer.some((c) => /2\s*400/.test(c)),
+    `the total row should carry 2400, got: ${footer.join(" | ")}`,
+  );
+
+  // Both signature blocks, or it is not a contract.
+  assertEqual(await page.locator(".signature").count(), 2, "shop and client signature blocks");
+
+  // The print dialog names the saved file from the document title. Without
+  // this every document was offered as `output.pdf`; the absence of this exact
+  // assertion is what let that ship.
+  assertEqual(
+    await page.title(),
+    "Echeancier-A-000001-Mohamed-Trabelsi",
+    "the document names itself for the save dialog",
+  );
+
+  // The action bar must never reach the paper.
+  const actions = page.locator(".print-actions");
+  assert(
+    (await actions.getAttribute("class")).includes("no-print"),
+    "the action bar must be marked no-print",
+  );
+});
+
+test("print: a receipt is reached from its payment row and shows that payment", async (page) => {
+  await open(page, "/achats/1");
+  await page.locator("table.table tbody tr").first().waitFor({ timeout: 10000 });
+
+  // Navigate the way the shopkeeper does, rather than guessing a payment id.
+  await page.locator('a[href^="/imprimer/recu/1?payment="]').first().click();
+  await page.locator(".sheet").waitFor({ timeout: 10000 });
+
+  assertEqual(
+    await page.locator(".letterhead-doc h1").innerText(),
+    "Reçu de paiement",
+    "document title",
+  );
+  // Seed A-000001 has its first tranche of 400 settled.
+  const amount = await page.locator(".amount-value").innerText();
+  assert(/400/.test(amount), `receipt should show the 400 collected, got: ${amount}`);
+
+  // A balance on a reprint is a snapshot, so it must say as of when.
+  const asOf = await page.locator(".as-of").first().innerText();
+  assert(/\d{2}\/\d{2}\/\d{4}/.test(asOf), `balance should be stamped, got: ${asOf}`);
+
+  // Dated by the payment, not by today, so a reprint is not misfiled.
+  const name = await page.title();
+  assert(
+    /^Recu-A-000001-T\d+-\d{4}-\d{2}-\d{2}$/.test(name),
+    `receipt should name itself for the save dialog, got: ${name}`,
+  );
+});
+
+test("print: a receipt for another purchase's payment refuses to render", async (page) => {
+  // Without the ownership check this would print one client's money under
+  // another client's name. 999999 is not in any ledger.
+  await page.goto(`${BASE}/imprimer/recu/1?payment=999999`, { waitUntil: "networkidle" });
+  await page.locator(".print-missing").waitFor({ timeout: 10000 });
+  assertEqual(await page.locator(".sheet").count(), 0, "no document may be rendered");
+});
+
+test("print: the relevé totals only live purchases", async (page) => {
+  await openDocument(page, "/imprimer/releve/1");
+
+  assertEqual(
+    await page.locator(".letterhead-doc h1").innerText(),
+    "Relevé client",
+    "document title",
+  );
+  const sections = await page.locator(".doc-section-title").allInnerTexts();
+  assert(
+    sections.some((s) => /Achats/i.test(s)),
+    `statement should list purchases, got: ${sections.join(" | ")}`,
+  );
+  assert(
+    (await page.locator(".doc-table").count()) >= 1,
+    "statement should render at least the purchases table",
+  );
+
+  const name = await page.title();
+  assert(
+    /^Releve-.+-\d{4}-\d{2}-\d{2}$/.test(name),
+    `statement should name itself for the save dialog, got: ${name}`,
+  );
+});
+
+test("print: leaving a document restores the application title", async (page) => {
+  await open(page, "/achats/1");
+  const before = await page.title();
+
+  await page.locator('a[href="/imprimer/echeancier/1"]').click();
+  await page.locator(".sheet").waitFor({ timeout: 10000 });
+  assert((await page.title()) !== before, "the document renames the window while it is open");
+
+  // Without the restore the whole app stays named after a client's paperwork,
+  // which nobody notices until they look at the taskbar.
+  await page.goBack();
+  await page.locator(".app-shell").waitFor({ timeout: 10000 });
+  assertEqual(await page.title(), before, "the title returns when the document is left");
+});
+
+test("print: a document mirrors in Arabic", async (page) => {
+  // Navigated client-side on purpose. `openDocument` does a full page load,
+  // which resets the in-memory mock to its French seed — so reaching the
+  // document through the app is the only way to carry the language into it.
+  await open(page, "/achats/1");
+  await page.locator(".lang-btn").click();
+  await page.locator(".lang-option", { hasText: "العربية" }).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute("dir") === "rtl",
+    undefined,
+    { timeout: 5000 },
+  );
+
+  // By href, not by label: the label is itself translated by this point.
+  await page.locator('a[href="/imprimer/echeancier/1"]').click();
+  await page.locator(".sheet").waitFor({ timeout: 10000 });
+
+  assertEqual(
+    await page.locator("html").getAttribute("dir"),
+    "rtl",
+    "the document must inherit the RTL direction",
+  );
+  assertEqual(
+    await page.locator(".letterhead-doc h1").innerText(),
+    "جدول الأقساط",
+    "document title is localized",
+  );
+  // The figures column is aligned to the logical end, so it must resolve left in
+  // Arabic rather than staying pinned right.
+  const align = await page
+    .locator(".doc-table .num")
+    .first()
+    .evaluate((el) => getComputedStyle(el).textAlign);
+  assert(
+    align === "left" || align === "end",
+    `numeric cells should follow the logical end, got: ${align}`,
+  );
 });
 
 // --- runner ------------------------------------------------------------------

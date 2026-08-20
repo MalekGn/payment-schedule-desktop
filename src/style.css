@@ -393,3 +393,96 @@ textarea {
 [dir="rtl"] .icon-flip {
   transform: scaleX(-1);
 }
+
+/* =========================================================================
+   Printed documents
+   Shared by ScheduleDocument / ReceiptDocument / StatementDocument, which are
+   rendered by the `meta.print` routes outside the app shell (see App.vue).
+   Not scoped to a component because the three documents share these tables and
+   because `@page` and the print overrides below have to be global.
+   ========================================================================= */
+
+.doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.doc-table th,
+.doc-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: start;
+  vertical-align: top;
+}
+.doc-table thead th {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #4b5563;
+  border-bottom: 1px solid #9ca3af;
+}
+/* Logical end, so figures stay on the correct side under Arabic. */
+.doc-table .num {
+  text-align: end;
+  white-space: nowrap;
+}
+.doc-table tfoot td,
+.doc-table .strong-row td {
+  font-weight: 700;
+  border-top: 1px solid #9ca3af;
+  border-bottom: none;
+}
+.doc-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #4b5563;
+  margin-bottom: var(--space-2);
+}
+/* Every balance on a printed document is a snapshot; this is the stamp that
+   says as of when. See ReceiptDocument for why that matters on a reprint. */
+.as-of {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: var(--space-2);
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  /* Screen-only furniture: the action bar, and anything a view marks. */
+  .no-print {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff;
+    /* The shell constrains height and hides overflow, which clips printed
+       output to a single page. Print routes render outside it, but a stray
+       ancestor must not be able to reintroduce the clip. */
+    height: auto;
+    overflow: visible;
+  }
+
+  /* A schedule long enough to break across pages repeats its header row, so
+     the second page is readable on its own. */
+  thead {
+    display: table-header-group;
+  }
+  tr,
+  img {
+    break-inside: avoid;
+  }
+
+  /* Flatten anything that only reads as depth on a screen: shadows and tints
+     cost toner and lose contrast in mono. */
+  * {
+    box-shadow: none !important;
+  }
+}

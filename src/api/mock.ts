@@ -244,6 +244,8 @@ class MockDb {
   lastExternalUrl: string | null = null;
   /** Last CSV passed to `saveCsv`, for assertions in tests. */
   lastCsvExport: { name: string; contents: string } | null = null;
+  /** Last title passed to `setWindowTitle`, for assertions in tests. */
+  lastWindowTitle: string | null = null;
   lastBackupPath: string | null = null;
   /** See `getLicenseStatus` for why this starts valid. */
   private license: LicenseInfo = {
@@ -1423,6 +1425,15 @@ class MockDb {
    */
   openExternal(url: string): void {
     this.lastExternalUrl = url;
+  }
+
+  /**
+   * Browser twin of the window rename. There is no native window here, so
+   * recording it is the whole observable effect — and it is what lets the suites
+   * assert a behaviour that is otherwise only visible in a native title bar.
+   */
+  setWindowTitle(title: string): void {
+    this.lastWindowTitle = title;
   }
 
   /**

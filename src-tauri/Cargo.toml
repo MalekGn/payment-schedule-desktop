@@ -29,6 +29,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Linux only, and only for `src/print.rs`. Both are already in the lock file as
+# transitive dependencies of `wry`, and are pinned here to those same versions —
+# declaring them adds no download and no new licence to audit. See the module
+# docs for why reaching the native webview is the only way to name a printed
+# file on WebKitGTK.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "=2.0.2"
+gtk = "=0.18.2"
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"

@@ -476,6 +476,66 @@ Everything else filters `archived_at IS NULL`, matching `list_schedule_rows`.
 `datetime('now')` stamp, so a bare comparison drops everyone created on the
 closing day of the range.
 
+### Printed documents live outside the app shell
+
+The three documents (`ScheduleDocument`, `ReceiptDocument`, `StatementDocument`)
+are rendered by `/imprimer/*` routes carrying `meta.print`, which `App.vue` uses
+to skip the sidebar and header entirely.
+
+That is not cosmetic. `.app-shell` is `height: 100vh; overflow: hidden` and
+`.app-content` scrolls inside it — exactly the combination that clips printed
+output to a single page. A print stylesheet can override it, but then every
+future change to the shell can silently re-break printing, and nothing catches
+it: no headless suite can see a print preview. Rendering the documents outside
+the shell means there is no chrome to hide and no shell CSS to fight, and the
+routes are assertable in E2E without a print dialog existing.
+
+Printing is triggered from a `.no-print` action bar on the page rather than on
+arrival. `usePrint` waits for the DOM update, the webfonts and every image to
+decode before calling `window.print()` — calling it earlier is how a letterhead
+ends up printing a blank box where the logo should be, a failure that never shows
+on screen.
+
+Each document names itself, because the print dialog derives the file name it
+suggests from the document title. Nothing set one — `index.html` declares it once
+and `ui.pageTitle` only feeds the in-app header — so every document was offered
+as the print engine's own fallback, `output.pdf`. `useDocumentTitle` sets `document.title`, which is what
+WebView2 and Chromium read, and restores it on unmount.
+
+**WebKitGTK does not read it.** On Linux the name comes from the GTK print job's
+`output-basename` setting, and GTK's own fallback for that is the literal
+`output` — which is why every document was offered as `output.pdf` there. Nothing
+reachable from JavaScript can move a print _setting_, so `src-tauri/src/print.rs`
+takes Tauri's `with_webview` escape hatch to the native `WebKitWebView`, listens
+for the print signal, and stamps the basename on the operation before the dialog
+opens. It returns "not handled" so WebKit still runs its own dialog — on the
+operation that now carries the name. The basename comes from the webview title,
+which tracks `document.title`, so the frontend and the dialog cannot drift apart
+and no extra command or state is needed.
+
+That file is the only place in the tree that touches `webkit2gtk`, deliberately:
+`with_webview` hands out a platform handle Tauri excludes from its semver
+guarantees, so a Tauri upgrade can break it without breaking anything else.
+`webkit2gtk` and `gtk` are declared for Linux only, pinned to the versions `wry`
+already pulls in — declaring them added two lines to the lock file and no
+downloads.
+
+The native window title is set too, through `core:window:allow-set-title`. That
+is cosmetic rather than load-bearing: it makes the taskbar entry name the open
+document instead of always reading `paymentSchedule`. The names themselves are
+built by `src/lib/filename.ts`, deliberately ASCII and locale-independent like
+the CSV exports — an Arabic client name slugs to nothing and falls back to
+`client-{id}` rather than leaving a gap.
+
+**No backend command was added.** `get_purchase_detail`, `get_client_detail` and
+the two payment lists already carried everything. The routes are nonetheless
+`meta.licensed`: producing the shop's paperwork is a licensed feature, where the
+unlicensed baseline is only reading your own ledger.
+
+Every balance on every document carries its as-of date, the same rule the reports
+follow: reprint a receipt six months later and it shows what is owed _then_.
+Reconstructing a historical balance is possible but is not attempted.
+
 ### Writing a file the user picked
 
 Two commands write outside the database: `backup_database` and `export_csv`.

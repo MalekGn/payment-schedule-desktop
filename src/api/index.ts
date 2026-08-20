@@ -35,6 +35,11 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return invoke<T>(cmd, args);
 }
 
+async function setNativeWindowTitle(title: string): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setTitle(title);
+}
+
 async function openWithOs(url: string): Promise<void> {
   const { openUrl } = await import("@tauri-apps/plugin-opener");
   return openUrl(url);
@@ -266,6 +271,18 @@ export const api = {
    */
   openExternal: (url: string): Promise<void> =>
     isTauri() ? openWithOs(url) : Promise.resolve(mockDb.openExternal(url)),
+
+  /**
+   * Rename the application window.
+   *
+   * Used by the printable documents. The print dialog derives the file name it
+   * suggests from the document title, and on Linux the GTK print job commonly
+   * takes its name from the parent window instead — so both are set, and this is
+   * the half that needs to cross the Tauri boundary. `core:window:allow-set-title`
+   * is already granted in `capabilities/default.json`.
+   */
+  setWindowTitle: (title: string): Promise<void> =>
+    isTauri() ? setNativeWindowTitle(title) : Promise.resolve(mockDb.setWindowTitle(title)),
 
   /**
    * Save a CSV the caller has already rendered.

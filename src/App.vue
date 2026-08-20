@@ -24,6 +24,19 @@ const { t } = useI18n();
  */
 const blocked = computed(() => route.meta.licensed === true && !license.isLicensed);
 
+/**
+ * Whether this route is a printable document rather than a screen.
+ *
+ * Print routes render on their own, without the sidebar and header. That is not
+ * cosmetic: `.app-shell` below is `height: 100vh; overflow: hidden`, which is
+ * exactly the combination that clips printed output to a single page. A print
+ * stylesheet could override it, but then any future change to the shell can
+ * silently re-break printing and nothing would catch it — no headless suite can
+ * see a print preview. Keeping the documents outside the shell means there is
+ * no chrome to hide and no shell CSS to fight.
+ */
+const isPrint = computed(() => route.meta.print === true);
+
 // The dashboard aggregate is a licensed read, so an unlicensed install would
 // only get a refusal toast on every launch. Skip it and let the gate explain.
 onMounted(() => {
@@ -50,7 +63,13 @@ watch(
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'sidebar-collapsed': !ui.sidebarOpen }">
+  <!-- A printable document: no shell, but still gated and still able to toast. -->
+  <template v-if="isPrint">
+    <LicenseRequiredPanel v-if="blocked" />
+    <RouterView v-else />
+  </template>
+
+  <div v-else class="app-shell" :class="{ 'sidebar-collapsed': !ui.sidebarOpen }">
     <AppSidebar v-show="ui.sidebarOpen" />
     <div class="app-main">
       <AppHeader />
@@ -61,8 +80,11 @@ watch(
         </RouterView>
       </main>
     </div>
-    <AppToasts />
   </div>
+
+  <!-- Outside both branches: a failed load on a print route still has to be
+       able to say so. -->
+  <AppToasts />
 </template>
 
 <style scoped>

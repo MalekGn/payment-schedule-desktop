@@ -6,6 +6,253 @@ Issues found → Recommendations**. See `CLAUDE.md` (Phase 3: QA) for the workfl
 
 ---
 
+## 2026-08-20 — Bug: `output.pdf` persisted in the WebView (Linux follow-up)
+
+### Summary
+
+The `document.title` fix worked under `npm run dev` and **not** under
+`npm run tauri dev`. Reported by the user against the previous entry, whose
+recommendation #1 asked for exactly this check.
+
+**The earlier diagnosis was half right and its Linux remedy was wrong.**
+`document.title` is genuinely what WebView2 and Chromium read, so the browser was
+fixed. But on Linux the name comes from the GTK print job's `output-basename`
+print setting, and GTK's fallback for it is the literal `output`. Setting the
+_window_ title — which the previous entry called "the lever most likely to move
+it" — was speculative and was never going to work: GTK reads print settings, not
+window properties. That claim is corrected here rather than left standing.
+
+Nothing reachable from JavaScript can set a print setting, so the fix is native.
+`src-tauri/src/print.rs` takes Tauri's `with_webview` handle to the
+`WebKitWebView`, connects the print signal, and stamps `output-basename` on the
+operation before the dialog opens. It returns "not handled", so WebKit still runs
+its own dialog — on the operation that now carries the name. The basename comes
+from the webview title, which tracks `document.title`, so the names built by
+`src/lib/filename.ts` are the names that come out and the two cannot drift.
+
+`webkit2gtk` and `gtk` are now declared for Linux only, pinned to the versions
+`wry` already pulls in. Confirmed cost: **two lines in `Cargo.lock`, no
+downloads, no new licence to audit.** Approved by the user before the change,
+per the dependency rule in CLAUDE.md.
+
+The window-title call was kept, on the user's decision, but reclassified: it is
+cosmetic (a meaningful taskbar entry), not part of the filename mechanism.
+
+### Test cases run
+
+Unit, Rust (`cargo test`, 179 passed — 4 new, Linux-gated): a title cannot
+smuggle a path separator, a colon or a control character into the file name;
+leading dots (which would hide the file) and trailing ones (which would give it a
+second extension) are trimmed; the three names the frontend actually sends pass
+through byte-for-byte, so this cannot quietly rewrite what `filename.ts` built;
+an unusable title reduces to `""`, which is the signal to leave GTK's own default
+alone rather than write a nameless file.
+
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+
+### Issues found
+
+1. **`output.pdf` in the WebView** (the report, **fixed**) — root cause above.
+2. **Two separator characters collapsed into two dashes** (**fixed during
+   testing**). `C:\Windows` sanitized to `C--Windows`, which reads as a defect in
+   a file name. Runs now collapse, matching what `slugify` already does on the
+   TypeScript side. Found by the test disagreeing with the implementation — the
+   implementation was wrong, not the expectation.
+
+### Recommendations
+
+1. **This is the one file in the tree outside Tauri's semver guarantees.**
+   `with_webview` hands out a platform handle Tauri explicitly does not cover, so
+   a Tauri upgrade can break `print.rs` without breaking anything else. It is
+   deliberately the only place that touches `webkit2gtk`; keep it that way, and
+   re-check printing after any Tauri bump.
+2. **Windows and macOS are still unverified.** Both should already be correct via
+   `document.title` — that is the documented behaviour of WebView2 and WKWebView,
+   and it is what the browser run demonstrated — but neither has been printed
+   from. The `.msi`/`.nsis` bundle targets make Windows worth an actual check.
+3. **Re-run the Linux check after this change**, including an Arabic-named client
+   so the `client-{id}` fallback is exercised end to end.
+
+---
+
+## 2026-08-20 — Bug: every printed document was saved as `output.pdf`
+
+### Summary
+
+Reported against the printing feature: choosing "Save as PDF" suggested
+`output.pdf` for a schedule, a receipt and a statement alike. A shop printing a
+week of paperwork ends up with `output.pdf`, `output(1).pdf`, `output(2).pdf`.
+
+**Root cause:** `document.title` was never set anywhere in the app.
+`index.html` declares `<title>paymentSchedule</title>` and nothing changes it —
+`ui.pageTitle` only feeds the in-app header in `AppHeader.vue`. The print engine
+had nothing document-specific to derive a name from and fell back to its own
+default.
+
+Fixed by naming each document. Two titles are set rather than one:
+`document.title`, which is what Chromium and WebView2 read, and the native window
+title via `core:window:allow-set-title` — already granted, no capability change —
+because on Linux the output name comes from the GTK print job, which commonly
+takes its name from the parent window. Both are restored on unmount.
+
+Names are built by a new pure `src/lib/filename.ts`, ASCII and
+locale-independent, matching the CSV exports which already ship `impayes-…` and
+`rapport-…` whatever the UI language is:
+
+```
+Echeancier-A-000001-Mohamed-Trabelsi.pdf
+Recu-A-000001-T1-2026-03-15.pdf
+Releve-Mohamed-Trabelsi-2026-08-20.pdf
+```
+
+### Test cases run
+
+Unit (`npm test`, 276 passed — 13 new). `slugify` folds accents rather than
+dropping the letters under them (`Réfrigérateur` → `Refrigerateur`, not
+`Rfrigrateur`); an Arabic-only name slugs to `""` and `clientPart` falls back to
+`client-{id}`; path separators, quotes, newlines and NUL are stripped, because
+this text comes from the client form; long input is capped without leaving a
+dangling separator; `documentFilename` drops empty parts rather than emitting
+`Releve--2026-08-20`. `useDocumentTitle` sets on change, ignores `null` (the
+loading and not-found state), and **restores on unmount**.
+
+Integration (`npm run test:integration`, 268 passed — 1 new): the rename crosses
+the gateway rather than only touching `document.title`, which is what the Linux
+path depends on.
+
+E2E (`npm run test:e2e`, 58/59 — 1 new, 3 extended): each of the three documents
+asserts its own `document.title`, and leaving a document restores the app's. This
+is the closest a headless suite gets to the reported bug, and the absence of
+exactly this assertion is what let it ship.
+
+Gates: lint, `vue-tsc`, prettier all clean; 474 locale keys matching; api/mock
+parity holds. No Rust changed.
+
+### Issues found
+
+1. **`output.pdf` for every document** (the report, **fixed**) — root cause above.
+2. **`PrintView` only loaded on mount** (should-fix, **fixed**). All three print
+   routes share one component, so vue-router reuses the instance when one is
+   navigated to from another and `onMounted` does not run again — a document
+   would render another record's data. Nothing in the UI links between print
+   routes, but they are plain URLs. Now reloads on a props change. Found during
+   review of this change, but the defect was in the printing feature itself.
+3. **A test guessed the wrong seed client** (**fixed by running it**). The
+   échéancier assertion expected `Sonia-Gharbi`; the seed's A-000001 belongs to
+   Mohamed Trabelsi. The mechanism was correct — the accent folding and joining
+   all worked — only the literal was wrong.
+
+### Recommendations
+
+1. **Verified in the real app, and the Linux half of this was wrong — see the
+   follow-up entry below.** `document.title` fixed the browser but not the
+   WebView.
+2. **Check an Arabic-named client specifically.** That is where the fallback
+   fires and where a naive implementation produces `Releve--2026-08-20.pdf`.
+3. **An untracked `src-tauri/impayes-2026-08-20.csv` is in the working tree** —
+   a manual desktop export, and useful evidence that the CSV fix works in the
+   real WebView (BOM present, localized headers, the `'+216` formula guard
+   applied). Worth deleting before committing, or adding `*.csv` to
+   `.gitignore` alongside the existing `*.db` rules.
+
+---
+
+## 2026-08-20 — Feature QA: printable documents (échéancier, reçu, relevé)
+
+### Summary
+
+Tier 1 item #2. The app could not produce a document at all — no `window.print`,
+no `@media print` rule, nothing. Three now exist, on shop letterhead: the
+**échéancier** handed to the client at the sale (with signature blocks), the
+**reçu** for each collection, and the **relevé** of a client's whole position.
+
+Two decisions shaped it.
+
+**The documents render outside the app shell.** `/imprimer/*` routes carry
+`meta.print`, and `App.vue` skips the sidebar and header for them. Printing the
+shell in place is the obvious approach and the wrong one: `.app-shell` is
+`height: 100vh; overflow: hidden`, which clips printed output to a single page. A
+print stylesheet could override that, but then any later change to the shell can
+silently re-break printing and nothing would catch it — no headless suite can see
+a print preview. Outside the shell there is nothing to hide and nothing to fight,
+and the routes are assertable in E2E.
+
+**No backend command was added.** `get_purchase_detail`, `get_client_detail` and
+the two payment lists already carried every figure these documents print. The
+only backend-adjacent change is a `shopInfo` computed on the settings store.
+
+Balances carry their as-of date, the same rule the reports follow: a receipt
+reprinted six months later shows what is owed _then_.
+
+### Test cases run
+
+Unit (`npm test`, 263 passed — 6 new): `useShopIdentity`, extracted from the one
+inline copy in `AppSidebar.vue`. Licence name wins over the stored setting; a
+whitespace-only licence name does not defeat the fallback; an unknown shop
+reports `""` rather than inventing a name; the contact block is trimmed.
+
+Integration (`npm run test:integration`, 267 passed — 5 new): each document
+assembles from the gateway alone; the échéancier's printed footer reconciles with
+its rows; a payment id is only resolvable inside its own purchase's ledger; the
+relevé's totals cover live purchases only.
+
+E2E (`npm run test:e2e`, 57/58 — 5 new): the échéancier renders with the
+letterhead, six tranche rows, a 2400 total and both signature blocks, and **no
+`.app-shell` and no `h1.page-title`**; the action bar is marked `.no-print`; a
+receipt reached by clicking its payment row shows the 400 collected and a stamped
+balance; `?payment=999999` refuses to render a document; the relevé lists
+purchases; an Arabic document mirrors and its numeric column follows the logical
+end.
+
+Gates: `npm run lint` clean, `npm run build` clean (`vue-tsc`), prettier clean,
+474 locale keys matching across all three files. No Rust changed.
+
+The integration and E2E suites were **run** here rather than only written. That
+is a deviation from the usual opt-in rule and it earned itself — see issue 2.
+
+### Issues found
+
+1. **`.doc-section-title` was defined twice** (nit, **fixed**) — once globally in
+   `style.css` and once scoped in `DocumentSection.vue`. The global one is load
+   bearing, because the schedule and statement use the class on bare `<h2>`s
+   outside that component; the scoped copy was dead weight that could drift.
+   Removed, with a comment saying why it is global.
+2. **The first Arabic E2E test was wrong, and running it is what showed that**
+   (**fixed**). It reached the document with a full page load, which resets the
+   in-memory mock to its French seed, so `dir` was `ltr` and the assertion failed
+   against correct application behaviour. Rewritten to navigate client-side,
+   which is also closer to what a user does. Had it only been written and not
+   run, a broken test would have shipped looking like coverage.
+3. **A dead parameter in `usePrint`** (nit, **fixed**) — `whenPaintable` took a
+   root that no call site ever passed.
+
+Reviewed and clean: the licence gate stays the single site in `App.vue` (print
+routes render `LicenseRequiredPanel`, which carries its own link to Settings, so
+an unlicensed deep link is not a dead end); no new IPC surface and so no new
+error handling to get wrong; no listeners, timers or caches added; integer money
+throughout; all three locale files at identical key sets.
+
+### Recommendations
+
+1. **Verify `window.print()` in the real app on both platforms — this is the one
+   thing no test here covers.** It has historically been unreliable on
+   Linux/WebKitGTK. `npm run tauri dev`, then print each document and check: the
+   OS dialog opens at all; the output has no app chrome; a schedule long enough
+   to break across pages repeats its table header; the signature block is not
+   split. If the dialog does not open, the save-to-file fallback that was set
+   aside during planning becomes the answer — that is a decision to take, not
+   something to add quietly.
+2. **Check the letterhead with and without a logo**, and in Arabic. The layout
+   uses logical properties throughout rather than a mirrored ruleset, which this
+   pass verified by construction and by one computed-style assertion, not by eye.
+3. **Amount-in-words on receipts remains out of scope.** French and Arabic
+   number-to-words is a real piece of work, not a helper, and some shops will
+   expect it on a receipt. Worth deciding deliberately rather than by omission.
+4. **The pre-existing `rescheduling an unpaid tranche` E2E failure is still
+   open** and unrelated to this work — it was failing before Rapports too.
+
+---
+
 ## 2026-08-19 — Bug: CSV export writes nothing in the desktop app
 
 ### Summary

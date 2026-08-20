@@ -552,5 +552,53 @@
     "home": "العودة إلى لوحة التحكم",
     "purchaseMissing": "هذا الشراء غير موجود أو تم حذفه.",
     "clientMissing": "هذا العميل غير موجود أو تم حذفه."
+  },
+  "print": {
+    "action": "طباعة",
+    "printSchedule": "طباعة جدول الأقساط",
+    "printReceipt": "طباعة الوصل",
+    "printStatement": "طباعة كشف الحساب",
+    "issuedOn": "حُرّر في {date}",
+    "balanceAsOf": "الأرصدة بتاريخ {date}.",
+    "amountReceived": "المبلغ المقبوض",
+    "totalPaidToDate": "مجموع ما دُفع إلى اليوم",
+    "archivedNote": "مشتريات مؤرشفة — غير محتسبة في المجاميع أعلاه.",
+    "missing": "تعذّر العثور على هذه الوثيقة.",
+    "title": {
+      "schedule": "جدول الأقساط",
+      "receipt": "وصل خلاص",
+      "statement": "كشف حساب الحريف"
+    },
+    "section": {
+      "client": "الحريف",
+      "purchase": "الشراء",
+      "schedule": "جدول الأقساط",
+      "balance": "رصيد الشراء",
+      "purchases": "المشتريات",
+      "payments": "الدفعات",
+      "archived": "مشتريات مؤرشفة"
+    },
+    "field": {
+      "client": "الحريف",
+      "address": "العنوان",
+      "email": "البريد الإلكتروني",
+      "product": "المنتج",
+      "purchase": "رقم الشراء",
+      "purchaseDate": "تاريخ الشراء",
+      "total": "الثمن الجملي",
+      "installments": "الأقساط"
+    },
+    "column": {
+      "tranche": "القسط"
+    },
+    "interval": {
+      "weekly": "{count} أقساط أسبوعية",
+      "monthly": "{count} أقساط شهرية",
+      "custom": "{count} أقساط"
+    },
+    "signature": {
+      "shop": "إمضاء البائع",
+      "client": "إمضاء الحريف"
+    }
   }
 }

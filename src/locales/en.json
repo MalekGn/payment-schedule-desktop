@@ -552,5 +552,53 @@
     "home": "Back to dashboard",
     "purchaseMissing": "This purchase doesn't exist or has been deleted.",
     "clientMissing": "This client doesn't exist or has been deleted."
+  },
+  "print": {
+    "action": "Print",
+    "printSchedule": "Print the schedule",
+    "printReceipt": "Print the receipt",
+    "printStatement": "Print the statement",
+    "issuedOn": "Issued on {date}",
+    "balanceAsOf": "Balances as of {date}.",
+    "amountReceived": "Amount received",
+    "totalPaidToDate": "Total paid to date",
+    "archivedNote": "Archived purchases — excluded from the totals above.",
+    "missing": "This document could not be found.",
+    "title": {
+      "schedule": "Payment schedule",
+      "receipt": "Payment receipt",
+      "statement": "Client statement"
+    },
+    "section": {
+      "client": "Client",
+      "purchase": "Purchase",
+      "schedule": "Schedule",
+      "balance": "Purchase balance",
+      "purchases": "Purchases",
+      "payments": "Payments",
+      "archived": "Archived purchases"
+    },
+    "field": {
+      "client": "Client",
+      "address": "Address",
+      "email": "Email",
+      "product": "Product",
+      "purchase": "Purchase no.",
+      "purchaseDate": "Purchase date",
+      "total": "Total price",
+      "installments": "Installments"
+    },
+    "column": {
+      "tranche": "Installment"
+    },
+    "interval": {
+      "weekly": "{count} weekly installments",
+      "monthly": "{count} monthly installments",
+      "custom": "{count} installments"
+    },
+    "signature": {
+      "shop": "Seller's signature",
+      "client": "Client's signature"
+    }
   }
 }

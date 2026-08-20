@@ -552,5 +552,53 @@
     "home": "Retour au tableau de bord",
     "purchaseMissing": "Cet achat n'existe pas ou a été supprimé.",
     "clientMissing": "Ce client n'existe pas ou a été supprimé."
+  },
+  "print": {
+    "action": "Imprimer",
+    "printSchedule": "Imprimer l'échéancier",
+    "printReceipt": "Imprimer le reçu",
+    "printStatement": "Imprimer le relevé",
+    "issuedOn": "Établi le {date}",
+    "balanceAsOf": "Soldes arrêtés au {date}.",
+    "amountReceived": "Montant reçu",
+    "totalPaidToDate": "Total versé à ce jour",
+    "archivedNote": "Achats archivés — exclus des totaux ci-dessus.",
+    "missing": "Ce document est introuvable.",
+    "title": {
+      "schedule": "Échéancier",
+      "receipt": "Reçu de paiement",
+      "statement": "Relevé client"
+    },
+    "section": {
+      "client": "Client",
+      "purchase": "Achat",
+      "schedule": "Échéancier",
+      "balance": "Solde de l'achat",
+      "purchases": "Achats",
+      "payments": "Paiements",
+      "archived": "Achats archivés"
+    },
+    "field": {
+      "client": "Client",
+      "address": "Adresse",
+      "email": "E-mail",
+      "product": "Produit",
+      "purchase": "N° Achat",
+      "purchaseDate": "Date d'achat",
+      "total": "Prix total",
+      "installments": "Tranches"
+    },
+    "column": {
+      "tranche": "Tranche"
+    },
+    "interval": {
+      "weekly": "{count} tranches hebdomadaires",
+      "monthly": "{count} tranches mensuelles",
+      "custom": "{count} tranches"
+    },
+    "signature": {
+      "shop": "Signature du vendeur",
+      "client": "Signature du client"
+    }
   }
 }

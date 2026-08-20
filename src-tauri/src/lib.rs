@@ -12,6 +12,7 @@ mod error;
 // enforcement task consumes it from outside this file.
 pub mod license;
 mod models;
+mod print;
 mod seed;
 
 use tauri::Manager;
@@ -161,6 +162,12 @@ pub fn run() {
             // app launching — an unlicensed install still lets the shop keeper
             // read their own clients and purchases, and it is the only way they
             // can reach the screen that installs a licence.
+            // Teach the GTK print dialog to name its output after the document.
+            // A no-op off Linux; see `print.rs` for why only WebKitGTK needs it.
+            if let Some(window) = app.get_webview_window("main") {
+                print::name_printed_documents(&window);
+            }
+
             let status = commands::evaluate_license(app.handle(), &database.lock());
             log::info!("licence status at startup: {}", status.to_info(None).status);
 

@@ -77,6 +77,14 @@ onMounted(load);
       <AppIcon name="arrow-left" :size="16" class="icon-flip" /> {{ t("common.back") }}
     </button>
 
+    <!-- Printing is a licensed action, and the route refuses without one; the
+         button is hidden rather than shown-and-refused. -->
+    <div v-if="license.isLicensed" class="print-bar no-print">
+      <RouterLink class="btn btn--ghost" :to="`/imprimer/releve/${detail.client.id}`">
+        <AppIcon name="report" :size="16" /> {{ t("print.printStatement") }}
+      </RouterLink>
+    </div>
+
     <div class="top-grid">
       <section class="card contact-card">
         <div class="card-header">
@@ -280,6 +288,10 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+.print-bar {
+  display: flex;
+  justify-content: flex-end;
 }
 .back-link {
   display: inline-flex;

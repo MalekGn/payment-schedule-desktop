@@ -60,6 +60,42 @@ const routes: RouteRecordRaw[] = [
     meta: { licensed: true },
   },
   { path: "/parametres", name: "parametres", component: () => import("@/views/SettingsView.vue") },
+
+  // Printable documents. `meta.print` makes `App.vue` render the route without
+  // the sidebar and header — see the comment there for why these are their own
+  // routes rather than a print stylesheet laid over the app.
+  //
+  // Licensed even though `get_purchase_detail` itself is not: producing the
+  // shop's paperwork is a licensed feature, where the unlicensed baseline is
+  // only reading your own ledger. The receipt and the statement need it
+  // regardless, since the payment lists are already gated.
+  {
+    path: "/imprimer/echeancier/:id",
+    name: "print-schedule",
+    component: () => import("@/views/PrintView.vue"),
+    props: (route) => ({ kind: "schedule", id: route.params.id }),
+    meta: { licensed: true, print: true },
+  },
+  {
+    // The payment arrives as `?payment=<id>` rather than a second path segment,
+    // matching the `?client=` deep link the Impayés page already uses.
+    path: "/imprimer/recu/:id",
+    name: "print-receipt",
+    component: () => import("@/views/PrintView.vue"),
+    props: (route) => ({
+      kind: "receipt",
+      id: route.params.id,
+      paymentId: route.query.payment,
+    }),
+    meta: { licensed: true, print: true },
+  },
+  {
+    path: "/imprimer/releve/:id",
+    name: "print-statement",
+    component: () => import("@/views/PrintView.vue"),
+    props: (route) => ({ kind: "statement", id: route.params.id }),
+    meta: { licensed: true, print: true },
+  },
   // Catch-all. The "not-found" name is matched by string elsewhere — `useBack`
   // (to avoid sending the user back into another unknown URL) and `AppHeader`'s
   // NAV_KEY (page title). Renaming it silently degrades both; grep before you do.

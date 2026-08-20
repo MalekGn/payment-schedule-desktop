@@ -23,7 +23,8 @@ network or cloud dependency.
 ## Screens
 
 Dashboard (Tableau de bord), Achats, Clients, Paiements, Échéances, Impayés,
-Paramètres, Alertes and Rapports. The Dashboard is a
+Paramètres, Alertes and Rapports, plus printable documents at `/imprimer/*`
+(échéancier, reçu, relevé) that render without the app shell. The Dashboard is a
 pixel-accurate implementation of `docs/intsallment.png`.
 
 ---

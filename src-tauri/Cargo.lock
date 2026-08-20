@@ -2617,6 +2617,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
+ "gtk",
  "log",
  "machine-uid",
  "rusqlite",
@@ -2630,6 +2631,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-os",
  "tauri-plugin-single-instance",
+ "webkit2gtk",
 ]
 
 [[package]]
